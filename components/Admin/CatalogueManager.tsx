@@ -1,19 +1,34 @@
-
-import React, { useState } from 'react';
-import { 
-  Plus, 
-  Search, 
-  Edit2, 
-  Trash2, 
-  X, 
+// src/pages/Admin/CatalogueManager.tsx
+import React, { useMemo, useState } from "react";
+import {
+  Plus,
+  Search,
+  Edit2,
+  Trash2,
+  X,
   Image as ImageIcon,
   Tag,
-  Hash,
   ShoppingBag,
-  Layers
-} from 'lucide-react';
-import { Article, AssortmentType } from '../../types';
-import { ASSORTMENTS } from '../../constants';
+  Layers,
+  CheckCircle2,
+  Heart,
+  ArrowRightLeft,
+} from "lucide-react";
+import { Article, AssortmentType } from "../../types";
+
+type CatalogStatus = "AVAILABLE" | "WISH";
+
+type CatalogueForm = {
+  name: string;
+  category: AssortmentType; // gender
+  mrp: number;
+
+  sizeRange: string; // "4-8"
+  sizeBreakup: Record<string, number>; // { "4": 0, "5": 6, ... }
+
+  images: File[]; // ✅ files
+  catalogStatus: CatalogStatus; // AVAILABLE / WISH
+};
 
 interface CatalogueManagerProps {
   articles: Article[];
@@ -22,171 +37,413 @@ interface CatalogueManagerProps {
   deleteArticle: (id: string) => void;
 }
 
-const CatalogueManager: React.FC<CatalogueManagerProps> = ({ 
-  articles, 
-  addArticle, 
-  updateArticle, 
-  deleteArticle 
+const CatalogueManager: React.FC<CatalogueManagerProps> = ({
+  articles,
+  addArticle,
+  updateArticle,
+  deleteArticle,
 }) => {
-  const [searchTerm, setSearchTerm] = useState('');
+  const [activeTab, setActiveTab] = useState<CatalogStatus>("AVAILABLE");
+  const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingArticle, setEditingArticle] = useState<Article | null>(null);
 
-  // Form State
-  const [formData, setFormData] = useState({
-    name: '',
-    sku: '',
+  // ✅ preview urls for selected files
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+
+  const [formData, setFormData] = useState<CatalogueForm>({
+    name: "",
     category: AssortmentType.MEN,
-    pricePerPair: 0,
-    imageUrl: '',
-    assortmentId: ASSORTMENTS[0].id
+    mrp: 0,
+    sizeRange: "",
+    sizeBreakup: {},
+    images: [],
+    catalogStatus: "WISH",
   });
 
-  const filteredArticles = articles.filter(a => 
-    a.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    a.sku.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // ---------- Helpers ----------
+  const capFirst = (v: string) => {
+    const s = (v || "").trimStart();
+    if (!s) return "";
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
 
-  const handleOpenModal = (article?: Article) => {
+  // ✅ parse range like "4-8" -> ["4","5","6","7","8"]
+  const parseSizeRange = (range: string) => {
+    const cleaned = range.trim().replace(/\s/g, "");
+    const m = cleaned.match(/^(\d+)-(\d+)$/);
+    if (!m) return [];
+    const start = Number(m[1]);
+    const end = Number(m[2]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+    if (end < start) return [];
+    const out: string[] = [];
+    for (let i = start; i <= end; i++) out.push(String(i));
+    return out;
+  };
+
+  // ✅ when user types size range, auto-generate boxes
+  const applySizeRange = (value: string) => {
+    const sizes = parseSizeRange(value);
+    setFormData((prev) => {
+      const nextBreakup: Record<string, number> = {};
+      sizes.forEach((s) => {
+        nextBreakup[s] = prev.sizeBreakup?.[s] ?? 0;
+      });
+      return { ...prev, sizeRange: value, sizeBreakup: nextBreakup };
+    });
+  };
+
+  const totalPairs = useMemo(() => {
+    return Object.values(formData.sizeBreakup || {}).reduce(
+      (sum, v) => sum + (Number(v) || 0),
+      0
+    );
+  }, [formData.sizeBreakup]);
+
+  const isValidMultiple = totalPairs === 0 || totalPairs % 24 === 0;
+
+  // ✅ file choose handler
+  const handleImageSelect = (files: FileList | null) => {
+    if (!files) return;
+
+    const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (fileArray.length === 0) return;
+
+    const previewUrls = fileArray.map((file) => URL.createObjectURL(file));
+
+    setFormData((prev) => ({
+      ...prev,
+      images: [...(prev.images || []), ...fileArray],
+    }));
+
+    setImagePreviews((prev) => [...prev, ...previewUrls]);
+  };
+
+  const removeImageByIndex = (index: number) => {
+    setFormData((prev) => {
+      const updated = [...(prev.images || [])];
+      updated.splice(index, 1);
+      return { ...prev, images: updated };
+    });
+
+    setImagePreviews((prev) => {
+      const updated = [...prev];
+      const removed = updated.splice(index, 1)[0];
+      if (removed) URL.revokeObjectURL(removed);
+      return updated;
+    });
+  };
+
+  const moveArticle = (article: Article, to: CatalogStatus) => {
+    const updated: Article = {
+      ...article,
+      // @ts-ignore
+      catalogStatus: to,
+    };
+    updateArticle(updated);
+  };
+
+  // ---------- Data Views ----------
+  const filtered = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+
+    return articles
+      .filter((a) => {
+        const status = ((a as any).catalogStatus as CatalogStatus) || "AVAILABLE";
+        return status === activeTab;
+      })
+      .filter((a) => {
+        if (!q) return true;
+        const name = (a.name || "").toLowerCase();
+        const sku = (a.sku || "").toLowerCase();
+        return name.includes(q) || sku.includes(q);
+      });
+  }, [articles, activeTab, searchTerm]);
+
+  // ---------- Modal ----------
+  const openModal = (article?: Article) => {
+    // cleanup old previews
+    setImagePreviews((prev) => {
+      prev.forEach((u) => {
+        // revoke only blob urls
+        if (u.startsWith("blob:")) URL.revokeObjectURL(u);
+      });
+      return [];
+    });
+
     if (article) {
       setEditingArticle(article);
+
       setFormData({
-        name: article.name,
-        sku: article.sku,
+        name: article.name || "",
         category: article.category,
-        pricePerPair: article.pricePerPair,
-        imageUrl: article.imageUrl,
-        assortmentId: article.assortmentId
+        // @ts-ignore
+        mrp: Number((article as any).mrp || 0),
+        // @ts-ignore
+        sizeRange: String((article as any).sizeRange || ""),
+        // @ts-ignore
+        sizeBreakup: (article as any).sizeBreakup || {},
+        images: [], // ✅ cannot restore File[] from saved record (unless you store files)
+        // @ts-ignore
+        catalogStatus: ((article as any).catalogStatus as CatalogStatus) || "AVAILABLE",
       });
+
+      // ✅ if you saved image URLs in article.images, show them as preview
+      const savedUrls: string[] = (article as any).images || [];
+      if (savedUrls.length) setImagePreviews(savedUrls);
     } else {
       setEditingArticle(null);
       setFormData({
-        name: '',
-        sku: '',
+        name: "",
         category: AssortmentType.MEN,
-        pricePerPair: 0,
-        imageUrl: '',
-        assortmentId: ASSORTMENTS[0].id
+        mrp: 0,
+        sizeRange: "",
+        sizeBreakup: {},
+        images: [],
+        catalogStatus: "WISH",
       });
     }
+
     setIsModalOpen(true);
   };
 
+  const closeModal = () => {
+    setIsModalOpen(false);
+  };
+
+  // ✅ Manual catalogue submit
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const newArticle: Article = {
+
+    if (!formData.name.trim()) return alert("Article name required");
+    if (formData.mrp <= 0) return alert("MRP must be > 0");
+
+    if (Object.keys(formData.sizeBreakup || {}).length > 0 && !isValidMultiple) {
+      return alert("Total pairs must be 24, 48, 72... (multiple of 24)");
+    }
+
+    // ✅ Here we store preview URLs (or your uploaded URLs later from backend)
+    // If you're uploading files to backend, replace this with returned URLs.
+    const storedImages: string[] = imagePreviews;
+
+    const payload: Article = {
       id: editingArticle ? editingArticle.id : `art-${Date.now()}`,
-      ...formData
+      name: capFirst(formData.name.trim()),
+      sku: editingArticle?.sku || `CAT-${Date.now().toString().slice(-6)}`,
+      category: formData.category,
+      pricePerPair: editingArticle?.pricePerPair ?? 0,
+      imageUrl: editingArticle?.imageUrl ?? "",
+      // @ts-ignore
+      mrp: Number(formData.mrp || 0),
+      // @ts-ignore
+      sizeRange: String(formData.sizeRange || "").trim(),
+      // @ts-ignore
+      sizeBreakup: formData.sizeBreakup || {},
+      // @ts-ignore
+      images: storedImages,
+      // @ts-ignore
+      catalogStatus: formData.catalogStatus,
     };
 
-    if (editingArticle) {
-      updateArticle(newArticle);
-    } else {
-      addArticle(newArticle);
-    }
+    if (editingArticle) updateArticle(payload);
+    else addArticle(payload);
+
     setIsModalOpen(false);
   };
 
   return (
     <div className="space-y-6">
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
+      {/* Header */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between">
         <div className="flex items-center gap-4">
-           <div className="p-3 bg-indigo-50 rounded-xl">
-             <Layers className="text-indigo-600" size={24} />
-           </div>
-           <div>
-             <h3 className="text-xl font-bold text-slate-900">Catalogue Management</h3>
-             <p className="text-sm text-slate-500">Add or modify footwear articles in the global distribution list</p>
-           </div>
+          <div className="p-3 bg-indigo-50 rounded-xl">
+            <Layers className="text-indigo-600" size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold text-slate-900">Catalogue</h3>
+            <p className="text-sm text-slate-500">
+              Master Catalogue • 2 Tabs: <b>Available</b> + <b>Wish</b>
+            </p>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2 w-full md:w-auto">
-          <div className="relative flex-1 md:w-64">
+
+        <div className="flex flex-wrap gap-2 w-full lg:w-auto">
+          <div className="relative flex-1 lg:w-72">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input 
-              type="text" 
-              placeholder="Search SKU or Name..." 
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+            <input
+              type="text"
+              placeholder="Search SKU or Name..."
+              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <button 
-            onClick={() => handleOpenModal()}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+
+          <button
+            onClick={() => openModal()}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
           >
             <Plus size={18} />
-            New Article
+            New Catalog
           </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      {/* Tabs */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
+        <button
+          onClick={() => setActiveTab("AVAILABLE")}
+          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
+            activeTab === "AVAILABLE"
+              ? "bg-emerald-600 text-white shadow"
+              : "text-slate-600 hover:bg-slate-50"
+          }`}
+        >
+          <CheckCircle2 size={16} />
+          Available Catalogue
+        </button>
+        <button
+          onClick={() => setActiveTab("WISH")}
+          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
+            activeTab === "WISH"
+              ? "bg-rose-600 text-white shadow"
+              : "text-slate-600 hover:bg-slate-50"
+          }`}
+        >
+          <Heart size={16} />
+          Wish Catalogue
+        </button>
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden hidden md:block">
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[900px]">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Article Info</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Category</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Article</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Gender</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">MRP</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Assortment</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Price (Pr)</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase text-right">Actions</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Pairs</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Actions</th>
               </tr>
             </thead>
+
             <tbody className="divide-y divide-slate-100">
-              {filteredArticles.map(article => (
-                <tr key={article.id} className="hover:bg-slate-50/50 transition-colors">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-4">
-                      <img 
-                        src={article.imageUrl || 'https://picsum.photos/seed/kore/200/200'} 
-                        alt="" 
-                        className="w-12 h-12 rounded-lg object-cover border border-slate-100" 
-                      />
-                      <div>
-                        <p className="font-bold text-slate-900">{article.name}</p>
-                        <p className="text-[10px] text-slate-400 font-mono tracking-widest">{article.sku}</p>
+              {filtered.map((a) => {
+                const status: CatalogStatus =
+                  ((a as any).catalogStatus as CatalogStatus) || "AVAILABLE";
+                const mrp = Number((a as any).mrp || 0);
+                const sizeRange = String((a as any).sizeRange || "");
+                const sizeBreakup: Record<string, number> = (a as any).sizeBreakup || {};
+                const pairs = Object.values(sizeBreakup).reduce((s, v) => s + (Number(v) || 0), 0);
+
+                const imgs: string[] = (a as any).images || (a.imageUrl ? [a.imageUrl] : []);
+                const cover = imgs[0] || "https://picsum.photos/seed/kore/200/200";
+
+                return (
+                  <tr key={a.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-4">
+                        <img
+                          src={cover}
+                          alt=""
+                          className="w-12 h-12 rounded-xl object-cover border border-slate-100"
+                        />
+                        <div>
+                          <p className="font-bold text-slate-900">{a.name}</p>
+                          <p className="text-[10px] text-slate-400 font-mono tracking-widest">{a.sku}</p>
+                          <p className="text-[10px] text-slate-400">
+                            {imgs.length} image{imgs.length === 1 ? "" : "s"}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                      article.category === AssortmentType.MEN ? 'bg-indigo-50 text-indigo-600' :
-                      article.category === AssortmentType.WOMEN ? 'bg-pink-50 text-pink-600' : 'bg-amber-50 text-amber-600'
-                    }`}>
-                      {article.category}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-xs font-medium text-slate-600">
-                    {ASSORTMENTS.find(as => as.id === article.assortmentId)?.name || 'Standard'}
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    <span className="font-bold text-slate-800">₹{article.pricePerPair.toLocaleString()}</span>
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button 
-                        onClick={() => handleOpenModal(article)}
-                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                    </td>
+
+                    <td className="px-6 py-4">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                          a.category === AssortmentType.MEN
+                            ? "bg-indigo-50 text-indigo-600"
+                            : a.category === AssortmentType.WOMEN
+                            ? "bg-pink-50 text-pink-600"
+                            : "bg-amber-50 text-amber-600"
+                        }`}
                       >
-                        <Edit2 size={16} />
-                      </button>
-                      <button 
-                        onClick={() => {
-                          if (window.confirm(`Delete ${article.name}? This will remove it from shop and inventory.`)) {
-                            deleteArticle(article.id);
-                          }
-                        }}
-                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                        {a.category}
+                      </span>
+                    </td>
+
+                    <td className="px-6 py-4">
+                      <span className="font-bold text-slate-800">₹{mrp.toLocaleString()}</span>
+                    </td>
+
+                    <td className="px-6 py-4 text-sm text-slate-700">
+                      <div className="font-semibold">
+                        {sizeRange || <span className="text-slate-400 italic">—</span>}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {Object.keys(sizeBreakup || {}).length ? `${Object.keys(sizeBreakup).length} sizes` : "No breakup"}
+                      </div>
+                    </td>
+
+                    <td className="px-6 py-4">
+                      <span
+                        className={`text-xs font-bold px-2 py-1 rounded-full ${
+                          pairs === 0
+                            ? "bg-slate-100 text-slate-500"
+                            : pairs % 24 === 0
+                            ? "bg-emerald-50 text-emerald-700"
+                            : "bg-rose-50 text-rose-700"
+                        }`}
                       >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filteredArticles.length === 0 && (
+                        {pairs || 0}
+                      </span>
+                    </td>
+
+                    <td className="px-6 py-4 text-right">
+                      <div className="inline-flex items-center gap-2">
+                        <button
+                          onClick={() => openModal(a)}
+                          className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                          title="Edit"
+                        >
+                          <Edit2 size={16} />
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            const to: CatalogStatus = status === "AVAILABLE" ? "WISH" : "AVAILABLE";
+                            moveArticle(a, to);
+                          }}
+                          className="p-2 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-all"
+                          title="Move"
+                        >
+                          <ArrowRightLeft size={16} />
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Delete ${a.name}?`)) deleteArticle(a.id);
+                          }}
+                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                          title="Delete"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+
+              {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-slate-400 italic">No articles matching your search.</td>
+                  <td colSpan={6} className="px-6 py-12 text-center text-slate-400 italic">
+                    No items in this tab.
+                  </td>
                 </tr>
               )}
             </tbody>
@@ -194,132 +451,334 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         </div>
       </div>
 
-      {/* Article Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-2xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
-            <div className="bg-indigo-600 p-6 flex justify-between items-center text-white">
-               <h3 className="text-xl font-bold flex items-center gap-2">
-                 {editingArticle ? <Edit2 size={20} /> : <Plus size={20} />}
-                 {editingArticle ? 'Edit Article' : 'Add New Article'}
-               </h3>
-               <button onClick={() => setIsModalOpen(false)} className="text-white/60 hover:text-white transition-colors">
-                 <X size={24} />
-               </button>
+      {/* Cards (mobile) */}
+      <div className="md:hidden space-y-3">
+        {filtered.map((a) => {
+          const status: CatalogStatus = ((a as any).catalogStatus as CatalogStatus) || "AVAILABLE";
+          const mrp = Number((a as any).mrp || 0);
+          const sizeRange = String((a as any).sizeRange || "");
+          const sizeBreakup: Record<string, number> = (a as any).sizeBreakup || {};
+          const pairs = Object.values(sizeBreakup).reduce((s, v) => s + (Number(v) || 0), 0);
+
+          const imgs: string[] = (a as any).images || (a.imageUrl ? [a.imageUrl] : []);
+          const cover = imgs[0] || "https://picsum.photos/seed/kore/200/200";
+
+          return (
+            <div key={a.id} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+              <div className="flex gap-3">
+                <img src={cover} alt="" className="w-14 h-14 rounded-2xl object-cover border border-slate-100" />
+                <div className="flex-1">
+                  <p className="font-bold text-slate-900">{a.name}</p>
+                  <p className="text-[10px] text-slate-400 font-mono tracking-widest">{a.sku}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <span className="text-xs font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded-full">
+                      ₹{mrp.toLocaleString()}
+                    </span>
+                    <span className="text-xs font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded-full">
+                      {a.category}
+                    </span>
+                    <span
+                      className={`text-xs font-bold px-2 py-1 rounded-full ${
+                        pairs === 0
+                          ? "bg-slate-100 text-slate-600"
+                          : pairs % 24 === 0
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-rose-50 text-rose-700"
+                      }`}
+                    >
+                      Pairs: {pairs || 0}
+                    </span>
+                  </div>
+
+                  <p className="mt-2 text-sm text-slate-600">
+                    Assortment: <span className="font-semibold">{sizeRange || "—"}</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => openModal(a)}
+                  className="flex-1 px-3 py-2 rounded-xl border border-slate-200 font-bold text-slate-700 hover:bg-slate-50"
+                >
+                  Edit
+                </button>
+
+                <button
+                  onClick={() => {
+                    const to: CatalogStatus = status === "AVAILABLE" ? "WISH" : "AVAILABLE";
+                    moveArticle(a, to);
+                  }}
+                  className="flex-1 px-3 py-2 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800"
+                >
+                  Move
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete ${a.name}?`)) deleteArticle(a.id);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-rose-600 text-white font-bold hover:bg-rose-700"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
             </div>
-            
-            <form onSubmit={handleSubmit} className="p-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          );
+        })}
+
+        {filtered.length === 0 && (
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 text-center text-slate-400 italic">
+            No items in this tab.
+          </div>
+        )}
+      </div>
+
+      {/* Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-3">
+          <div className="bg-white rounded-3xl w-full max-w-3xl overflow-hidden shadow-2xl">
+            <div className="bg-indigo-600 p-5 flex justify-between items-center text-white">
+              <h3 className="text-lg sm:text-xl font-bold flex items-center gap-2">
+                {editingArticle ? <Edit2 size={20} /> : <Plus size={20} />}
+                {editingArticle ? "Edit Catalogue" : "Create Catalogue"}
+              </h3>
+              <button onClick={closeModal} className="text-white/70 hover:text-white transition-colors">
+                <X size={24} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="p-5 sm:p-8 max-h-[78vh] overflow-y-auto">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Left */}
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-2">
-                      <Tag size={12} /> Article Name
-                    </label>
-                    <input 
-                      type="text" 
+                  <Field label="Article Name" required icon={<Tag size={12} />}>
+                    <input
+                      type="text"
                       required
                       placeholder="e.g. Urban Runner"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
                       value={formData.name}
-                      onChange={e => setFormData({...formData, name: e.target.value})}
+                      onChange={(e) => setFormData((p) => ({ ...p, name: capFirst(e.target.value) }))}
                     />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-2">
-                      <Hash size={12} /> Unique SKU
-                    </label>
-                    <input 
-                      type="text" 
-                      required
-                      placeholder="e.g. KK-M-RUN-BLK"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-mono"
-                      value={formData.sku}
-                      onChange={e => setFormData({...formData, sku: e.target.value})}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5">Category</label>
-                      <select 
-                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                  </Field>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Field label="Gender" required>
+                      <select
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
                         value={formData.category}
-                        onChange={e => setFormData({...formData, category: e.target.value as AssortmentType})}
+                        onChange={(e) =>
+                          setFormData((p) => ({ ...p, category: e.target.value as AssortmentType }))
+                        }
                       >
-                        {Object.values(AssortmentType).map(cat => (
-                          <option key={cat} value={cat}>{cat}</option>
+                        {Object.values(AssortmentType).map((g) => (
+                          <option key={g} value={g}>
+                            {g}
+                          </option>
                         ))}
                       </select>
+                    </Field>
+
+                    <Field label="MRP (per pair)" required icon={<ShoppingBag size={12} />}>
+                      <input
+                        type="number"
+                        min={0}
+                        required
+                        placeholder="0"
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 font-bold text-indigo-600 placeholder:text-slate-300"
+                        value={formData.mrp === 0 ? "" : String(formData.mrp)}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          const val = raw === "" ? 0 : Number(raw) || 0;
+                          setFormData((p) => ({ ...p, mrp: val }));
+                        }}
+                      />
+                    </Field>
+                  </div>
+
+                  <Field label="Assortment (Size Range)" icon={<Layers size={12} />}>
+                    <input
+                      type="text"
+                      placeholder="e.g. 4-8"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      value={formData.sizeRange}
+                      onChange={(e) => applySizeRange(e.target.value)}
+                    />
+                  </Field>
+
+                  {/* Size-wise Pairs */}
+                  <div className="mt-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                      Size-wise Pairs (Input)
+                    </p>
+
+                    <div
+                      className={`p-3 border rounded-2xl transition ${
+                        isValidMultiple ? "bg-slate-50 border-slate-200" : "bg-rose-50 border-rose-300"
+                      }`}
+                    >
+                      <div className="flex flex-wrap gap-2">
+                        {Object.keys(formData.sizeBreakup || {}).length === 0 ? (
+                          <div className="text-xs text-slate-400 italic">
+                            Type size range to generate boxes (e.g. 4-8).
+                          </div>
+                        ) : (
+                          Object.entries(formData.sizeBreakup || {}).map(([size, qty]) => (
+                            <div
+                              key={size}
+                              className="w-[64px] bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm"
+                            >
+                              <div className="text-center text-xs font-black text-slate-600 py-2">
+                                {size}
+                              </div>
+                              <div className="border-t border-slate-100 px-1 py-1">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  placeholder="0"
+                                  className="w-full text-center text-sm font-bold text-indigo-600 bg-transparent outline-none placeholder:text-slate-300"
+                                  value={(qty ?? 0) === 0 ? "" : String(qty ?? 0)}
+                                  onChange={(e) => {
+                                    const raw = e.target.value;
+                                    const val = raw === "" ? 0 : Number(raw) || 0;
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      sizeBreakup: { ...(prev.sizeBreakup || {}), [size]: val },
+                                    }));
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      {Object.keys(formData.sizeBreakup || {}).length > 0 && (
+                        <div className="mt-3 text-xs font-bold">
+                          <span className={isValidMultiple ? "text-emerald-600" : "text-rose-600"}>
+                            Total Pairs: {totalPairs}
+                          </span>
+                          {!isValidMultiple && totalPairs > 0 && (
+                            <span className="ml-2 text-rose-600">(Must be 24, 48, 72...)</span>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div>
-                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5">Assortment</label>
-                      <select 
-                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
-                        value={formData.assortmentId}
-                        onChange={e => setFormData({...formData, assortmentId: e.target.value})}
+                  </div>
+
+                  {/* Where to add */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">
+                      Add To
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setFormData((p) => ({ ...p, catalogStatus: "AVAILABLE" }))}
+                        className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
+                          formData.catalogStatus === "AVAILABLE"
+                            ? "bg-emerald-600 text-white border-emerald-600"
+                            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                        }`}
                       >
-                        {ASSORTMENTS.map(as => (
-                          <option key={as.id} value={as.id}>{as.name}</option>
-                        ))}
-                      </select>
+                        Available
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData((p) => ({ ...p, catalogStatus: "WISH" }))}
+                        className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
+                          formData.catalogStatus === "WISH"
+                            ? "bg-rose-600 text-white border-rose-600"
+                            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        Wish
+                      </button>
                     </div>
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      ✅ PO se auto push ho to default <b>Available</b> rakho. Manual me jo chaho select karo.
+                    </p>
                   </div>
                 </div>
 
+                {/* Right */}
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-2">
-                      <ShoppingBag size={12} /> Price per Pair (INR)
+                  <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                    Images (Multiple)
+                  </p>
+
+                  <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">
+                      Choose Images
                     </label>
-                    <input 
-                      type="number" 
-                      required
-                      min="0"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-bold text-indigo-600"
-                      value={formData.pricePerPair}
-                      onChange={e => setFormData({...formData, pricePerPair: parseInt(e.target.value) || 0})}
+
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-600 hover:file:bg-indigo-100"
+                      onChange={(e) => {
+                        handleImageSelect(e.target.files);
+                        e.currentTarget.value = "";
+                      }}
                     />
-                    <p className="text-[10px] text-slate-400 mt-1 uppercase font-bold tracking-wider">Note: Cartons will be calculated at 24x this price.</p>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-2">
-                      <ImageIcon size={12} /> Product Image URL
-                    </label>
-                    <input 
-                      type="url" 
-                      placeholder="https://images.unsplash.com/..."
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
-                      value={formData.imageUrl}
-                      onChange={e => setFormData({...formData, imageUrl: e.target.value})}
-                    />
-                  </div>
-                  <div className="pt-2">
-                    <div className="aspect-square bg-slate-50 border border-dashed border-slate-200 rounded-2xl flex items-center justify-center overflow-hidden">
-                       {formData.imageUrl ? (
-                         <img src={formData.imageUrl} alt="Preview" className="w-full h-full object-cover" />
-                       ) : (
-                         <div className="text-center p-4">
-                            <ImageIcon size={32} className="text-slate-300 mx-auto mb-2" />
-                            <p className="text-[10px] text-slate-400 uppercase font-black">Image Preview</p>
-                         </div>
-                       )}
+
+                    <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {imagePreviews.length === 0 ? (
+                        <div className="col-span-2 sm:col-span-3 text-center text-slate-400 italic py-10">
+                          <ImageIcon size={32} className="mx-auto mb-2 text-slate-300" />
+                          Selected images will preview here.
+                        </div>
+                      ) : (
+                        imagePreviews.map((src, index) => (
+                          <div key={index} className="relative group">
+                            <img
+                              src={src}
+                              alt="preview"
+                              className="w-full h-24 sm:h-28 rounded-2xl object-cover border border-slate-100"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeImageByIndex(index)}
+                              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition bg-white/90 border border-slate-200 rounded-xl px-2 py-1 text-xs font-bold text-rose-600"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))
+                      )}
                     </div>
+
+                    <p className="mt-3 text-[11px] text-slate-500">
+                      You can select multiple images at once (JPG, PNG, WebP).
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                    <p className="font-bold text-slate-900 mb-1">3 Ways Catalogue Ready</p>
+                    <p className="text-slate-600 text-sm">
+                      1) PO create → auto catalogue create/update (Available) <br />
+                      2) Manual catalogue (Wish/Available) <br />
+                      3) Tabs: Available + Wish (Move anytime)
+                    </p>
                   </div>
                 </div>
               </div>
 
-              <div className="mt-10 flex gap-4">
-                <button 
+              <div className="mt-6 flex flex-col sm:flex-row gap-3">
+                <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="flex-1 px-6 py-4 border border-slate-200 rounded-2xl font-bold text-slate-600 hover:bg-slate-50 transition-all"
+                  onClick={closeModal}
+                  className="flex-1 px-6 py-3 border border-slate-200 rounded-2xl font-bold text-slate-600 hover:bg-slate-50 transition-all"
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   type="submit"
-                  className="flex-[2] bg-indigo-600 text-white py-4 rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100"
+                  className="flex-[2] bg-indigo-600 text-white py-3 rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100"
                 >
-                  {editingArticle ? 'Save Changes' : 'Create Article'}
+                  {editingArticle ? "Save Changes" : "Create Catalogue"}
                 </button>
               </div>
             </form>
@@ -331,3 +790,19 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 };
 
 export default CatalogueManager;
+
+/* ---------- Field helper ---------- */
+const Field: React.FC<{
+  label: string;
+  required?: boolean;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ label, required, icon, children }) => (
+  <div>
+    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-2">
+      {icon ? icon : null}
+      {label} {required ? <span className="text-rose-500">*</span> : null}
+    </label>
+    {children}
+  </div>
+);

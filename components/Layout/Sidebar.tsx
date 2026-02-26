@@ -161,7 +161,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
             {!isCollapsed && (
               <h1 className="font-bold text-xl tracking-tight">
-                Kore1 <span className="text-indigo-600">Kollective</span>
+                Kore <span className="text-indigo-600">Kollective</span>
               </h1>
             )}
           </div>

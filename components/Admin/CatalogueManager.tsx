@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Heart,
   ArrowRightLeft,
+  CalendarDays,
 } from "lucide-react";
 import { Article, AssortmentType } from "../../types";
 
@@ -26,8 +27,11 @@ type CatalogueForm = {
   sizeRange: string; // "4-8"
   sizeBreakup: Record<string, number>; // { "4": 0, "5": 6, ... }
 
-  images: File[]; // ✅ files
+  images: File[]; // files
   catalogStatus: CatalogStatus; // AVAILABLE / WISH
+
+  // ✅ only required when catalogStatus === "WISH"
+  expectedAvailableDate: string; // "YYYY-MM-DD"
 };
 
 interface CatalogueManagerProps {
@@ -48,7 +52,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingArticle, setEditingArticle] = useState<Article | null>(null);
 
-  // ✅ preview urls for selected files
+  // preview urls for selected files / saved urls
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
 
   const [formData, setFormData] = useState<CatalogueForm>({
@@ -59,6 +63,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     sizeBreakup: {},
     images: [],
     catalogStatus: "WISH",
+    expectedAvailableDate: "",
   });
 
   // ---------- Helpers ----------
@@ -68,7 +73,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     return s.charAt(0).toUpperCase() + s.slice(1);
   };
 
-  // ✅ parse range like "4-8" -> ["4","5","6","7","8"]
   const parseSizeRange = (range: string) => {
     const cleaned = range.trim().replace(/\s/g, "");
     const m = cleaned.match(/^(\d+)-(\d+)$/);
@@ -82,7 +86,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     return out;
   };
 
-  // ✅ when user types size range, auto-generate boxes
   const applySizeRange = (value: string) => {
     const sizes = parseSizeRange(value);
     setFormData((prev) => {
@@ -97,13 +100,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const totalPairs = useMemo(() => {
     return Object.values(formData.sizeBreakup || {}).reduce(
       (sum, v) => sum + (Number(v) || 0),
-      0
+      0,
     );
   }, [formData.sizeBreakup]);
 
   const isValidMultiple = totalPairs === 0 || totalPairs % 24 === 0;
 
-  // ✅ file choose handler
+  // ---------- Image ----------
   const handleImageSelect = (files: FileList | null) => {
     if (!files) return;
 
@@ -130,16 +133,22 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     setImagePreviews((prev) => {
       const updated = [...prev];
       const removed = updated.splice(index, 1)[0];
-      if (removed) URL.revokeObjectURL(removed);
+      if (removed && removed.startsWith("blob:")) URL.revokeObjectURL(removed);
       return updated;
     });
   };
 
-  const moveArticle = (article: Article, to: CatalogStatus) => {
+  // ✅ Only allow move: WISH -> AVAILABLE
+  const moveWishToAvailable = (article: Article) => {
+    const status = (((article as any).catalogStatus as CatalogStatus) || "AVAILABLE") as CatalogStatus;
+    if (status !== "WISH") return;
+
     const updated: Article = {
       ...article,
       // @ts-ignore
-      catalogStatus: to,
+      catalogStatus: "AVAILABLE",
+      // @ts-ignore (once in catalog, date not needed)
+      expectedAvailableDate: "",
     };
     updateArticle(updated);
   };
@@ -150,7 +159,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
     return articles
       .filter((a) => {
-        const status = ((a as any).catalogStatus as CatalogStatus) || "AVAILABLE";
+        const status = (((a as any).catalogStatus as CatalogStatus) || "AVAILABLE") as CatalogStatus;
         return status === activeTab;
       })
       .filter((a) => {
@@ -163,10 +172,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
   // ---------- Modal ----------
   const openModal = (article?: Article) => {
-    // cleanup old previews
+    // cleanup old blob previews
     setImagePreviews((prev) => {
       prev.forEach((u) => {
-        // revoke only blob urls
         if (u.startsWith("blob:")) URL.revokeObjectURL(u);
       });
       return [];
@@ -175,21 +183,20 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     if (article) {
       setEditingArticle(article);
 
+      const status: CatalogStatus =
+        ((article as any).catalogStatus as CatalogStatus) || "AVAILABLE";
+
       setFormData({
         name: article.name || "",
         category: article.category,
-        // @ts-ignore
         mrp: Number((article as any).mrp || 0),
-        // @ts-ignore
         sizeRange: String((article as any).sizeRange || ""),
-        // @ts-ignore
         sizeBreakup: (article as any).sizeBreakup || {},
-        images: [], // ✅ cannot restore File[] from saved record (unless you store files)
-        // @ts-ignore
-        catalogStatus: ((article as any).catalogStatus as CatalogStatus) || "AVAILABLE",
+        images: [],
+        catalogStatus: status,
+        expectedAvailableDate: String((article as any).expectedAvailableDate || ""),
       });
 
-      // ✅ if you saved image URLs in article.images, show them as preview
       const savedUrls: string[] = (article as any).images || [];
       if (savedUrls.length) setImagePreviews(savedUrls);
     } else {
@@ -201,16 +208,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         sizeRange: "",
         sizeBreakup: {},
         images: [],
+        // ✅ default WISH, and user will select before submit
         catalogStatus: "WISH",
+        expectedAvailableDate: "",
       });
     }
 
     setIsModalOpen(true);
   };
 
-  const closeModal = () => {
-    setIsModalOpen(false);
-  };
+  const closeModal = () => setIsModalOpen(false);
 
   // ✅ Manual catalogue submit
   const handleSubmit = (e: React.FormEvent) => {
@@ -223,8 +230,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       return alert("Total pairs must be 24, 48, 72... (multiple of 24)");
     }
 
-    // ✅ Here we store preview URLs (or your uploaded URLs later from backend)
-    // If you're uploading files to backend, replace this with returned URLs.
+    // ✅ if WISH → expected date required
+    if (formData.catalogStatus === "WISH" && !formData.expectedAvailableDate) {
+      return alert("Expected available date is required for Wish List items.");
+    }
+
+    // ✅ store preview urls for now (later replace by backend URLs)
     const storedImages: string[] = imagePreviews;
 
     const payload: Article = {
@@ -244,6 +255,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       images: storedImages,
       // @ts-ignore
       catalogStatus: formData.catalogStatus,
+      // @ts-ignore
+      expectedAvailableDate:
+        formData.catalogStatus === "WISH" ? formData.expectedAvailableDate : "",
     };
 
     if (editingArticle) updateArticle(payload);
@@ -270,7 +284,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
         <div className="flex flex-wrap gap-2 w-full lg:w-auto">
           <div className="relative flex-1 lg:w-72">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              size={18}
+            />
             <input
               type="text"
               placeholder="Search SKU or Name..."
@@ -312,22 +329,37 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           }`}
         >
           <Heart size={16} />
-          Wish Catalogue
+          Wish List
         </button>
       </div>
 
       {/* Table (desktop) */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden hidden md:block">
         <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[900px]">
+          <table className="w-full text-left min-w-[950px]">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Article</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Gender</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">MRP</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Assortment</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Pairs</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Actions</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  Article
+                </th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  Gender
+                </th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  MRP
+                </th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  Assortment
+                </th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  Pairs
+                </th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  Expected Date
+                </th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">
+                  Actions
+                </th>
               </tr>
             </thead>
 
@@ -335,16 +367,27 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
               {filtered.map((a) => {
                 const status: CatalogStatus =
                   ((a as any).catalogStatus as CatalogStatus) || "AVAILABLE";
+
                 const mrp = Number((a as any).mrp || 0);
                 const sizeRange = String((a as any).sizeRange || "");
-                const sizeBreakup: Record<string, number> = (a as any).sizeBreakup || {};
-                const pairs = Object.values(sizeBreakup).reduce((s, v) => s + (Number(v) || 0), 0);
+                const sizeBreakup: Record<string, number> =
+                  (a as any).sizeBreakup || {};
+                const pairs = Object.values(sizeBreakup).reduce(
+                  (s, v) => s + (Number(v) || 0),
+                  0,
+                );
 
-                const imgs: string[] = (a as any).images || (a.imageUrl ? [a.imageUrl] : []);
+                const expectedDate = String((a as any).expectedAvailableDate || "");
+
+                const imgs: string[] =
+                  (a as any).images || (a.imageUrl ? [a.imageUrl] : []);
                 const cover = imgs[0] || "https://picsum.photos/seed/kore/200/200";
 
                 return (
-                  <tr key={a.id} className="hover:bg-slate-50/50 transition-colors">
+                  <tr
+                    key={a.id}
+                    className="hover:bg-slate-50/50 transition-colors"
+                  >
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-4">
                         <img
@@ -354,7 +397,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         />
                         <div>
                           <p className="font-bold text-slate-900">{a.name}</p>
-                          <p className="text-[10px] text-slate-400 font-mono tracking-widest">{a.sku}</p>
+                          <p className="text-[10px] text-slate-400 font-mono tracking-widest">
+                            {a.sku}
+                          </p>
                           <p className="text-[10px] text-slate-400">
                             {imgs.length} image{imgs.length === 1 ? "" : "s"}
                           </p>
@@ -377,7 +422,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     </td>
 
                     <td className="px-6 py-4">
-                      <span className="font-bold text-slate-800">₹{mrp.toLocaleString()}</span>
+                      <span className="font-bold text-slate-800">
+                        ₹{mrp.toLocaleString()}
+                      </span>
                     </td>
 
                     <td className="px-6 py-4 text-sm text-slate-700">
@@ -385,7 +432,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         {sizeRange || <span className="text-slate-400 italic">—</span>}
                       </div>
                       <div className="text-xs text-slate-400">
-                        {Object.keys(sizeBreakup || {}).length ? `${Object.keys(sizeBreakup).length} sizes` : "No breakup"}
+                        {Object.keys(sizeBreakup || {}).length
+                          ? `${Object.keys(sizeBreakup).length} sizes`
+                          : "No breakup"}
                       </div>
                     </td>
 
@@ -403,6 +452,22 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       </span>
                     </td>
 
+                    <td className="px-6 py-4 text-sm">
+                      {status === "WISH" ? (
+                        expectedDate ? (
+                          <span className="font-semibold text-slate-700">
+                            {expectedDate}
+                          </span>
+                        ) : (
+                          <span className="text-rose-600 font-bold text-xs">
+                            Required
+                          </span>
+                        )
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+
                     <td className="px-6 py-4 text-right">
                       <div className="inline-flex items-center gap-2">
                         <button
@@ -413,13 +478,20 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                           <Edit2 size={16} />
                         </button>
 
+                        {/* ✅ Only WISH -> AVAILABLE */}
                         <button
-                          onClick={() => {
-                            const to: CatalogStatus = status === "AVAILABLE" ? "WISH" : "AVAILABLE";
-                            moveArticle(a, to);
-                          }}
-                          className="p-2 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-all"
-                          title="Move"
+                          onClick={() => moveWishToAvailable(a)}
+                          disabled={status !== "WISH"}
+                          className={`p-2 rounded-xl transition-all ${
+                            status === "WISH"
+                              ? "text-slate-400 hover:text-slate-900 hover:bg-slate-100"
+                              : "text-slate-300 cursor-not-allowed"
+                          }`}
+                          title={
+                            status === "WISH"
+                              ? "Move Wish → Catalogue"
+                              : "Catalogue → Wish not allowed"
+                          }
                         >
                           <ArrowRightLeft size={16} />
                         </button>
@@ -441,7 +513,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-slate-400 italic">
+                  <td
+                    colSpan={7}
+                    className="px-6 py-12 text-center text-slate-400 italic"
+                  >
                     No items in this tab.
                   </td>
                 </tr>
@@ -454,22 +529,40 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       {/* Cards (mobile) */}
       <div className="md:hidden space-y-3">
         {filtered.map((a) => {
-          const status: CatalogStatus = ((a as any).catalogStatus as CatalogStatus) || "AVAILABLE";
+          const status: CatalogStatus =
+            ((a as any).catalogStatus as CatalogStatus) || "AVAILABLE";
           const mrp = Number((a as any).mrp || 0);
           const sizeRange = String((a as any).sizeRange || "");
-          const sizeBreakup: Record<string, number> = (a as any).sizeBreakup || {};
-          const pairs = Object.values(sizeBreakup).reduce((s, v) => s + (Number(v) || 0), 0);
+          const sizeBreakup: Record<string, number> =
+            (a as any).sizeBreakup || {};
+          const pairs = Object.values(sizeBreakup).reduce(
+            (s, v) => s + (Number(v) || 0),
+            0,
+          );
 
-          const imgs: string[] = (a as any).images || (a.imageUrl ? [a.imageUrl] : []);
+          const expectedDate = String((a as any).expectedAvailableDate || "");
+
+          const imgs: string[] =
+            (a as any).images || (a.imageUrl ? [a.imageUrl] : []);
           const cover = imgs[0] || "https://picsum.photos/seed/kore/200/200";
 
           return (
-            <div key={a.id} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+            <div
+              key={a.id}
+              className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm"
+            >
               <div className="flex gap-3">
-                <img src={cover} alt="" className="w-14 h-14 rounded-2xl object-cover border border-slate-100" />
+                <img
+                  src={cover}
+                  alt=""
+                  className="w-14 h-14 rounded-2xl object-cover border border-slate-100"
+                />
                 <div className="flex-1">
                   <p className="font-bold text-slate-900">{a.name}</p>
-                  <p className="text-[10px] text-slate-400 font-mono tracking-widest">{a.sku}</p>
+                  <p className="text-[10px] text-slate-400 font-mono tracking-widest">
+                    {a.sku}
+                  </p>
+
                   <div className="mt-2 flex flex-wrap gap-2">
                     <span className="text-xs font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded-full">
                       ₹{mrp.toLocaleString()}
@@ -491,8 +584,18 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   </div>
 
                   <p className="mt-2 text-sm text-slate-600">
-                    Assortment: <span className="font-semibold">{sizeRange || "—"}</span>
+                    Assortment:{" "}
+                    <span className="font-semibold">{sizeRange || "—"}</span>
                   </p>
+
+                  {status === "WISH" && (
+                    <p className="mt-1 text-sm text-slate-600">
+                      Expected:{" "}
+                      <span className="font-semibold">
+                        {expectedDate || "Required"}
+                      </span>
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -505,13 +608,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                 </button>
 
                 <button
-                  onClick={() => {
-                    const to: CatalogStatus = status === "AVAILABLE" ? "WISH" : "AVAILABLE";
-                    moveArticle(a, to);
-                  }}
-                  className="flex-1 px-3 py-2 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800"
+                  onClick={() => moveWishToAvailable(a)}
+                  disabled={status !== "WISH"}
+                  className={`flex-1 px-3 py-2 rounded-xl font-bold ${
+                    status === "WISH"
+                      ? "bg-slate-900 text-white hover:bg-slate-800"
+                      : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                  }`}
                 >
-                  Move
+                  Move to Catalogue
                 </button>
 
                 <button
@@ -541,14 +646,20 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             <div className="bg-indigo-600 p-5 flex justify-between items-center text-white">
               <h3 className="text-lg sm:text-xl font-bold flex items-center gap-2">
                 {editingArticle ? <Edit2 size={20} /> : <Plus size={20} />}
-                {editingArticle ? "Edit Catalogue" : "Create Catalogue"}
+                {editingArticle ? "Edit Catalogue" : "Create Master"}
               </h3>
-              <button onClick={closeModal} className="text-white/70 hover:text-white transition-colors">
+              <button
+                onClick={closeModal}
+                className="text-white/70 hover:text-white transition-colors"
+              >
                 <X size={24} />
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-5 sm:p-8 max-h-[78vh] overflow-y-auto">
+            <form
+              onSubmit={handleSubmit}
+              className="p-5 sm:p-8 max-h-[78vh] overflow-y-auto"
+            >
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Left */}
                 <div className="space-y-4">
@@ -559,7 +670,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       placeholder="e.g. Urban Runner"
                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
                       value={formData.name}
-                      onChange={(e) => setFormData((p) => ({ ...p, name: capFirst(e.target.value) }))}
+                      onChange={(e) =>
+                        setFormData((p) => ({ ...p, name: capFirst(e.target.value) }))
+                      }
                     />
                   </Field>
 
@@ -569,7 +682,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
                         value={formData.category}
                         onChange={(e) =>
-                          setFormData((p) => ({ ...p, category: e.target.value as AssortmentType }))
+                          setFormData((p) => ({
+                            ...p,
+                            category: e.target.value as AssortmentType,
+                          }))
                         }
                       >
                         {Object.values(AssortmentType).map((g) => (
@@ -580,7 +696,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       </select>
                     </Field>
 
-                    <Field label="MRP (per pair)" required icon={<ShoppingBag size={12} />}>
+                    <Field
+                      label="MRP (per pair)"
+                      required
+                      icon={<ShoppingBag size={12} />}
+                    >
                       <input
                         type="number"
                         min={0}
@@ -615,7 +735,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
                     <div
                       className={`p-3 border rounded-2xl transition ${
-                        isValidMultiple ? "bg-slate-50 border-slate-200" : "bg-rose-50 border-rose-300"
+                        isValidMultiple
+                          ? "bg-slate-50 border-slate-200"
+                          : "bg-rose-50 border-rose-300"
                       }`}
                     >
                       <div className="flex flex-wrap gap-2">
@@ -644,7 +766,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     const val = raw === "" ? 0 : Number(raw) || 0;
                                     setFormData((prev) => ({
                                       ...prev,
-                                      sizeBreakup: { ...(prev.sizeBreakup || {}), [size]: val },
+                                      sizeBreakup: {
+                                        ...(prev.sizeBreakup || {}),
+                                        [size]: val,
+                                      },
                                     }));
                                   }}
                                 />
@@ -667,38 +792,79 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     </div>
                   </div>
 
-                  {/* Where to add */}
+                  {/* ✅ Add To: Catalogue or Wish List */}
                   <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
                     <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">
-                      Add To
+                      Add To (Before Submit)
                     </p>
+
                     <div className="flex gap-2">
                       <button
                         type="button"
-                        onClick={() => setFormData((p) => ({ ...p, catalogStatus: "AVAILABLE" }))}
+                        onClick={() =>
+                          setFormData((p) => ({
+                            ...p,
+                            catalogStatus: "AVAILABLE",
+                            expectedAvailableDate: "",
+                          }))
+                        }
                         className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
                           formData.catalogStatus === "AVAILABLE"
                             ? "bg-emerald-600 text-white border-emerald-600"
                             : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
                         }`}
                       >
-                        Available
+                        Catalogue
                       </button>
+
                       <button
                         type="button"
-                        onClick={() => setFormData((p) => ({ ...p, catalogStatus: "WISH" }))}
+                        onClick={() =>
+                          setFormData((p) => ({
+                            ...p,
+                            catalogStatus: "WISH",
+                          }))
+                        }
                         className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
                           formData.catalogStatus === "WISH"
                             ? "bg-rose-600 text-white border-rose-600"
                             : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
                         }`}
                       >
-                        Wish
+                        Wish List
                       </button>
                     </div>
+
                     <p className="mt-2 text-[11px] text-slate-500">
-                      ✅ PO se auto push ho to default <b>Available</b> rakho. Manual me jo chaho select karo.
+                      ✅ Rule: <b>Catalogue → Wish</b> not allowed. Only <b>Wish → Catalogue</b>.
                     </p>
+
+                    {/* ✅ Expected date only for WISH */}
+                    {formData.catalogStatus === "WISH" && (
+                      <div className="mt-4">
+                        <Field
+                          label="Expected Available Date"
+                          required
+                          icon={<CalendarDays size={12} />}
+                        >
+                          <input
+                            type="date"
+                            className="w-full p-3 bg-white border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            value={formData.expectedAvailableDate}
+                            onChange={(e) =>
+                              setFormData((p) => ({
+                                ...p,
+                                expectedAvailableDate: e.target.value,
+                              }))
+                            }
+                            required
+                          />
+                        </Field>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          Wish list item me expected date mandatory hai.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -751,16 +917,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     </div>
 
                     <p className="mt-3 text-[11px] text-slate-500">
-                      You can select multiple images at once (JPG, PNG, WebP).
+                      You can select multiple images (JPG, PNG, WebP).
                     </p>
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                    <p className="font-bold text-slate-900 mb-1">3 Ways Catalogue Ready</p>
+                    <p className="font-bold text-slate-900 mb-1">Rules</p>
                     <p className="text-slate-600 text-sm">
-                      1) PO create → auto catalogue create/update (Available) <br />
-                      2) Manual catalogue (Wish/Available) <br />
-                      3) Tabs: Available + Wish (Move anytime)
+                      1) Create master → choose <b>Catalogue</b> or <b>Wish List</b> before submit <br />
+                      2) <b>Catalogue → Wish</b> not allowed <br />
+                      3) Only <b>Wish → Catalogue</b> allowed (Move button)
                     </p>
                   </div>
                 </div>
@@ -778,7 +944,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   type="submit"
                   className="flex-[2] bg-indigo-600 text-white py-3 rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100"
                 >
-                  {editingArticle ? "Save Changes" : "Create Catalogue"}
+                  {editingArticle ? "Save Changes" : "Create Master"}
                 </button>
               </div>
             </form>

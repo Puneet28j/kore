@@ -32,6 +32,7 @@ export interface Variant {
   costPrice: number;
   sellingPrice: number;
   mrp: number;
+  hsnCode?: string;
   sizeQuantities: Record<string, number>;
 }
 

@@ -33,6 +33,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
     artname: "",
     soleColor: "",
     mrp: 0,
+    hsnCode: "",
     gender: AssortmentType.MEN,
     // keep assortmentId internally but not shown in UI
     assortmentId: ASSORTMENTS[0].id,
@@ -145,6 +146,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
               costPrice: 0,
               sellingPrice: 0,
               mrp: formData.mrp || 0,
+              hsnCode: formData.hsnCode || "",
               sizeQuantities,
             });
           }
@@ -319,6 +321,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
     setFormData({
       artname: "",
       soleColor: "",
+      hsnCode: "",
       mrp: 0,
       gender: AssortmentType.MEN,
       assortmentId: ASSORTMENTS[0].id,
@@ -883,6 +886,11 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
                                     </button>
                                   </div>
                                 </th>
+                                <th className="px-3 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap">
+                                  <div className="flex flex-col gap-0.5">
+                                    HSN Code
+                                  </div>
+                                </th>
                                 <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-center">
                                   {/* Actions */}
                                 </th>
@@ -997,6 +1005,21 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
                                           variant.id,
                                           "mrp",
                                           Number(e.target.value)
+                                        )
+                                      }
+                                    />
+                                  </td>
+                                  <td className="px-3 py-2.5">
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. 6402"
+                                      className="w-full min-w-22.5 p-2 bg-transparent border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all"
+                                      value={variant.hsnCode || ""}
+                                      onChange={(e) =>
+                                        updateVariantField(
+                                          variant.id,
+                                          "hsnCode",
+                                          e.target.value
                                         )
                                       }
                                     />

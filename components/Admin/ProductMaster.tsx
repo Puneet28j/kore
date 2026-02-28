@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { AssortmentType, Article, Variant } from "../../types";
 import { ASSORTMENTS } from "../../constants";
-import SearchableSelect from "../UI/SearchableSelect";
+import SearchableSelect from "../../frontend/components/SearchableSelect";
 
 interface ProductMasterProps {
   addArticle: (article: Article) => void;

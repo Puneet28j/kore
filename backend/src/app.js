@@ -30,7 +30,7 @@ app.use(express.urlencoded({ extended: true })); // for form-data parsing
 
 /* ------------------ STATIC FOLDER ------------------ */
 // catalog image access
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 /* ------------------ ROUTES ------------------ */
 

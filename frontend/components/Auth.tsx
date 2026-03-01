@@ -1,11 +1,10 @@
 
 import React, { useState } from 'react';
 import { Package, Mail, Lock, Loader2, Eye, EyeOff } from 'lucide-react';
-import { MOCK_DISTRIBUTORS } from '../constants';
 import { User } from '../types';
 
 interface AuthProps {
-  onLogin: (user: User) => void;
+  onLogin: (email: string, password: string) => Promise<void>;
 }
 
 const Auth: React.FC<AuthProps> = ({ onLogin }) => {
@@ -15,20 +14,18 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    setTimeout(() => {
-      const user = MOCK_DISTRIBUTORS.find(u => u.email === email);
-      if (user && password === 'password123') {
-        onLogin(user);
-      } else {
-        setError('Invalid credentials. Try admin@kore.com / password123');
-      }
+    try {
+      await onLogin(email, password);
+    } catch (err: any) {
+      setError(err.message || 'Invalid credentials. Please try again.');
+    } finally {
       setLoading(false);
-    }, 800);
+    }
   };
 
   return (

@@ -14,10 +14,11 @@ import {
   Heart,
   ArrowRightLeft,
   CalendarDays,
+  Package,
 } from "lucide-react";
 import { Article, AssortmentType } from "../../types";
 
-type CatalogStatus = "AVAILABLE" | "WISH";
+type CatalogStatus = "AVAILABLE" | "WISHLIST";
 
 type CatalogueForm = {
   name: string;
@@ -30,7 +31,7 @@ type CatalogueForm = {
   images: File[]; // files
   catalogStatus: CatalogStatus; // AVAILABLE / WISH
 
-  // ✅ only required when catalogStatus === "WISH"
+  // ✅ only required when catalogStatus === "WISHLIST"
   expectedAvailableDate: string; // "YYYY-MM-DD"
 };
 
@@ -39,6 +40,7 @@ interface CatalogueManagerProps {
   addArticle: (article: Article) => void;
   updateArticle: (article: Article) => void;
   deleteArticle: (id: string) => void;
+  onEditArticle: (id: string) => void;
 }
 
 const CatalogueManager: React.FC<CatalogueManagerProps> = ({
@@ -46,6 +48,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   addArticle,
   updateArticle,
   deleteArticle,
+  onEditArticle,
 }) => {
   const [activeTab, setActiveTab] = useState<CatalogStatus>("AVAILABLE");
   const [searchTerm, setSearchTerm] = useState("");
@@ -65,7 +68,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     sizeRange: "",
     sizeBreakup: {},
     images: [],
-    catalogStatus: "WISH",
+    catalogStatus: "WISHLIST",
     expectedAvailableDate: "",
   });
 
@@ -144,7 +147,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   // ✅ Only allow move: WISH -> AVAILABLE
   const moveWishToAvailable = (article: Article) => {
     const status = (((article as any).catalogStatus as CatalogStatus) || "AVAILABLE") as CatalogStatus;
-    if (status !== "WISH") return;
+    if (status !== "WISHLIST") return;
 
     const updated: Article = {
       ...article,
@@ -163,7 +166,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
     articles
       .filter((a) => {
-        const status = (((a as any).catalogStatus as CatalogStatus) || "AVAILABLE") as CatalogStatus;
+        const status = (a.status || "AVAILABLE") as CatalogStatus;
         return status === activeTab;
       })
       .forEach((a) => {
@@ -227,7 +230,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             name: a.name,
             sku: a.sku,
             color: "",
-            size: (a as any).sizeRange || "—",
+            size: a.selectedSizes?.join(", ") || "—",
             mrp: Number((a as any).mrp || a.pricePerPair || 0),
             pairs: pairs,
             image: a.imageUrl || "",
@@ -276,7 +279,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         sizeBreakup: {},
         images: [],
         // ✅ default WISH, and user will select before submit
-        catalogStatus: "WISH",
+        catalogStatus: "WISHLIST",
         expectedAvailableDate: "",
       });
     }
@@ -300,7 +303,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     }
 
     // ✅ if WISH → expected date required
-    if (formData.catalogStatus === "WISH" && !formData.expectedAvailableDate) {
+    if (formData.catalogStatus === "WISHLIST" && !formData.expectedAvailableDate) {
       return alert("Expected available date is required for Wish List items.");
     }
 
@@ -326,7 +329,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       catalogStatus: formData.catalogStatus,
       // @ts-ignore
       expectedAvailableDate:
-        formData.catalogStatus === "WISH" ? formData.expectedAvailableDate : "",
+        formData.catalogStatus === "WISHLIST" ? formData.expectedAvailableDate : "",
     };
 
     if (editingArticle) updateArticle(payload);
@@ -390,9 +393,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           Available Catalogue
         </button>
         <button
-          onClick={() => setActiveTab("WISH")}
+          onClick={() => setActiveTab("WISHLIST")}
           className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "WISH"
+            activeTab === "WISHLIST"
               ? "bg-rose-600 text-white shadow"
               : "text-slate-600 hover:bg-slate-50"
           }`}
@@ -452,7 +455,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-4">
                         <img
-                          src={cover}
+                          src={cover ? (cover.startsWith('http') ? cover : `http://localhost:5005${cover}`) : "https://picsum.photos/seed/kore/200/200"}
                           alt=""
                           className="w-12 h-12 rounded-xl object-cover border border-slate-100"
                         />
@@ -507,7 +510,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
 
                     <td className="px-6 py-4 text-sm">
-                      {status === "WISH" ? (
+                      {status === "WISHLIST" ? (
                         expectedDate ? (
                           <span className="font-semibold text-slate-700">
                             {expectedDate}
@@ -525,9 +528,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <td className="px-6 py-4 text-right">
                       <div className="inline-flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <button
-                          onClick={() => openModal(a)}
+                          onClick={() => onEditArticle(a.id)}
                           className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
-                          title="Edit"
+                          title="Edit Product"
                         >
                           <Edit2 size={16} />
                         </button>
@@ -535,14 +538,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         {/* ✅ Only WISH -> AVAILABLE */}
                         <button
                           onClick={() => moveWishToAvailable(a)}
-                          disabled={status !== "WISH"}
+                          disabled={status !== "WISHLIST"}
                           className={`p-2 rounded-xl transition-all ${
-                            status === "WISH"
+                            status === "WISHLIST"
                               ? "text-slate-400 hover:text-slate-900 hover:bg-slate-100"
                               : "text-slate-300 cursor-not-allowed"
                           }`}
                           title={
-                            status === "WISH"
+                            status === "WISHLIST"
                               ? "Move Wish → Catalogue"
                               : "Catalogue → Wish not allowed"
                           }
@@ -634,7 +637,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <span className="font-semibold">{item.size || "—"}</span>
                   </p>
 
-                  {status === "WISH" && (
+                  {status === "WISHLIST" && (
                     <p className="mt-1 text-sm text-slate-600">
                       Expected:{" "}
                       <span className="font-semibold">
@@ -648,17 +651,17 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
               <div className="mt-3 flex gap-2" onClick={(e) => e.stopPropagation()}>
                 <button
-                  onClick={() => openModal(a)}
+                  onClick={() => onEditArticle(a.id)}
                   className="flex-1 px-3 py-2 rounded-xl border border-slate-200 font-bold text-slate-700 hover:bg-slate-50"
                 >
-                  Edit
+                  Edit Product
                 </button>
 
                 <button
                   onClick={() => moveWishToAvailable(a)}
-                  disabled={status !== "WISH"}
+                  disabled={status !== "WISHLIST"}
                   className={`flex-1 px-3 py-2 rounded-xl font-bold ${
-                    status === "WISH"
+                    status === "WISHLIST"
                       ? "bg-slate-900 text-white hover:bg-slate-800"
                       : "bg-slate-200 text-slate-500 cursor-not-allowed"
                   }`}
@@ -697,10 +700,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
               </h3>
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => openModal(selectedDetailsItem.article)}
+                  onClick={() => onEditArticle(selectedDetailsItem.article.id)}
                   className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-bold rounded-xl transition-colors text-sm"
                 >
-                  <Edit2 size={16} /> Edit Article
+                  <Edit2 size={16} /> Edit Product
                 </button>
                 <button
                   onClick={() => setSelectedDetailsItem(null)}
@@ -715,17 +718,41 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
               <div className="flex flex-col sm:flex-row gap-8 items-start">
                 
                 {/* Image Section */}
-                <div className="w-full sm:w-1/3 shrink-0">
+                <div className="w-full sm:w-1/3 shrink-0 space-y-4">
                   <div className="aspect-square rounded-2xl border border-slate-200 overflow-hidden bg-slate-50 relative">
                     <img 
-                      src={selectedDetailsItem.image || "https://picsum.photos/seed/kore/400/400"} 
+                      src={selectedDetailsItem.image ? (selectedDetailsItem.image.startsWith('http') ? selectedDetailsItem.image : `http://localhost:5005${selectedDetailsItem.image}`) : "https://picsum.photos/seed/kore/400/400"} 
                       alt={selectedDetailsItem.name}
                       className="w-full h-full object-cover"
                     />
                     <div className="absolute top-2 right-2 bg-white/90 backdrop-blur-sm px-2 py-1 rounded-lg text-xs font-bold text-slate-700 border border-slate-200/50 shadow-sm">
-                      {selectedDetailsItem.article.images?.length || 1} Photo{(selectedDetailsItem.article.images?.length || 1) !== 1 ? 's' : ''}
+                      Primary
                     </div>
                   </div>
+
+                  {/* Secondary Images Gallery */}
+                  {selectedDetailsItem.article.secondaryImages?.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">
+                        Gallery ({selectedDetailsItem.article.secondaryImages.length})
+                      </p>
+                      <div className="grid grid-cols-3 gap-2">
+                        {selectedDetailsItem.article.secondaryImages.map((img: any, idx: number) => (
+                          <div key={idx} className="aspect-square rounded-xl border border-slate-100 overflow-hidden bg-slate-50 cursor-zoom-in hover:border-indigo-300 transition-colors">
+                            <img 
+                              src={img.url ? (img.url.startsWith('http') ? img.url : `http://localhost:5005${img.url}`) : ""} 
+                              alt={`Gallery ${idx + 1}`}
+                              className="w-full h-full object-cover"
+                              onClick={() => {
+                                // Simple swap or lightbox logic could go here
+                                // For now just showing them
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Details Section */}
@@ -760,50 +787,72 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   </div>
 
                   {/* Core Classification */}
-                  <div className="grid grid-cols-3 gap-4">
-                     <div>
-                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Category / Gender</p>
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded-full text-xs font-black uppercase tracking-wider ${
-                            selectedDetailsItem.article.category === AssortmentType.MEN
-                              ? "bg-indigo-100 text-indigo-700"
-                              : selectedDetailsItem.article.category === AssortmentType.WOMEN
-                              ? "bg-pink-100 text-pink-700"
-                              : "bg-amber-100 text-amber-700"
-                          }`}
-                        >
-                          {selectedDetailsItem.article.category}
-                        </span>
-                     </div>
-                     <div>
-                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Product Category</p>
-                        <p className="font-semibold text-slate-700 px-2 py-0.5 bg-slate-100 rounded-md inline-block text-xs">{selectedDetailsItem.article.productCategory || "—"}</p>
-                     </div>
-                     <div>
-                         <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Brand</p>
-                        <p className="font-semibold text-slate-700 px-2 py-0.5 bg-slate-100 rounded-md inline-block text-xs">{selectedDetailsItem.article.brand || "—"}</p>
-                     </div>
-                  </div>
+                   <div className="flex flex-wrap items-center gap-3 mb-4">
+                      <div className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-[10px] font-black uppercase tracking-widest border border-indigo-100 flex items-center gap-1.5">
+                        <Tag size={10} /> {selectedDetailsItem.article.category}
+                      </div>
+                      <div className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-black uppercase tracking-widest border border-emerald-100 flex items-center gap-1.5">
+                        <Package size={10} /> {selectedDetailsItem.article.productCategory || "Product"}
+                      </div>
+                      <div className="px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-[10px] font-black uppercase tracking-widest border border-amber-100 flex items-center gap-1.5">
+                        <Layers size={10} /> {selectedDetailsItem.article.brand || "Unbranded"}
+                      </div>
+                      <div className="px-3 py-1 bg-slate-50 text-slate-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-slate-200 flex items-center gap-1.5">
+                        <ArrowRightLeft size={10} /> Range: {selectedDetailsItem.article.selectedSizes?.join(", ") || "—"}
+                      </div>
+                   </div>
 
                   {/* Variant specifics */}
-                  <div className="grid grid-cols-4 gap-4">
-                     <div>
-                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Color</p>
-                        <p className="font-semibold text-slate-700">{selectedDetailsItem.color || "—"}</p>
-                     </div>
-                     <div>
-                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Sole Color</p>
-                        <p className="font-semibold text-slate-700">{selectedDetailsItem.article.soleColor || "—"}</p>
-                     </div>
-                     <div>
-                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Size</p>
-                        <p className="font-semibold text-slate-700">{selectedDetailsItem.size || "—"}</p>
-                     </div>
-                     <div>
-                         <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">HSN Code</p>
-                        <p className="font-semibold text-slate-700">{selectedDetailsItem.variant?.hsnCode || "—"}</p>
-                     </div>
-                  </div>
+                   <div className="grid grid-cols-3 gap-4 pb-4 border-b border-slate-100 text-xs">
+                      <div>
+                        <p className="font-bold text-slate-400 uppercase tracking-wider mb-1">SKU</p>
+                        <p className="font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md inline-block">
+                          {selectedDetailsItem.sku}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-bold text-slate-400 uppercase tracking-wider mb-1">Category</p>
+                        <p className="font-semibold text-slate-700">{selectedDetailsItem.article.productCategory || "—"}</p>
+                      </div>
+                      <div>
+                        <p className="font-bold text-slate-400 uppercase tracking-wider mb-1">Brand</p>
+                        <p className="font-semibold text-slate-700">{selectedDetailsItem.article.brand || "—"}</p>
+                      </div>
+                   </div>
+
+                   {/* Pricing Section */}
+                   <div className="grid grid-cols-3 gap-2 pb-4 border-b border-slate-100">
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">MRP</p>
+                        <p className="text-sm font-bold text-slate-700">₹{selectedDetailsItem.mrp.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Selling</p>
+                        <p className="text-sm font-bold text-indigo-600">₹{(selectedDetailsItem.variant?.sellingPrice || 0).toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Cost</p>
+                        <p className="text-sm font-bold text-slate-500">₹{(selectedDetailsItem.variant?.costPrice || 0).toLocaleString()}</p>
+                      </div>
+                   </div>
+                   <div className="grid grid-cols-4 gap-4">
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Color</p>
+                         <p className="text-xs font-bold text-slate-700">{selectedDetailsItem.color || "—"}</p>
+                      </div>
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Sole Color</p>
+                         <p className="text-xs font-bold text-slate-700">{selectedDetailsItem.article.soleColor || "—"}</p>
+                      </div>
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Item Size</p>
+                         <p className="text-xs font-bold text-slate-700">{selectedDetailsItem.size || "—"}</p>
+                      </div>
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">HSN Code</p>
+                         <p className="text-xs font-bold text-slate-700">{selectedDetailsItem.variant?.hsnCode || "—"}</p>
+                      </div>
+                   </div>
                   
                   {/* Stock & Origin */}
                   <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-100">
@@ -831,15 +880,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                      </div>
                      <div>
                         <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Catalogue Status</p>
-                        {(((selectedDetailsItem.article as any).catalogStatus as CatalogStatus) || "AVAILABLE") === "WISH" ? (
-                          <div>
-                            <span className="inline-block text-xs font-bold px-2 py-1 rounded-full bg-rose-50 text-rose-700 mb-1">
-                               Wish List
-                            </span>
-                            {(selectedDetailsItem.article as any).expectedAvailableDate ? (
-                              <p className="text-xs text-slate-500 font-medium">Expected: {(selectedDetailsItem.article as any).expectedAvailableDate}</p>
-                            ) : (
-                               <p className="text-xs text-rose-600 font-bold">Date Required</p>
+                        {selectedDetailsItem.article.status === "WISHLIST" ? (
+                           <div>
+                             <span className="inline-block text-xs font-bold px-2 py-1 rounded-full bg-rose-50 text-rose-700 mb-1">
+                                Wish List
+                             </span>
+                             {selectedDetailsItem.article.expectedDate ? (
+                               <p className="text-xs text-slate-500 font-medium">Expected: {selectedDetailsItem.article.expectedDate}</p>
+                             ) : (
+                                <p className="text-xs text-rose-600 font-bold">Date Required</p>
                             )}
                           </div>
                         ) : (
@@ -1041,11 +1090,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         onClick={() =>
                           setFormData((p) => ({
                             ...p,
-                            catalogStatus: "WISH",
+                            catalogStatus: "WISHLIST",
                           }))
                         }
                         className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
-                          formData.catalogStatus === "WISH"
+                          formData.catalogStatus === "WISHLIST"
                             ? "bg-rose-600 text-white border-rose-600"
                             : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
                         }`}
@@ -1059,7 +1108,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     </p>
 
                     {/* ✅ Expected date only for WISH */}
-                    {formData.catalogStatus === "WISH" && (
+                    {formData.catalogStatus === "WISHLIST" && (
                       <div className="mt-4">
                         <Field
                           label="Expected Available Date"

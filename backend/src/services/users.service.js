@@ -123,24 +123,43 @@ exports.getUserById = async (id) => {
   return user;
 };
 
-exports.updateUserRole = async (actorUserId, targetUserId, role) => {
+exports.updateUser = async (actorUserId, targetUserId, { name, email, role }) => {
   if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
     const err = new Error("Invalid user ID");
     err.status = 400;
     throw err;
   }
 
-  const cleanRole = String(role || "")
-    .trim()
-    .toLowerCase();
-
-  if (!ALLOWED_ROLES.includes(cleanRole)) {
-    const err = new Error(`Invalid role. Allowed: ${ALLOWED_ROLES.join(", ")}`);
-    err.status = 400;
-    throw err;
+  const update = {};
+  if (name) update.name = String(name).trim();
+  if (email) {
+    const cleanEmail = normalizeEmail(email);
+    if (!cleanEmail.includes("@")) {
+      const err = new Error("Valid email is required");
+      err.status = 400;
+      throw err;
+    }
+    // Check if email taken by someone else
+    const exists = await User.findOne({ email: cleanEmail, _id: { $ne: targetUserId } }).lean();
+    if (exists) {
+      const err = new Error("Email already in use");
+      err.status = 400;
+      throw err;
+    }
+    update.email = cleanEmail;
   }
 
-  // ✅ Fetch target user first for protection checks
+  if (role) {
+    const cleanRole = String(role).toLowerCase().trim();
+    if (!ALLOWED_ROLES.includes(cleanRole) && cleanRole !== "superadmin") {
+      const err = new Error("Invalid role");
+      err.status = 400;
+      throw err;
+    }
+    update.role = cleanRole;
+  }
+
+  // Protection checks
   const target = await User.findById(targetUserId).lean();
   if (!target) {
     const err = new Error("User not found");
@@ -148,25 +167,17 @@ exports.updateUserRole = async (actorUserId, targetUserId, role) => {
     throw err;
   }
 
-  // ✅ Block changes on superadmin
-  if (target.role === "superadmin") {
-    const err = new Error("Cannot change superadmin role");
+  // Block changing superadmin role via this endpoint (too risky)
+  if (target.role === "superadmin" && update.role && update.role !== "superadmin") {
+    const err = new Error("Cannot demote superadmin via general update");
     err.status = 403;
     throw err;
   }
 
-  // ✅ Block self role change (safety)
-  if (String(actorUserId) === String(targetUserId)) {
-    const err = new Error("You cannot change your own role");
-    err.status = 403;
-    throw err;
-  }
-
-  const updated = await User.findByIdAndUpdate(
-    targetUserId,
-    { role: cleanRole },
-    { new: true, runValidators: true },
-  );
+  const updated = await User.findByIdAndUpdate(targetUserId, update, {
+    new: true,
+    runValidators: true,
+  });
 
   return sanitizeUser(updated);
 };

@@ -23,12 +23,12 @@ router.post("/", auth, role(["superadmin"]), usersController.createUser);
 // Superadmin/Admin can view users
 router.get("/", auth, role(["superadmin", "admin"]), usersController.listUsers);
 
-// Superadmin can update user role
+// Superadmin can update user
 router.patch(
-  "/:id/role",
+  "/:id",
   auth,
   role(["superadmin"]),
-  usersController.updateUserRole
+  usersController.updateUser
 );
 
 // Superadmin can delete user

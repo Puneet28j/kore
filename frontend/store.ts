@@ -1,9 +1,9 @@
-
 import { useState, useEffect } from 'react';
 import { 
   User, UserRole, Article, AssortmentType, Assortment, 
   Inventory, Order, OrderStatus, OrderItem 
 } from './types';
+import { authService } from './services/auth';
 
 // Initial Mock Data
 const MOCK_ASSORTMENTS: Assortment[] = [
@@ -45,25 +45,8 @@ const MOCK_ARTICLES: Article[] = [
   { id: 'art-04', sku: 'KK-104', name: 'Terra Trek', category: AssortmentType.MEN, pricePerPair: 65, assortmentId: 'as-men-01', imageUrl: 'https://picsum.photos/seed/kk104/400/300' },
 ];
 
-const MOCK_USERS: User[] = [
-  { id: 'admin-1', name: 'Super Admin', email: 'admin@kore.com', role: UserRole.ADMIN },
-  { 
-    id: 'dist-1', 
-    name: 'Metropolitan Footwear', 
-    email: 'metro@dist.com', 
-    role: UserRole.DISTRIBUTOR,
-    // Fix: location changed from object to string
-    location: 'New Delhi, India'
-  },
-  { 
-    id: 'dist-2', 
-    name: 'Coastal Steps', 
-    email: 'coastal@dist.com', 
-    role: UserRole.DISTRIBUTOR,
-    // Fix: location changed from object to string
-    location: 'Mumbai, India'
-  }
-];
+// Mock users are no longer needed for real auth
+const MOCK_USERS: User[] = [];
 
 export const useKoreStore = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
@@ -91,6 +74,8 @@ export const useKoreStore = () => {
 
   const [cart, setCart] = useState<OrderItem[]>([]);
 
+  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
+
   // Persistence
   useEffect(() => {
     localStorage.setItem('kore_inventory', JSON.stringify(inventory));
@@ -98,18 +83,40 @@ export const useKoreStore = () => {
     if (currentUser) localStorage.setItem('kore_user', JSON.stringify(currentUser));
   }, [inventory, orders, currentUser]);
 
-  const login = (email: string) => {
-    const user = MOCK_USERS.find(u => u.email === email);
-    if (user) {
+  const checkAuth = async () => {
+    setIsLoadingAuth(true);
+    const token = localStorage.getItem('kore_token');
+    if (!token) {
+      setIsLoadingAuth(false);
+      return;
+    }
+    try {
+      const user = await authService.getMe();
       setCurrentUser(user);
-    } else {
-      alert('Invalid credentials (Try: admin@kore.com or metro@dist.com)');
+    } catch (err) {
+      console.error('Session restoration failed', err);
+      logout();
+    } finally {
+      setIsLoadingAuth(false);
     }
   };
 
-  const logout = () => {
+  const login = async (email: string, password: string) => {
+    try {
+      const { token, user } = await authService.login(email, password);
+      localStorage.setItem('kore_token', token);
+      setCurrentUser(user);
+      return user;
+    } catch (err: any) {
+      throw new Error(err.message || 'Login failed');
+    }
+  };
+
+  const logout = async () => {
+    await authService.logout();
     setCurrentUser(null);
     localStorage.removeItem('kore_user');
+    localStorage.removeItem('kore_token');
   };
 
   const addToCart = (articleId: string, cartons: number) => {
@@ -220,7 +227,7 @@ export const useKoreStore = () => {
   };
 
   return {
-    currentUser, login, logout,
+    currentUser, login, logout, checkAuth, isLoadingAuth,
     articles, assortments, inventory, orders, cart,
     addToCart, placeOrder, updateOrderStatus, addInventory,
     distributors: MOCK_USERS.filter(u => u.role === UserRole.DISTRIBUTOR)

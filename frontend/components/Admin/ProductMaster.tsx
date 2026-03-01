@@ -20,14 +20,24 @@ import {
 import { AssortmentType, Article, Variant } from "../../types";
 import { ASSORTMENTS } from "../../constants";
 import SearchableSelect from "../SearchableSelect";
+import { masterCatalogService } from "../../services/masterCatalogService";
 
 interface ProductMasterProps {
   addArticle: (article: Article) => void;
+  editingId?: string | null;
+  onCancelEdit?: () => void;
+  onSuccess?: () => void;
 }
 
-const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
+const ProductMaster: React.FC<ProductMasterProps> = ({ 
+  addArticle, 
+  editingId, 
+  onCancelEdit,
+  onSuccess 
+}) => {
   // Form State
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isEditingDataLoaded = useRef(false);
 
   const [formData, setFormData] = useState({
     artname: "",
@@ -58,35 +68,103 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
   const [sizeRangeInput, setSizeRangeInput] = useState("");
   const [variants, setVariants] = useState<Variant[]>([]);
 
-  // Category, Brand and Manufacturer states (Persisted to localStorage for demo)
-  const [categories, setCategories] = useState<string[]>(() => {
-    const saved = localStorage.getItem("kore_categories");
-    return saved ? JSON.parse(saved) : ["Footwear", "Apparel", "Accessories"];
-  });
+  // Taxonomy states from API
+  const [categories, setCategories] = useState<any[]>([]);
+  const [brands, setBrands] = useState<any[]>([]);
+  const [manufacturers, setManufacturers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const [brands, setBrands] = useState<Record<string, string[]>>(() => {
-    const saved = localStorage.getItem("kore_brands");
-    return saved
-      ? JSON.parse(saved)
-      : {
-          Footwear: ["Nike", "Adidas", "Puma", "Reebok"],
-          Apparel: ["Levis", "Zara", "H&M"],
-          Accessories: ["Titan", "Casio"],
-        };
-  });
-
-  const [manufacturers, setManufacturers] = useState<string[]>(() => {
-    const saved = localStorage.getItem("kore_manufacturers");
-    return saved
-      ? JSON.parse(saved)
-      : ["Acme Corp", "Global Supplies", "Prime Footwear"];
-  });
+  const fetchTaxonomy = async () => {
+    try {
+      setLoading(true);
+      const [catRes, brandRes, manufacturerRes] = await Promise.all([
+        masterCatalogService.listCategories(),
+        masterCatalogService.listBrands(),
+        masterCatalogService.listManufacturers(),
+      ]);
+      setCategories(catRes.data || []);
+      setBrands(brandRes.data || []);
+      setManufacturers(manufacturerRes.data || []);
+    } catch (err) {
+      console.error("Failed to fetch taxonomy", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem("kore_categories", JSON.stringify(categories));
-    localStorage.setItem("kore_brands", JSON.stringify(brands));
-    localStorage.setItem("kore_manufacturers", JSON.stringify(manufacturers));
-  }, [categories, brands, manufacturers]);
+    fetchTaxonomy();
+  }, []);
+
+  // --- Edit Mode Initialization ---
+  useEffect(() => {
+    if (!editingId) return;
+
+    const loadArticle = async () => {
+      try {
+        setLoading(true);
+        const res = await masterCatalogService.getMasterItem(editingId);
+        const item = res.data || res; // depending on structure
+
+        setFormData({
+          artname: item.articleName || "",
+          soleColor: item.soleColor || "",
+          mrp: item.mrp || 0,
+          hsnCode: item.variants?.[0]?.hsnCode || "",
+          gender: item.gender || AssortmentType.MEN,
+          assortmentId: ASSORTMENTS[0].id,
+          status: item.stage || "AVAILABLE",
+          wishlistDate: item.expectedAvailableDate ? new Date(item.expectedAvailableDate).toISOString().split('T')[0] : "",
+          manufacturer: item.manufacturerCompanyId?.name || item.manufacturerCompanyId || "",
+          unit: item.unitId?.name || item.unitId || "Pairs",
+          category: item.categoryId?.name || item.categoryId || "",
+          brand: item.brandId?.name || item.brandId || "",
+          images: [],
+          imagePreviews: item.primaryImage?.url ? [item.primaryImage.url, ...(item.secondaryImages?.map((img: any) => img.url) || [])] : [],
+        });
+
+        if (item.productColors) setSelectedColors(item.productColors);
+        if (item.sizeRanges) setSizeRanges(item.sizeRanges);
+        
+        if (item.variants && item.variants.length > 0) {
+          const mappedVariants = item.variants.map((v: any) => {
+            // sizeMap to sizeQuantities/sizeSkus
+            const sizeQuantities: Record<string, number> = {};
+            const sizeSkus: Record<string, string> = {};
+            
+            if (v.sizeMap) {
+              Object.entries(v.sizeMap).forEach(([size, data]: [string, any]) => {
+                sizeQuantities[size] = data.qty || 0;
+                sizeSkus[size] = data.sku || "";
+              });
+            }
+
+            return {
+              id: v._id || `v-${Date.now()}-${Math.random()}`,
+              itemName: v.itemName,
+              sku: v.sku || "",
+              color: v.color,
+              sizeRange: v.sizeRange,
+              costPrice: v.costPrice || 0,
+              sellingPrice: v.sellingPrice || 0,
+              mrp: v.mrp || 0,
+              hsnCode: v.hsnCode || "",
+              sizeQuantities,
+              sizeSkus,
+            };
+          });
+          setVariants(mappedVariants);
+          isEditingDataLoaded.current = true;
+        }
+      } catch (err) {
+        console.error("Failed to load article for editing", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadArticle();
+  }, [editingId, categories, brands, manufacturers]);
 
   // --- Size Range Helpers ---
   const parseSizeRange = (range: string): string[] => {
@@ -113,6 +191,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
 
   // --- Auto-generate variants when colors or size ranges change ---
   useEffect(() => {
+    if (editingId && !isEditingDataLoaded.current) return;
     if (selectedColors.length === 0 || sizeRanges.length === 0) {
       setVariants([]);
       return;
@@ -228,43 +307,68 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
   };
 
   // Handlers for Category
-  const handleAddCategory = (cat: string) => {
-    if (!categories.includes(cat)) {
-      setCategories([...categories, cat]);
-      setBrands({ ...brands, [cat]: [] });
+  const handleAddCategory = async (cat: string) => {
+    try {
+      await masterCatalogService.createCategory(cat);
+      await fetchTaxonomy();
+    } catch (err: any) {
+      alert(err.message || "Failed to add category");
     }
   };
 
-  const handleDeleteCategory = (cat: string) => {
-    setCategories(categories.filter((c) => c !== cat));
-    const newBrands = { ...brands };
-    delete newBrands[cat];
-    setBrands(newBrands);
-    if (formData.category === cat) {
-      setFormData({ ...formData, category: "", brand: "" });
+  const handleDeleteCategory = async (cat: string) => {
+    const categoryDoc = categories.find(c => (c.name || c) === cat);
+    if (categoryDoc?._id) {
+      try {
+        await masterCatalogService.deleteCategory(categoryDoc._id);
+        await fetchTaxonomy();
+      } catch (err: any) {
+        alert(err.message || "Failed to delete category");
+      }
     }
   };
 
   // Handlers for Brand
-  const handleAddBrand = (brand: string) => {
-    if (!formData.category) return alert("Please select a category first");
-    const catBrands = brands[formData.category] || [];
-    if (!catBrands.includes(brand)) {
-      setBrands({
-        ...brands,
-        [formData.category]: [...catBrands, brand],
-      });
+  const handleAddBrand = async (brand: string) => {
+    try {
+      await masterCatalogService.createBrand(brand);
+      await fetchTaxonomy();
+    } catch (err: any) {
+      alert(err.message || "Failed to add brand");
     }
   };
 
-  const handleDeleteBrand = (brand: string) => {
-    if (!formData.category) return;
-    setBrands({
-      ...brands,
-      [formData.category]: brands[formData.category].filter((b) => b !== brand),
-    });
-    if (formData.brand === brand) {
-      setFormData({ ...formData, brand: "" });
+  const handleDeleteBrand = async (brand: string) => {
+    const brandDoc = brands.find(b => (b.name || b) === brand);
+    if (brandDoc?._id) {
+      try {
+        await masterCatalogService.deleteBrand(brandDoc._id);
+        await fetchTaxonomy();
+      } catch (err: any) {
+        alert(err.message || "Failed to delete brand");
+      }
+    }
+  };
+
+  // Handlers for Manufacturer
+  const handleAddManufacturer = async (man: string) => {
+    try {
+      await masterCatalogService.createManufacturer(man);
+      await fetchTaxonomy();
+    } catch (err: any) {
+      alert(err.message || "Failed to add manufacturer");
+    }
+  };
+
+  const handleDeleteManufacturer = async (man: string) => {
+    const manDoc = manufacturers.find(m => (m.name || m) === man);
+    if (manDoc?._id) {
+      try {
+        await masterCatalogService.deleteManufacturer(manDoc._id);
+        await fetchTaxonomy();
+      } catch (err: any) {
+        alert(err.message || "Failed to delete manufacturer");
+      }
     }
   };
 
@@ -298,7 +402,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
     setSelectedColors(selectedColors.filter((c) => c !== color));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     // Basic validation
@@ -306,54 +410,89 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
       return alert("Please fill all required fields");
     }
 
-    const newArticle: Article = {
-      id: `art-${Date.now()}`,
-      sku: `KK-${formData.gender.charAt(0)}-${formData.artname
-        .replace(/\s+/g, "")
-        .toUpperCase()}-${Date.now().toString().slice(-4)}`,
-      name: formData.artname,
-      category: formData.gender,
-      productCategory: formData.category,
-      brand: formData.brand,
-      assortmentId: formData.assortmentId,
-      pricePerPair: formData.mrp,
-      mrp: formData.mrp,
-      soleColor: formData.soleColor,
-      imageUrl: formData.imagePreviews[0] || "https://picsum.photos/400/400",
-      images: formData.imagePreviews,
-      status: formData.status,
-      expectedDate: formData.status === "WISHLIST" ? formData.wishlistDate : "",
-      manufacturer: formData.manufacturer,
-      unit: formData.unit,
-      selectedSizes: selectedSizes,
-      selectedColors: selectedColors,
-      variants: variants,
-    };
+    const categoryId = categories.find(c => (c.name || c) === formData.category)?._id || formData.category;
+    const brandId = brands.find(b => (b.name || b) === formData.brand)?._id || formData.brand;
+    const manufacturerId = manufacturers.find(m => (m.name || m) === formData.manufacturer)?._id || formData.manufacturer;
 
-    addArticle(newArticle);
-    alert("Product Created Successfully!");
+    const data = new FormData();
+    data.append("articleName", formData.artname);
+    data.append("soleColor", formData.soleColor);
+    data.append("mrp", formData.mrp.toString());
+    data.append("gender", formData.gender);
+    data.append("categoryId", categoryId);
+    data.append("brandId", brandId);
+    data.append("manufacturerCompanyId", manufacturerId);
+    data.append("unitId", "64f1c1e5f1b2c3d4e5f6a7b8"); // Mocking UnitId for now or fetching it
+    data.append("stage", formData.status);
+    if (formData.status === "WISHLIST") {
+      data.append("expectedAvailableDate", formData.wishlistDate);
+    }
 
-    // Reset form
-    setFormData({
-      artname: "",
-      soleColor: "",
-      hsnCode: "",
-      mrp: 0,
-      gender: AssortmentType.MEN,
-      assortmentId: ASSORTMENTS[0].id,
-      status: "AVAILABLE",
-      wishlistDate: "",
-      manufacturer: "",
-      unit: "Pairs",
-      category: "",
-      brand: "",
-      images: [],
-      imagePreviews: [],
-    });
-    setSelectedSizes([]);
-    setSelectedColors([]);
-    setSizeRanges([]);
-    setVariants([]);
+    data.append("productColors", JSON.stringify(selectedColors));
+    data.append("sizeRanges", JSON.stringify(sizeRanges));
+
+    // Normalize variants for backend
+    const normalizedVariants = variants.map(v => ({
+      itemName: v.itemName,
+      costPrice: v.costPrice,
+      sellingPrice: v.sellingPrice,
+      mrp: v.mrp,
+      hsnCode: v.hsnCode,
+      color: v.color,
+      sizeRange: v.sizeRange,
+      sizeMap: Object.keys(v.sizeQuantities).reduce((acc, size) => {
+        acc[size] = { qty: v.sizeQuantities[size], sku: v.sizeSkus[size] };
+        return acc;
+      }, {} as any)
+    }));
+    data.append("variants", JSON.stringify(normalizedVariants));
+
+    if (formData.images.length > 0) {
+      data.append("primaryImage", formData.images[0]);
+      formData.images.slice(1).forEach(img => {
+        data.append("secondaryImages", img);
+      });
+    }
+
+    try {
+      setLoading(true);
+      if (editingId) {
+        await masterCatalogService.updateMasterItem(editingId, data);
+        alert("Product Updated Successfully!");
+        if (onSuccess) onSuccess();
+        if (onCancelEdit) onCancelEdit();
+      } else {
+        await masterCatalogService.createMasterItem(data);
+        alert("Product Created Successfully!");
+        if (onSuccess) onSuccess();
+        
+        // Reset form
+        setFormData({
+          artname: "",
+          soleColor: "",
+          hsnCode: "",
+          mrp: 0,
+          gender: AssortmentType.MEN,
+          assortmentId: ASSORTMENTS[0].id,
+          status: "AVAILABLE",
+          wishlistDate: "",
+          manufacturer: "",
+          unit: "Pairs",
+          category: "",
+          brand: "",
+          images: [],
+          imagePreviews: [],
+        });
+        setSelectedSizes([]);
+        setSelectedColors([]);
+        setSizeRanges([]);
+        setVariants([]);
+      }
+    } catch (err: any) {
+      alert(err.message || "Failed to save product");
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Available Sizes for Parameter selection
@@ -369,13 +508,21 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
           </div>
           <div>
             <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-              Product Master
+              {editingId ? "Edit Product" : "Product Master"}
             </h2>
             <p className="text-slate-500 text-xs font-medium">
               Create and manage your product catalogue centrally
             </p>
           </div>
         </div>
+        {editingId && (
+          <button
+            onClick={onCancelEdit}
+            className="px-4 py-2 border border-slate-200 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-50 transition-all"
+          >
+            Cancel Edit
+          </button>
+        )}
       </div>
 
       <form
@@ -596,7 +743,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
                 <div className="space-y-4">
                   <SearchableSelect
                     label="Category"
-                    options={categories}
+                    options={categories.map((c) => c.name || c)}
                     value={formData.category}
                     onChange={(val) =>
                       setFormData({ ...formData, category: val, brand: "" })
@@ -609,18 +756,12 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
 
                   <SearchableSelect
                     label="Brand"
-                    options={
-                      formData.category ? brands[formData.category] || [] : []
-                    }
+                    options={brands.map((b) => b.name || b)}
                     value={formData.brand}
                     onChange={(val) => setFormData({ ...formData, brand: val })}
                     onAdd={handleAddBrand}
                     onDelete={handleDeleteBrand}
-                    placeholder={
-                      formData.category
-                        ? "Select Brand"
-                        : "Select Category First"
-                    }
+                    placeholder="Select Brand"
                     required
                   />
 
@@ -637,21 +778,13 @@ const ProductMaster: React.FC<ProductMasterProps> = ({ addArticle }) => {
                     <div>
                       <SearchableSelect
                         label="Manufacturer"
-                        options={manufacturers}
+                        options={manufacturers.map((m) => m.name || m)}
                         value={formData.manufacturer}
                         onChange={(val) =>
                           setFormData({ ...formData, manufacturer: val })
                         }
-                        onAdd={(val) =>
-                          setManufacturers((prev) =>
-                            prev.includes(val) ? prev : [...prev, val]
-                          )
-                        }
-                        onDelete={(val) =>
-                          setManufacturers((prev) =>
-                            prev.filter((m) => m !== val)
-                          )
-                        }
+                        onAdd={handleAddManufacturer}
+                        onDelete={handleDeleteManufacturer}
                         placeholder="Select Manufacturer"
                         required
                       />

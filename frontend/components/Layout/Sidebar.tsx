@@ -25,6 +25,7 @@ import {
   ChevronRight,
   Clock,
   Receipt,
+  Shield,
 } from "lucide-react";
 
 import { User, UserRole } from "../../types";
@@ -134,7 +135,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       <aside
         className={`
           fixed top-0 left-0 z-20 h-screen bg-white border-r border-slate-200
-          flex flex-col overflow-y-auto transition-all duration-300 ease-in-out
+          flex flex-col overflow-y-auto overflow-x-hidden transition-all duration-300 ease-in-out
           ${isCollapsed ? "w-20" : "w-64"}
           ${isSidebarOpen ? "translate-x-0 pt-16 md:pt-0" : "-translate-x-full md:translate-x-0"}
         `}
@@ -178,7 +179,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             />
 
             {/* ✅ Master Tab (below Dashboard) */}
-            {user.role === UserRole.ADMIN && (
+            {(user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
               <NavItem
                 icon={<Database size={20} />}
                 label="Master"
@@ -189,7 +190,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             )}
 
             {/* Admin menus only */}
-            {user.role === UserRole.ADMIN ? (
+            {user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN ? (
               <>
                 {/* Manufacturing */}
                 <div className="pt-2">
@@ -347,6 +348,19 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   )}
                 </div>
+
+                {/* Top-level Users tab for Superadmin */}
+                {user.role === UserRole.SUPERADMIN && (
+                  <div className="pt-2">
+                    <NavItem
+                      icon={<Shield size={20} />}
+                      label="Users"
+                      active={activeTab === "users"}
+                      onClick={() => go("users")}
+                      isCollapsed={isCollapsed}
+                    />
+                  </div>
+                )}
               </>
             ) : (
               /* Distributor menus */

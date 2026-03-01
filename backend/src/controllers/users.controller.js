@@ -67,10 +67,7 @@ exports.changePassword = async (req, res, next) => {
   }
 };
 
-/* --------------------------------------------------
-   🔄 UPDATE USER ROLE (Superadmin)
--------------------------------------------------- */
-exports.updateUserRole = async (req, res, next) => {
+exports.updateUser = async (req, res, next) => {
   try {
     const targetUserId = req.params.id;
     const actorUserId = req.user?.id;
@@ -79,17 +76,13 @@ exports.updateUserRole = async (req, res, next) => {
       return fail(res, { status: 401, message: "Not authorized" });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
-      return fail(res, { status: 400, message: "Invalid user ID" });
-    }
-
-    const user = await usersService.updateUserRole(
+    const user = await usersService.updateUser(
       actorUserId,
       targetUserId,
-      req.body.role
+      req.body
     );
 
-    return ok(res, { message: "User role updated", data: user });
+    return ok(res, { message: "User updated successfully", data: user });
   } catch (err) {
     next(err);
   }

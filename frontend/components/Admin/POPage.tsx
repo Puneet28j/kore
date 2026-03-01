@@ -15,6 +15,7 @@ import {
   Clock,
   Send,
   Save,
+  Edit2,
 } from "lucide-react";
 import {
   Article,
@@ -23,6 +24,8 @@ import {
   PurchaseOrderItem,
   POStatus,
 } from "../../types";
+import { poService } from "../../services/poService";
+import { vendorService } from "../../services/vendorService";
 
 // ─── Reusable styles ───────────────────────────────────
 const inputClass =
@@ -70,28 +73,35 @@ interface POPageProps {
 // COMPONENT
 // ═══════════════════════════════════════════════════════
 const POPage: React.FC<POPageProps> = ({ articles }) => {
-  // ── PO list persisted to localStorage ──
-  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(() => {
-    const saved = localStorage.getItem("kore_purchase_orders");
-    return saved ? JSON.parse(saved) : [];
-  });
+  // ── PO list from API ──
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [poRes, vendorRes] = await Promise.all([
+        poService.listPOs(),
+        vendorService.listVendors(),
+      ]);
+      setPurchaseOrders(poRes.data.map((p: any) => ({ ...p, id: p._id || p.id })));
+      setVendors(vendorRes.data.map((v: any) => ({ ...v, id: v._id || v.id })));
+    } catch (err) {
+      console.error("Failed to fetch PO data", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem(
-      "kore_purchase_orders",
-      JSON.stringify(purchaseOrders)
-    );
-  }, [purchaseOrders]);
-
-  // ── Vendors from localStorage ──
-  const vendors: Vendor[] = useMemo(() => {
-    const saved = localStorage.getItem("kore_vendors");
-    return saved ? JSON.parse(saved) : [];
+    fetchData();
   }, []);
 
   // ── UI State ──
   const [view, setView] = useState<"list" | "form">("list");
   const [searchTerm, setSearchTerm] = useState("");
+  const [editingPOId, setEditingPOId] = useState<string | null>(null);
 
   // ── Form State ──
   const [selectedVendorId, setSelectedVendorId] = useState("");
@@ -270,17 +280,55 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
     setDiscountPercent(0);
     setActiveItemPickerIdx(null);
     setItemPickerSearch("");
+    setEditingPOId(null);
   };
 
-  const openCreateForm = () => {
+  const openCreateForm = async () => {
     resetForm();
-    setPONumber(generatePONumber(purchaseOrders));
+    try {
+      const res = await poService.getNextPONumber();
+      setPONumber(res.data.poNumber);
+    } catch (err) {
+      console.error("Failed to get next PO number", err);
+      setPONumber(generatePONumber(purchaseOrders)); // fallback
+    }
     setView("form");
   };
 
   const cancelForm = () => {
     setView("list");
     resetForm();
+  };
+
+  const handleEditPO = (po: PurchaseOrder) => {
+    // Format dates correctly for <input type="date"> (YYYY-MM-DD)
+    const formatDateForInput = (dateStr: string) => {
+      if (!dateStr) return "";
+      try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return "";
+        return d.toISOString().split("T")[0];
+      } catch (e) {
+        return "";
+      }
+    };
+
+    setSelectedVendorId(po.vendorId);
+    setPONumber(po.poNumber);
+    setReferenceNumber(po.referenceNumber || "");
+    setPODate(formatDateForInput(po.date));
+    setDeliveryDate(formatDateForInput(po.deliveryDate));
+    setPaymentTerms(po.paymentTerms || "Due on Receipt");
+    setShipmentPreference(po.shipmentPreference || "");
+    setNotes(po.notes || "");
+    setTermsAndConditions(po.termsAndConditions || "");
+    setItems(po.items.map((it: any) => ({
+      ...it,
+      id: it.rowId || it._id || it.id || `poi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    })));
+    setDiscountPercent(po.discountPercent || 0);
+    setEditingPOId(po.id);
+    setView("form");
   };
 
   const addNewRow = () => {
@@ -350,13 +398,12 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
     setItemPickerSearch("");
   };
 
-  const savePO = (status: POStatus) => {
+  const savePO = async (status: POStatus) => {
     if (!selectedVendorId) return alert("Please select a vendor.");
     if (items.every((it) => !it.articleId))
       return alert("Please add at least one item.");
 
-    const po: PurchaseOrder = {
-      id: `po-${Date.now()}`,
+    const poData: Partial<PurchaseOrder> = {
       vendorId: selectedVendorId,
       vendorName: selectedVendor?.displayName || "",
       poNumber,
@@ -374,12 +421,25 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
       totalTax,
       total,
       status,
-      createdAt: new Date().toISOString(),
     };
 
-    setPurchaseOrders((prev) => [po, ...prev]);
-    setView("list");
-    resetForm();
+    try {
+      setLoading(true);
+      if (editingPOId) {
+        await poService.updatePO(editingPOId, poData);
+        alert("Purchase Order Updated Successfully!");
+      } else {
+        await poService.createPO(poData);
+        alert("Purchase Order Created Successfully!");
+      }
+      await fetchData();
+      setView("list");
+      resetForm();
+    } catch (err: any) {
+      alert(err.message || "Failed to save Purchase Order");
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ── Filtered PO list ──
@@ -472,6 +532,9 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
                     <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-right">
                       Status
                     </th>
+                    <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-right">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -481,7 +544,11 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
                       className="hover:bg-indigo-50/30 transition-colors"
                     >
                       <td className="px-6 py-4 text-sm text-slate-600">
-                        {po.date}
+                        {new Date(po.date).toLocaleDateString("en-IN", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric",
+                        })}
                       </td>
                       <td className="px-6 py-4">
                         <span className="font-bold text-slate-900 text-sm">
@@ -509,6 +576,15 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
                           )}
                           {po.status}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <button
+                          onClick={() => handleEditPO(po)}
+                          className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                          title="Edit PO"
+                        >
+                          <Edit2 size={16} />
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -538,7 +614,7 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
           </div>
           <div>
             <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-              New Purchase Order
+              {editingPOId ? "Edit Purchase Order" : "New Purchase Order"}
             </h2>
             <p className="text-slate-500 text-xs font-medium">
               Create a new purchase order for your vendor

@@ -1,8 +1,14 @@
 const path = require("path");
+const fs = require("fs");
 const multer = require("multer");
 
+const uploadDir = "uploads/catalog";
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/catalog"),
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
     const base = path.basename(file.originalname, ext).replace(/\s+/g, "-");

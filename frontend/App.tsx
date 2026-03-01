@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { ShoppingBag, Package, Truck, ShoppingCart, Clock } from "lucide-react";
+import { ShoppingBag, Package, Truck, ShoppingCart, Clock, Loader2 } from "lucide-react";
 
 import {
   User,
@@ -26,25 +26,100 @@ import POPage from "./components/Admin/POPage";
 import GRN from "./components/Admin/GRN";
 import ProductMaster from "./components/Admin/ProductMaster";
 import VendorManager from "./components/Admin/VendorManager";
+import UserManager from "./components/Admin/UserManager";
+import { masterCatalogService } from "./services/masterCatalogService";
 
 // ✅ NEW: Sidebar component (create this file separately)
 import Sidebar from "./components/Layout/Sidebar";
+import { useKoreStore } from "./store";
 
 const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem("kore_user");
-    return saved ? JSON.parse(saved) : null;
-  });
+  const store = useKoreStore();
+  const { currentUser: user, checkAuth, isLoadingAuth } = store;
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
 
   const [activeTab, setActiveTab] = useState("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
-  // Articles state - now mutable
-  const [articles, setArticles] = useState<Article[]>(() => {
-    const saved = localStorage.getItem("kore_articles");
-    return saved ? JSON.parse(saved) : INITIAL_ARTICLES;
-  });
+  // Articles state from API
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [loadingArticles, setLoadingArticles] = useState(true);
+  const [editingArticleId, setEditingArticleId] = useState<string | null>(null);
+
+  const handleEditArticle = (id: string) => {
+    setEditingArticleId(id);
+    setActiveTab("master");
+  };
+
+  const fetchArticles = async () => {
+    try {
+      setLoadingArticles(true);
+      const res = await masterCatalogService.listMasterItems();
+      const mapped = res.data.map((item: any) => {
+        // Normalize variants: convert sizeMap -> sizeSkus/sizeQuantities
+        const normalizedVariants = (item.variants || []).map((v: any) => {
+          const sizeSkus: Record<string, string> = {};
+          const sizeQuantities: Record<string, number> = {};
+          if (v.sizeMap) {
+            Object.entries(v.sizeMap).forEach(([sz, cell]: [string, any]) => {
+              sizeSkus[sz] = cell.sku || "";
+              sizeQuantities[sz] = cell.qty || 0;
+            });
+          }
+          return {
+            ...v,
+            id: v._id || Math.random().toString(36).substr(2, 9),
+            sizeSkus,
+            sizeQuantities
+          };
+        });
+
+        // Try to get a real SKU from variants if available
+        let topSku = `KK-${item._id.slice(-4)}`;
+        if (normalizedVariants.length > 0) {
+          const firstVar = normalizedVariants[0];
+          const firstSizeKey = Object.keys(firstVar.sizeSkus)[0];
+          if (firstSizeKey && firstVar.sizeSkus[firstSizeKey]) {
+            topSku = firstVar.sizeSkus[firstSizeKey];
+          }
+        }
+
+        return {
+          id: item._id,
+          sku: topSku,
+          name: item.articleName,
+          category: item.gender,
+          productCategory: item.categoryId?.name,
+          brand: item.brandId?.name,
+          pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+          mrp: item.mrp,
+          soleColor: item.soleColor,
+          manufacturer: item.manufacturerCompanyId?.name,
+          unit: item.unitId?.name,
+          status: item.stage,
+          expectedDate: item.expectedAvailableDate ? new Date(item.expectedAvailableDate).toISOString().split('T')[0] : "",
+          imageUrl: item.primaryImage?.url,
+          secondaryImages: item.secondaryImages || [],
+          selectedSizes: item.sizeRanges || [],
+          selectedColors: item.productColors || [],
+          variants: normalizedVariants,
+        };
+      });
+      setArticles(mapped);
+    } catch (err) {
+      console.error("Failed to fetch articles", err);
+    } finally {
+      setLoadingArticles(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchArticles();
+  }, []);
 
   const [orders, setOrders] = useState<Order[]>([]);
 
@@ -110,13 +185,13 @@ const App: React.FC = () => {
   }, [cart]);
 
   // ACTIONS
-  const handleLogin = (userData: User) => {
-    setUser(userData);
+  const handleLogin = async (email: string, password: string) => {
+    await store.login(email, password);
     setActiveTab("dashboard");
   };
 
   const handleLogout = () => {
-    setUser(null);
+    store.logout();
     setCart([]);
   };
 
@@ -270,6 +345,14 @@ const App: React.FC = () => {
     );
   };
 
+  if (isLoadingAuth) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="animate-spin text-indigo-600" size={48} />
+      </div>
+    );
+  }
+
   if (!user) {
     return <Auth onLogin={handleLogin} />;
   }
@@ -304,7 +387,7 @@ const App: React.FC = () => {
 
         {/* Content Router */}
         {activeTab === "dashboard" &&
-          (user.role === UserRole.ADMIN ? (
+          (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN ? (
             <AdminDashboard orders={orders} inventory={inventory} articles={articles} />
           ) : (
             <DistributorDashboard
@@ -315,28 +398,40 @@ const App: React.FC = () => {
             />
           ))}
 
-        {activeTab === "master" && user.role === UserRole.ADMIN && (
-          <ProductMaster addArticle={addArticle} />
+        {activeTab === "master" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
+          <ProductMaster 
+            addArticle={addArticle} 
+            editingId={editingArticleId}
+            onSuccess={fetchArticles}
+            onCancelEdit={() => {
+              setEditingArticleId(null);
+              setActiveTab("catalogue");
+            }}
+          />
         )}
 
-        {activeTab === "catalogue" && user.role === UserRole.ADMIN && (
+        {activeTab === "catalogue" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
           <CatalogueManager
             articles={articles}
             addArticle={addArticle}
             updateArticle={updateArticle}
             deleteArticle={deleteArticle}
+            onEditArticle={handleEditArticle}
           />
         )}
-{activeTab === "po" && user.role === UserRole.ADMIN && (
+{activeTab === "po" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
   <POPage articles={articles} />
 )}
-{activeTab === "grn" && user.role === UserRole.ADMIN && (
+{activeTab === "grn" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
   <GRN />
 )}
-{activeTab === "vendors" && user.role === UserRole.ADMIN && (
+{activeTab === "vendors" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
   <VendorManager />
 )}
-        {activeTab === "master_inventory" && user.role === UserRole.ADMIN && (
+{activeTab === "users" && user.role === UserRole.SUPERADMIN && (
+  <UserManager />
+)}
+        {activeTab === "master_inventory" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
           <MasterInventory
             inventory={inventory}
             articles={articles}
@@ -345,12 +440,12 @@ const App: React.FC = () => {
           />
         )}
 
-        {activeTab === "booking_inventory" && user.role === UserRole.ADMIN && (
+        {activeTab === "booking_inventory" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
           <BookingInventory inventory={inventory} articles={articles} orders={orders} />
         )}
 
         {activeTab === "orders" &&
-          (user.role === UserRole.ADMIN ? (
+          (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN ? (
             <OrderProcessor orders={orders} updateStatus={updateOrderStatus} articles={articles} />
           ) : (
             <MyOrders orders={orders.filter((o) => o.distributorId === user.id)} articles={articles} />
@@ -380,7 +475,7 @@ const App: React.FC = () => {
           />
         )}
 
-        {activeTab === "distributors" && user.role === UserRole.ADMIN && (
+        {activeTab === "distributors" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN) && (
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left min-w-[600px]">

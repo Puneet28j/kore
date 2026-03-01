@@ -25,6 +25,7 @@ import {
   VendorContact,
   VendorBankDetail,
 } from "../../types";
+import { vendorService } from "../../services/vendorService";
 
 // ─── Empty Defaults ────────────────────────────────────
 const emptyAddress = (): VendorAddress => ({
@@ -91,15 +92,32 @@ const labelClass =
 // COMPONENT
 // ═══════════════════════════════════════════════════════
 const VendorManager: React.FC = () => {
-  // ── Vendor list persisted to localStorage ──
-  const [vendors, setVendors] = useState<Vendor[]>(() => {
-    const saved = localStorage.getItem("kore_vendors");
-    return saved ? JSON.parse(saved) : [];
-  });
+  // ── Vendor list from API ──
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchVendors = async () => {
+    try {
+      setLoading(true);
+      const res = await vendorService.listVendors();
+      // Map _id to id if necessary, or update types to use _id
+      const mapped = res.data.map((v: any) => ({
+        ...v,
+        id: v._id || v.id,
+      }));
+      setVendors(mapped);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message || "Failed to fetch vendors");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem("kore_vendors", JSON.stringify(vendors));
-  }, [vendors]);
+    fetchVendors();
+  }, []);
 
   // ── UI state ──
   const [view, setView] = useState<"list" | "form">("list");
@@ -132,29 +150,40 @@ const VendorManager: React.FC = () => {
     setEditingVendor(null);
   };
 
-  const saveVendor = () => {
+  const saveVendor = async () => {
     if (!formData.displayName) {
       return alert("Display Name is required.");
     }
 
-    if (editingVendor) {
-      setVendors((prev) =>
-        prev.map((v) => (v.id === editingVendor.id ? formData : v))
-      );
-    } else {
-      setVendors((prev) => [
-        ...prev,
-        { ...formData, id: `vnd-${Date.now()}` },
-      ]);
+    try {
+      setLoading(true);
+      if (editingVendor) {
+        await vendorService.updateVendor(editingVendor.id, formData);
+      } else {
+        await vendorService.createVendor(formData);
+      }
+      await fetchVendors();
+      setView("list");
+      setFormData(emptyVendor());
+      setEditingVendor(null);
+    } catch (err: any) {
+      alert(err.message || "Failed to save vendor");
+    } finally {
+      setLoading(false);
     }
-    setView("list");
-    setFormData(emptyVendor());
-    setEditingVendor(null);
   };
 
-  const deleteVendor = (id: string) => {
+  const deleteVendor = async (id: string) => {
     if (confirm("Are you sure you want to delete this vendor?")) {
-      setVendors((prev) => prev.filter((v) => v.id !== id));
+      try {
+        setLoading(true);
+        await vendorService.deleteVendor(id);
+        await fetchVendors();
+      } catch (err: any) {
+        alert(err.message || "Failed to delete vendor");
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
@@ -446,9 +475,9 @@ const VendorManager: React.FC = () => {
               <label className={labelClass}>
                 Primary Contact
               </label>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-[120px_1fr_1fr] gap-2">
                 <select
-                  className={`${selectClass} w-28 shrink-0`}
+                  className={selectClass}
                   value={formData.salutation}
                   onChange={(e) => updateField("salutation", e.target.value)}
                 >

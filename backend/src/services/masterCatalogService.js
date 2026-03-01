@@ -144,6 +144,10 @@ exports.list = async (query) => {
 
   const [items, total] = await Promise.all([
     MasterCatalog.find(filter)
+      .populate("categoryId", "name")
+      .populate("brandId", "name")
+      .populate("manufacturerCompanyId", "name")
+      .populate("unitId", "name")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(Number(limit))
@@ -155,7 +159,12 @@ exports.list = async (query) => {
 };
 
 exports.getById = async (id) => {
-  const doc = await MasterCatalog.findOne({ _id: id, isDeleted: false }).lean();
+  const doc = await MasterCatalog.findOne({ _id: id, isDeleted: false })
+    .populate("categoryId", "name")
+    .populate("brandId", "name")
+    .populate("manufacturerCompanyId", "name")
+    .populate("unitId", "name")
+    .lean();
   if (!doc) {
     const err = new Error("Not found");
     err.statusCode = 404;

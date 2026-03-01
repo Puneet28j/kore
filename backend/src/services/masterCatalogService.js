@@ -2,10 +2,11 @@ const MasterCatalog = require("../models/MasterCatalog");
 
 /**
  * multipart/form-data me JSON string aa sakta hai
+ * json me already object/array hota hai
  */
 const parseMaybeJson = (val, fallback) => {
   if (val === undefined || val === null) return fallback;
-  if (typeof val === "object") return val;
+  if (typeof val === "object") return val; // already parsed
   try {
     return JSON.parse(val);
   } catch {
@@ -19,10 +20,11 @@ const makeFileUrl = (req, filePath) => {
 };
 
 const buildImagesPayload = (req) => {
-  const body = req.body;
+  const body = req.body || {};
 
   // primary: file OR url
   let primaryImage = null;
+
   if (req.files?.primaryImage?.[0]) {
     const f = req.files.primaryImage[0];
     primaryImage = { url: makeFileUrl(req, f.path), key: f.path };
@@ -47,10 +49,28 @@ const buildImagesPayload = (req) => {
   return { primaryImage, secondaryImages };
 };
 
-exports.create = async (req) => {
-  const body = req.body;
+/** ✅ frontend table ke hisaab se variants normalize */
+const normalizeVariants = (variantsRaw) => {
+  const variants = Array.isArray(variantsRaw) ? variantsRaw : [];
+  return variants.map((v) => {
+    // sizeMap: object ya map string dono aa sakta hai
+    const sizeMap = parseMaybeJson(v.sizeMap, v.sizeMap || {});
+    return {
+      itemName: v.itemName,
+      color: v.color || "",
+      sizeRange: v.sizeRange || "",
+      costPrice: Number(v.costPrice || 0),
+      sellingPrice: Number(v.sellingPrice || 0),
+      mrp: Number(v.mrp || 0),
+      hsnCode: v.hsnCode || "",
+      sizeMap: sizeMap || {},
+    };
+  });
+};
 
-  const variants = parseMaybeJson(body.variants, []);
+exports.create = async (req) => {
+  const body = req.body || {};
+
   const { primaryImage, secondaryImages } = buildImagesPayload(req);
 
   if (!primaryImage?.url) {
@@ -59,10 +79,16 @@ exports.create = async (req) => {
     throw err;
   }
 
+  const productColors = parseMaybeJson(body.productColors, []);
+  const sizeRanges = parseMaybeJson(body.sizeRanges, []);
+  const variants = normalizeVariants(parseMaybeJson(body.variants, []));
+
   const doc = await MasterCatalog.create({
-    // PART 1
+    // ---- PART 1 ----
     articleName: body.articleName,
     soleColor: body.soleColor,
+    mrp: Number(body.mrp || 0),
+
     gender: body.gender,
 
     categoryId: body.categoryId,
@@ -70,14 +96,17 @@ exports.create = async (req) => {
     manufacturerCompanyId: body.manufacturerCompanyId,
     unitId: body.unitId,
 
+    productColors: Array.isArray(productColors) ? productColors : [],
+    sizeRanges: Array.isArray(sizeRanges) ? sizeRanges : [],
+
     stage: body.stage || "AVAILABLE",
     expectedAvailableDate: body.expectedAvailableDate || null,
 
     primaryImage,
     secondaryImages,
 
-    // PART 2 (order preserved)
-    variants: Array.isArray(variants) ? variants : [],
+    // ---- PART 2 ----
+    variants,
   });
 
   return doc;
@@ -107,6 +136,7 @@ exports.list = async (query) => {
     filter.$or = [
       { articleName: { $regex: q, $options: "i" } },
       { soleColor: { $regex: q, $options: "i" } },
+      { productColors: { $in: [new RegExp(q, "i")] } },
     ];
   }
 
@@ -135,7 +165,7 @@ exports.getById = async (id) => {
 };
 
 exports.update = async (req, id) => {
-  const body = req.body;
+  const body = req.body || {};
 
   const doc = await MasterCatalog.findOne({ _id: id, isDeleted: false });
   if (!doc) {
@@ -144,10 +174,12 @@ exports.update = async (req, id) => {
     throw err;
   }
 
-  // base fields
-  const update = {
+  // ---- base fields (only if provided) ----
+  const patch = {
     articleName: body.articleName,
     soleColor: body.soleColor,
+    mrp: body.mrp !== undefined ? Number(body.mrp || 0) : undefined,
+
     gender: body.gender,
 
     categoryId: body.categoryId,
@@ -159,11 +191,22 @@ exports.update = async (req, id) => {
     expectedAvailableDate: body.expectedAvailableDate || null,
   };
 
-  Object.keys(update).forEach((k) => {
-    if (update[k] !== undefined) doc[k] = update[k];
+  Object.keys(patch).forEach((k) => {
+    if (patch[k] !== undefined) doc[k] = patch[k];
   });
 
-  // images
+  // ---- attributes arrays ----
+  if (body.productColors !== undefined) {
+    const productColors = parseMaybeJson(body.productColors, []);
+    doc.productColors = Array.isArray(productColors) ? productColors : [];
+  }
+
+  if (body.sizeRanges !== undefined) {
+    const sizeRanges = parseMaybeJson(body.sizeRanges, []);
+    doc.sizeRanges = Array.isArray(sizeRanges) ? sizeRanges : [];
+  }
+
+  // ---- images ----
   const replaceSecondary = body.replaceSecondary === "true" || body.replaceSecondary === true;
   if (replaceSecondary) doc.secondaryImages = [];
 
@@ -172,10 +215,10 @@ exports.update = async (req, id) => {
   if (primaryImage?.url) doc.primaryImage = primaryImage;
   if (secondaryImages?.length) doc.secondaryImages.push(...secondaryImages);
 
-  // variants (replace only if provided)
-  const variants = parseMaybeJson(body.variants, null);
-  if (Array.isArray(variants)) {
-    doc.variants = variants; // ✅ order preserved
+  // ---- variants (replace only if provided) ----
+  if (body.variants !== undefined) {
+    const variantsRaw = parseMaybeJson(body.variants, []);
+    doc.variants = normalizeVariants(variantsRaw);
   }
 
   await doc.save();

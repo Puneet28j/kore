@@ -10,6 +10,7 @@ exports.createMasterCatalog = async (req, res) => {
     const doc = await masterCatalogService.create(req);
     return res.status(201).json({ message: "Master catalog created", data: doc });
   } catch (err) {
+    console.log("ERROR:", err);
     return sendError(res, err);
   }
 };

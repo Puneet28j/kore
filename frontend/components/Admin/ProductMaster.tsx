@@ -318,7 +318,12 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   // Handlers for Category
   const handleAddCategory = async (cat: string) => {
     try {
-      await masterCatalogService.createCategory(cat);
+      const res = await masterCatalogService.createCategory(cat);
+      // Backend returns { data: { _id, name, ... } }
+      const newCat = res.data;
+      if (newCat && newCat._id) {
+        setCategories(prev => [...prev, newCat]);
+      }
       await fetchTaxonomy();
     } catch (err: any) {
       alert(err.message || "Failed to add category");
@@ -340,7 +345,11 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   // Handlers for Brand
   const handleAddBrand = async (brand: string) => {
     try {
-      await masterCatalogService.createBrand(brand);
+      const res = await masterCatalogService.createBrand(brand);
+      const newBrand = res.data;
+      if (newBrand && newBrand._id) {
+        setBrands(prev => [...prev, newBrand]);
+      }
       await fetchTaxonomy();
     } catch (err: any) {
       alert(err.message || "Failed to add brand");
@@ -362,7 +371,11 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   // Handlers for Manufacturer
   const handleAddManufacturer = async (man: string) => {
     try {
-      await masterCatalogService.createManufacturer(man);
+      const res = await masterCatalogService.createManufacturer(man);
+      const newMan = res.data;
+      if (newMan && newMan._id) {
+        setManufacturers(prev => [...prev, newMan]);
+      }
       await fetchTaxonomy();
     } catch (err: any) {
       alert(err.message || "Failed to add manufacturer");
@@ -509,9 +522,18 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       return alert("Please fill all required fields");
     }
 
-    const categoryId = categories.find(c => (c.name || c) === formData.category)?._id || formData.category;
-    const brandId = brands.find(b => (b.name || b) === formData.brand)?._id || formData.brand;
-    const manufacturerId = manufacturers.find(m => (m.name || m) === formData.manufacturer)?._id || formData.manufacturer;
+    const foundCategory = categories.find(c => (c.name || c) === formData.category);
+    const categoryId = foundCategory?._id || foundCategory?.id;
+    
+    const foundBrand = brands.find(b => (b.name || b) === formData.brand);
+    const brandId = foundBrand?._id || foundBrand?.id;
+    
+    const foundMan = manufacturers.find(m => (m.name || m) === formData.manufacturer);
+    const manufacturerId = foundMan?._id || foundMan?.id;
+
+    if (!categoryId || !brandId || !manufacturerId) {
+      return alert("One or more taxonomy IDs (Category/Brand/Manufacturer) were not found. Please re-select them.");
+    }
 
     const data = new FormData();
     data.append("articleName", formData.artname);
@@ -998,7 +1020,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                   ) : (
                     <div
                       onClick={() => fileInputRef.current?.click()}
-                      className="aspect-[4/3] w-full rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 flex flex-col items-center justify-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/50 transition-all group"
+                      className="aspect-4/3 w-full rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 flex flex-col items-center justify-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/50 transition-all group"
                     >
                       <div className="p-4 bg-white rounded-full shadow-sm border border-slate-100 text-slate-400 group-hover:text-indigo-500 group-hover:scale-110 transition-transform mb-3">
                         <ImageIcon size={28} />
@@ -1146,10 +1168,10 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                     Cost Price (₹)
                                     <button
                                       type="button"
+                                      className="w-full text-left px-4 py-2.5 text-sm hover:bg-indigo-50 transition-colors flex items-center gap-3 border-b border-slate-50"
                                       onClick={() =>
                                         copyToAll("costPrice", range)
                                       }
-                                      className="text-[9px] text-indigo-400 hover:text-indigo-600 font-bold uppercase flex items-center gap-1 transition-colors"
                                     >
                                       <Copy size={9} /> Copy Range
                                     </button>

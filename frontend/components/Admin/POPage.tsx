@@ -1026,7 +1026,7 @@ const POPage: React.FC<POPageProps> = ({ articles }) => {
                                       </div>
                                       {variants.map((option) => (
                                         <button
-                                          key={`${option.articleId}-${option.variantId}`}
+                                          key={`${option.articleId}-${option.variantId}-${option.sku}`}
                                           type="button"
                                           className="w-full text-left px-4 py-2.5 text-sm hover:bg-indigo-50 transition-colors flex items-center gap-3 border-b border-slate-50"
                                           onClick={() =>

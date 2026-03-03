@@ -6,7 +6,7 @@ interface SearchableSelectProps {
   options: string[];
   value: string;
   onChange: (value: string) => void;
-  onAdd: (newValue: string) => void;
+  onAdd: (newValue: string) => Promise<void>;
   onDelete: (valueToDelete: string) => void;
   placeholder?: string;
   required?: boolean;
@@ -49,9 +49,9 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
     setSearchTerm("");
   };
 
-  const handleAddNew = () => {
+  const handleAddNew = async () => {
     if (newValue.trim()) {
-      onAdd(newValue.trim());
+      await onAdd(newValue.trim());
       onChange(newValue.trim());
       setNewValue("");
       setIsAdding(false);

@@ -343,9 +343,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   };
 
   // Handlers for Brand
-  const handleAddBrand = async (brand: string) => {
+  const handleAddBrand = async (brand: string, categoryId?: string) => {
     try {
-      const res = await masterCatalogService.createBrand(brand);
+      const res = await masterCatalogService.createBrand(brand, categoryId);
       const newBrand = res.data;
       if (newBrand && newBrand._id) {
         setBrands(prev => [...prev, newBrand]);
@@ -878,12 +878,22 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
                   <SearchableSelect
                     label="Brand"
-                    options={brands.map((b) => b.name || b)}
+                    options={brands
+                      .filter((b) => {
+                        if (!formData.category) return true;
+                        const cat = categories.find(c => (c.name || c) === formData.category);
+                        return !b.categoryId || b.categoryId._id === cat?._id || b.categoryId === cat?._id;
+                      })
+                      .map((b) => b.name || b)
+                    }
                     value={formData.brand}
                     onChange={(val) => setFormData({ ...formData, brand: val })}
-                    onAdd={handleAddBrand}
+                    onAdd={(brand) => {
+                      const cat = categories.find(c => (c.name || c) === formData.category);
+                      return handleAddBrand(brand, cat?._id);
+                    }}
                     onDelete={handleDeleteBrand}
-                    placeholder="Select Brand"
+                    placeholder={formData.category ? "Select Brand" : "Select Category first"}
                     required
                   />
 

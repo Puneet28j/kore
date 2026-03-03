@@ -49,7 +49,11 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
     setSearchTerm("");
   };
 
-  const handleAddNew = async () => {
+  const handleAddNew = async (e?: React.MouseEvent | React.KeyboardEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     if (newValue.trim()) {
       await onAdd(newValue.trim());
       onChange(newValue.trim());
@@ -102,7 +106,9 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
                     {opt}
                   </span>
                   <button
+                    type="button"
                     onClick={(e) => {
+                      e.preventDefault();
                       e.stopPropagation();
                       onDelete(opt);
                     }}
@@ -132,15 +138,28 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
                     const val = e.target.value;
                     setNewValue(val.charAt(0).toUpperCase() + val.slice(1));
                   }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleAddNew(e);
+                    }
+                  }}
                 />
                 <button
+                  type="button"
                   onClick={handleAddNew}
                   className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition shadow-sm"
                 >
                   <Plus size={16} />
                 </button>
                 <button
-                  onClick={() => setIsAdding(false)}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsAdding(false);
+                  }}
                   className="p-2 text-slate-400 hover:text-slate-600"
                 >
                   <X size={16} />
@@ -148,7 +167,9 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
               </div>
             ) : (
               <button
+                type="button"
                 onClick={(e) => {
+                  e.preventDefault();
                   e.stopPropagation();
                   setIsAdding(true);
                 }}

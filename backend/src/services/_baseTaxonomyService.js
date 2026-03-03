@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 exports.createOne = async (Model, body) => {
+  console.log(`[TaxonomyService] Creating ${Model.modelName}:`, body);
   if (!body?.name?.trim()) {
     const err = new Error("name is required");
     err.statusCode = 400;
@@ -10,11 +11,14 @@ exports.createOne = async (Model, body) => {
   }
 
   try {
-    return await Model.create({
+    const doc = await Model.create({
       ...body,
       name: body.name.trim(),
     });
+    console.log(`[TaxonomyService] Successfully created ${Model.modelName} (ID: ${doc._id})`);
+    return doc;
   } catch (e) {
+    console.error(`[TaxonomyService] Error creating ${Model.modelName}:`, e.message);
     if (e.code === 11000) {
       const err = new Error("Already exists");
       err.statusCode = 409;

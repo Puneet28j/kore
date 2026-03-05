@@ -41,11 +41,31 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   ].filter(Boolean);
 
   const variantName = variant.itemName || `${article.name} – ${variant.color}`;
-  const sizes = Object.keys(variant.sizeSkus || {});
-  const totalPairs = Object.values(variant.sizeQuantities || {}).reduce(
-    (s, v) => s + (Number(v) || 0),
-    0
-  );
+  
+  const parseSizeRange = (range: string) => {
+    const cleaned = range.trim().replace(/\s/g, "");
+    const m = cleaned.match(/^(\d+)-(\d+)$/);
+    if (!m) return [];
+    const start = Number(m[1]);
+    const end = Number(m[2]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+    if (end < start) return [];
+    const out: string[] = [];
+    for (let i = start; i <= end; i++) out.push(String(i));
+    return out;
+  };
+
+  const sizes = Object.keys(variant.sizeSkus || {}).length > 0
+    ? Object.keys(variant.sizeSkus)
+    : parseSizeRange(variant.sizeRange || article.sizeRange || "");
+
+  const currentSizeMap = variant.sizeMap || variant.sizeQuantities || {};
+
+  const totalPairs = Object.values(currentSizeMap).reduce((s, v) => {
+    const qty = typeof v === 'object' ? (v?.qty || 0) : (Number(v) || 0);
+    return s + qty;
+  }, 0);
+  
   // Clear identity: Variant SKU or Article SKU, no auto-generated strings
   const primarySku = variant.sku || article.sku || "";
 
@@ -200,8 +220,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {sizes.map((sz) => {
-                  const qty = variant.sizeQuantities?.[sz] || 0;
-                  const sku = variant.sizeSkus[sz] || "";
+                  const data = currentSizeMap[sz];
+                  const qty = typeof data === 'object' ? (data?.qty || 0) : (Number(data) || 0);
+                  const sku = (typeof data === 'object' ? data?.sku : variant.sizeSkus?.[sz]) || "";
                   
                   let statusColor = qty === 0 ? "rose" : qty < 24 ? "amber" : "emerald";
                   let bgClass = statusColor === "rose" ? "bg-rose-50/30 border-rose-100/50" : statusColor === "amber" ? "bg-amber-50/30 border-amber-100/50" : "bg-emerald-50/30 border-emerald-100/50";

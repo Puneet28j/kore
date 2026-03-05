@@ -67,10 +67,14 @@ const emptyVendor = (): Vendor => ({
   lastName: "",
   companyName: "",
   displayName: "",
+  vendorCode: "",
   email: "",
   workPhone: "",
   mobile: "",
+  gstNumber: "",
+  cinNumber: "",
   pan: "",
+  brand: "",
   msmeRegistered: false,
   currency: "INR- Indian Rupee",
   paymentTerms: "Due on Receipt",
@@ -531,14 +535,24 @@ const VendorManager: React.FC = () => {
               <label className={labelClass}>
                 Display Name <span className="text-rose-500">*</span>
               </label>
-              <input
-                disabled={loading}
-                type="text"
-                required
-                className={inputClass}
-                value={formData.displayName}
-                onChange={(e) => updateField("displayName", e.target.value)}
-              />
+              <div className="grid grid-cols-[1fr_150px] gap-2">
+                <input
+                  disabled={loading}
+                  type="text"
+                  required
+                  className={inputClass}
+                  value={formData.displayName}
+                  onChange={(e) => updateField("displayName", e.target.value)}
+                />
+                <input
+                  disabled={loading}
+                  type="text"
+                  placeholder="Code"
+                  className={inputClass}
+                  value={formData.vendorCode}
+                  onChange={(e) => updateField("vendorCode", e.target.value.toUpperCase())}
+                />
+              </div>
             </div>
 
             {/* EMAIL */}
@@ -620,16 +634,54 @@ const VendorManager: React.FC = () => {
           {/* ─── OTHER DETAILS ─── */}
           {activeFormTab === "other" && (
             <div className="space-y-6 max-w-2xl">
-              <div>
-                <label className={labelClass}>PAN</label>
-                <input
-                  type="text"
-                  className={inputClass}
-                  value={formData.pan}
-                  onChange={(e) =>
-                    updateField("pan", e.target.value.toUpperCase())
-                  }
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className={labelClass}>GST Number</label>
+                  <input
+                    type="text"
+                    className={inputClass}
+                    value={formData.gstNumber}
+                    onChange={(e) =>
+                      updateField("gstNumber", e.target.value.toUpperCase())
+                    }
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>CIN Number</label>
+                  <input
+                    type="text"
+                    className={inputClass}
+                    value={formData.cinNumber}
+                    onChange={(e) =>
+                      updateField("cinNumber", e.target.value.toUpperCase())
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className={labelClass}>PAN</label>
+                  <input
+                    type="text"
+                    className={inputClass}
+                    value={formData.pan}
+                    onChange={(e) =>
+                      updateField("pan", e.target.value.toUpperCase())
+                    }
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Brand</label>
+                  <input
+                    type="text"
+                    className={inputClass}
+                    value={formData.brand}
+                    onChange={(e) =>
+                      updateField("brand", e.target.value)
+                    }
+                  />
+                </div>
               </div>
 
               <div className="flex items-center gap-3">

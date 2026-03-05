@@ -22,7 +22,11 @@ const sanitizeVendorPayload = (body = {}) => {
     workPhone: body.workPhone,
     mobile: body.mobile,
 
+    gstNumber: body.gstNumber,
+    cinNumber: body.cinNumber,
+    vendorCode: body.vendorCode,
     pan: body.pan,
+    brand: body.brand,
     msmeRegistered: body.msmeRegistered,
 
     currency: body.currency,

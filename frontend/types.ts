@@ -30,6 +30,7 @@ export interface SizeBreakup {
 
 export interface Variant {
   id: string;
+  _id?: string;
   itemName: string;
   sku?: string;
   sizeSkus: Record<string, string>;
@@ -40,6 +41,7 @@ export interface Variant {
   mrp: number;
   hsnCode?: string;
   sizeQuantities: Record<string, number>;
+  sizeMap?: Record<string, { qty: number; sku: string }>;
 }
 
 export interface Assortment {
@@ -73,6 +75,7 @@ export interface Article {
   selectedColors?: string[];
   variants?: Variant[];
   secondaryImages?: { url: string }[];
+  sizeRange?: string;
 }
 
 export interface Inventory {
@@ -162,12 +165,16 @@ export interface Vendor {
   firstName: string;
   lastName: string;
   companyName: string;
+  vendorCode: string;
   displayName: string;
   email: string;
   workPhone: string;
   mobile: string;
   // Other Details
+  gstNumber: string;
+  cinNumber: string;
   pan: string;
+  brand: string;
   msmeRegistered: boolean;
   currency: string;
   paymentTerms: string;
@@ -197,8 +204,10 @@ export interface PurchaseOrderItem {
   taxRate: number;
   taxType: "GST" | "IGST";
   basePrice: number;
+  mrp: number;
   taxPerItem: number;
   unitTotal: number;
+  sizeMap?: Record<string, { qty: number; sku: string }>;
 }
 
 export type POStatus = "DRAFT" | "SENT";

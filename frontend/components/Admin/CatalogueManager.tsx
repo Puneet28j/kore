@@ -326,13 +326,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <button
+          {/* <button
             onClick={() => openModal()}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
           >
             <Plus size={18} />
             New Catalog
-          </button>
+          </button> */}
         </div>
       </div>
 
@@ -537,9 +537,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   Color
                                 </th>
-                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                {/* <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   Sizes
-                                </th>
+                                </th> */}
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   HSN Code
                                 </th>
@@ -593,11 +593,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                         {v.color || "—"}
                                       </span>
                                     </td>
-                                    <td className="px-6 py-3">
+                                    {/* <td className="px-6 py-3">
                                       <span className="text-xs font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
                                         {sizeCount} size{sizeCount !== 1 ? "s" : ""}
                                       </span>
-                                    </td>
+                                    </td> */}
                                     <td className="px-6 py-3 font-mono text-[11px] text-slate-500">
                                       {v.hsnCode || article.sku || "—"}
                                     </td>
@@ -615,6 +615,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                       <span className="text-sm font-bold text-indigo-600">
                                         ₹{(v.sellingPrice || 0).toLocaleString()}
                                       </span>
+                                    </td>
+                                    <td className="px-6 py-3 min-w-[200px]">
+                                      <SizeBreakdown 
+                                        sizeRange={v.sizeRange || article.sizeRange || ""} 
+                                        sizeMap={v.sizeMap || v.sizeQuantities || {}} 
+                                      />
                                     </td>
                                     <td className="px-6 py-3 text-right">
                                       <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">
@@ -672,6 +678,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                   <span className="text-xs font-bold text-indigo-600">
                                     ₹{(v.mrp || 0).toLocaleString()}
                                   </span>
+                                </div>
+                                <div className="mt-2">
+                                  <SizeBreakdown 
+                                    sizeRange={v.sizeRange || article.sizeRange || ""} 
+                                    sizeMap={v.sizeMap || v.sizeQuantities || {}} 
+                                  />
                                 </div>
                               </div>
                             );
@@ -1005,6 +1017,43 @@ const StatBox: React.FC<{ label: string; value: string; highlight?: boolean }> =
     </span>
   </div>
 );
+
+const SizeBreakdown: React.FC<{ sizeRange: string; sizeMap: any }> = ({ sizeRange, sizeMap }) => {
+  const parseSizeRange = (range: string) => {
+    const cleaned = range.trim().replace(/\s/g, "");
+    const m = cleaned.match(/^(\d+)-(\d+)$/);
+    if (!m) return [];
+    const start = Number(m[1]);
+    const end = Number(m[2]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+    if (end < start) return [];
+    const out: string[] = [];
+    for (let i = start; i <= end; i++) out.push(String(i));
+    return out;
+  };
+
+  const sizes = parseSizeRange(sizeRange);
+  if (sizes.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {sizes.map(sz => {
+        const data = sizeMap[sz];
+        const qty = typeof data === 'object' ? (data?.qty || 0) : (Number(data) || 0);
+        return (
+          <div key={sz} className="flex flex-col items-center min-w-[32px] bg-white border border-slate-100 rounded-md shadow-sm">
+            <span className="text-[9px] font-black text-slate-400 border-b border-slate-50 w-full text-center py-0.5">
+              {sz}
+            </span>
+            <span className={`text-[10px] font-bold py-0.5 ${qty > 0 ? "text-indigo-600" : "text-slate-300"}`}>
+              {qty}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 export default CatalogueManager;
 

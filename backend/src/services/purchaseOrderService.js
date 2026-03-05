@@ -103,7 +103,7 @@ exports.create = async (body) => {
       items: totals.items.map((it) => ({
         rowId: it.id || it.rowId || "",
         articleId: mongoose.Types.ObjectId.isValid(it.articleId) ? it.articleId : undefined,
-        variantId: mongoose.Types.ObjectId.isValid(it.variantId) ? it.variantId : undefined,
+        variantId: it.variantId || "",
 
         itemName: it.itemName || "",
         image: it.image || "",
@@ -115,9 +115,11 @@ exports.create = async (body) => {
         taxRate: it.taxRate,
         taxType: it.taxType || "GST",
         basePrice: it.basePrice,
+        mrp: it.mrp || 0,
 
         taxPerItem: it.taxPerItem,
         unitTotal: it.unitTotal,
+        sizeMap: it.sizeMap || {},
       })),
 
       subTotal: totals.subTotal,
@@ -248,7 +250,7 @@ exports.update = async (id, body) => {
     doc.items = totals.items.map((it) => ({
       rowId: it.id || it.rowId || "",
       articleId: mongoose.Types.ObjectId.isValid(it.articleId) ? it.articleId : undefined,
-      variantId: mongoose.Types.ObjectId.isValid(it.variantId) ? it.variantId : undefined,
+      variantId: it.variantId || "",
       itemName: it.itemName || "",
       image: it.image || "",
       sku: it.sku || "",
@@ -258,8 +260,10 @@ exports.update = async (id, body) => {
       taxRate: it.taxRate,
       taxType: it.taxType || "GST",
       basePrice: it.basePrice,
+      mrp: it.mrp || 0,
       taxPerItem: it.taxPerItem,
       unitTotal: it.unitTotal,
+      sizeMap: it.sizeMap || {},
     }));
 
     doc.subTotal = totals.subTotal;

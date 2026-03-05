@@ -35,14 +35,16 @@ const VendorSchema = new mongoose.Schema(
     lastName: { type: String, trim: true, default: "" },
 
     companyName: { type: String, trim: true, default: "" },
-
+    vendorCode: { type: String, trim: true, uppercase: true, default: "" },
     displayName: { type: String, required: true, trim: true }, // ✅ required
     email: { type: String, trim: true, lowercase: true, default: "" },
 
     workPhone: { type: String, trim: true, default: "" },
     mobile: { type: String, trim: true, default: "" },
-
+    gstNumber: { type: String, trim: true, uppercase: true, default: "" },
+    cinNumber: { type: String, trim: true, uppercase: true, default: "" },
     pan: { type: String, trim: true, uppercase: true, default: "" },
+    brand: { type: String, trim: true, default: "" },
     msmeRegistered: { type: Boolean, default: false },
 
     currency: { type: String, trim: true, default: "INR- Indian Rupee" },

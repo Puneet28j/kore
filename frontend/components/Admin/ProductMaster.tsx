@@ -211,38 +211,20 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
             (v) => v.color === color && v.sizeRange === range
           );
           if (existing) {
-            // Preserve existing data, but ensure all sizes in range have entries
-            const sizes = parseSizeRange(range);
-            const updatedQty = { ...existing.sizeQuantities };
-            sizes.forEach((s) => {
-              if (!(s in updatedQty)) updatedQty[s] = 0;
-            });
-            newVariants.push({ ...existing, sizeQuantities: updatedQty });
+            newVariants.push(existing);
           } else {
-            const sizes = parseSizeRange(range);
-            const sizeQuantities: Record<string, number> = {};
-            const sizeSkus: Record<string, string> = {};
-            sizes.forEach((s) => {
-              sizeQuantities[s] = 0;
-              // Auto-generate SKU: ArtName-Color-Size
-              const artNameSlug = (formData.artname || "Item")
-                .toLowerCase()
-                .replace(/\s+/g, "-");
-              const colorSlug = color.toLowerCase().replace(/\s+/g, "-");
-              sizeSkus[s] = `${artNameSlug}-${colorSlug}-${s}`;
-            });
             newVariants.push({
               id: `var-${color}-${range}-${Date.now()}`,
               itemName: `${formData.artname || "Item"}-${color}-${range}`,
               sku: "",
-              sizeSkus,
+              sizeSkus: {},
               color,
               sizeRange: range,
               costPrice: 0,
               sellingPrice: 0,
               mrp: formData.mrp || 0,
               hsnCode: formData.hsnCode || "",
-              sizeQuantities,
+              sizeQuantities: {},
             });
           }
         });
@@ -255,24 +237,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   const updateVariantField = (id: string, field: keyof Variant, value: any) => {
     setVariants((prev) =>
       prev.map((v) => (v.id === id ? { ...v, [field]: value } : v))
-    );
-  };
-
-  const updateVariantSizeQty = (id: string, size: string, qty: number) => {
-    setVariants((prev) =>
-      prev.map((v) => {
-        if (v.id !== id) return v;
-        return { ...v, sizeQuantities: { ...v.sizeQuantities, [size]: qty } };
-      })
-    );
-  };
-
-  const updateVariantSizeSku = (id: string, size: string, sku: string) => {
-    setVariants((prev) =>
-      prev.map((v) => {
-        if (v.id !== id) return v;
-        return { ...v, sizeSkus: { ...v.sizeSkus, [size]: sku } };
-      })
     );
   };
 
@@ -295,22 +259,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       prev.map((v) => {
         if (sizeRange && v.sizeRange !== sizeRange) return v;
         return { ...v, [field]: firstVal };
-      })
-    );
-  };
-
-  const copySizeQtyToAll = (size: string, sizeRange: string) => {
-    const targetVariants = variants.filter((v) => v.sizeRange === sizeRange);
-    if (targetVariants.length === 0) return;
-    const firstVal = targetVariants[0].sizeQuantities[size] || 0;
-
-    setVariants((prev) =>
-      prev.map((v) => {
-        if (v.sizeRange !== sizeRange) return v;
-        return {
-          ...v,
-          sizeQuantities: { ...v.sizeQuantities, [size]: firstVal },
-        };
       })
     );
   };
@@ -584,7 +532,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     data.append("productColors", JSON.stringify(selectedColors));
     data.append("sizeRanges", JSON.stringify(sizeRanges));
 
-    // Normalize variants for backend
+    // Normalize variants for backend (no sizeMap — managed via PO dialog)
     const normalizedVariants = variants.map(v => ({
       itemName: v.itemName,
       costPrice: v.costPrice,
@@ -593,10 +541,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       hsnCode: v.hsnCode,
       color: v.color,
       sizeRange: v.sizeRange,
-      sizeMap: Object.keys(v.sizeQuantities).reduce((acc, size) => {
-        acc[size] = { qty: v.sizeQuantities[size], sku: v.sizeSkus[size] };
-        return acc;
-      }, {} as any)
     }));
     data.append("variants", JSON.stringify(normalizedVariants));
 
@@ -1218,29 +1162,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                     Selling Price (₹)
                                   </div>
                                 </th>
-                                {/* Dynamic size columns for THIS range only */}
-                                {rangeSizes.map((size) => (
-                                  <th
-                                    key={size}
-                                    className="px-2 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider text-center whitespace-nowrap min-w-[120px]"
-                                  >
-                                    <div className="flex flex-col items-center gap-1">
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-[11px] font-black">Size {size}</span>
-                                        <button
-                                          type="button"
-                                          onClick={() => copySizeQtyToAll(size, range)}
-                                          title={`Apply this Qty to all Colors for Size ${size}`}
-                                          className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-100/80 hover:bg-emerald-200 rounded text-[9px] font-black text-emerald-700 transition-all border border-emerald-200 shadow-sm uppercase tracking-tighter"
-                                        >
-                                          <Copy size={8} />
-                                          Apply
-                                        </button>
-                                      </div>
-                                      <span className="text-[8px] text-slate-400 font-medium whitespace-nowrap">Qty / SKU</span>
-                                    </div>
-                                  </th>
-                                ))}
+
                                 <th className="px-3 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap">
                                   <div className="flex flex-col gap-0.5">
                                     MRP (₹)
@@ -1323,45 +1245,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                       }
                                     />
                                   </td>
-                                  {/* Sizes for this variant */}
-                                  {rangeSizes.map((size) => (
-                                    <td
-                                      key={size}
-                                      className="px-2 py-2.5 text-center"
-                                    >
-                                      <div className="flex flex-col gap-1.5">
-                                        <input
-                                          type="number"
-                                          min="0"
-                                          placeholder="Qty"
-                                          className="w-full min-w-12.5 p-2 bg-emerald-50/50 border border-emerald-200/50 rounded-lg text-xs font-bold text-emerald-800 text-center outline-none focus:ring-1 focus:ring-emerald-400/30 focus:border-emerald-400 transition-all"
-                                          value={
-                                            variant.sizeQuantities[size] || ""
-                                          }
-                                          onChange={(e) =>
-                                            updateVariantSizeQty(
-                                              variant.id,
-                                              size,
-                                              Number(e.target.value)
-                                            )
-                                          }
-                                        />
-                                        <input
-                                          type="text"
-                                          placeholder="SKU"
-                                          className="w-full min-w-[100px] p-1.5 bg-slate-50 border border-slate-200 rounded-md text-[10px] font-medium text-slate-600 outline-none focus:ring-1 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all"
-                                          value={variant.sizeSkus[size] || ""}
-                                          onChange={(e) =>
-                                            updateVariantSizeSku(
-                                              variant.id,
-                                              size,
-                                              e.target.value
-                                            )
-                                          }
-                                        />
-                                      </div>
-                                    </td>
-                                  ))}
+
                                   {/* MRP */}
                                   <td className="px-3 py-2.5">
                                     <input

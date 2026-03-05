@@ -60,7 +60,7 @@ export const exportPOToPDF = (po: PurchaseOrder, vendor?: Vendor) => {
   const topTableData = [
     [
       { content: "Company Name", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      COMPANY_INFO.name,
+      vendor?.companyName || vendor?.displayName || COMPANY_INFO.name,
       { content: "Vendor Name", styles: { fontStyle: "bold" } },
       vendor?.displayName || po.vendorName,
       { content: "PO Number", styles: { fontStyle: "bold" } },
@@ -68,49 +68,43 @@ export const exportPOToPDF = (po: PurchaseOrder, vendor?: Vendor) => {
     ],
     [
       { content: "CIN No.", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      COMPANY_INFO.cin,
+      vendor?.cinNumber || COMPANY_INFO.cin,
       { content: "Vendor Code", styles: { fontStyle: "bold" } },
-      vendor ? `#${vendor.id.slice(-6).toUpperCase()}` : "", // Fallback
+      vendor?.vendorCode || "",
       { content: "PO Date", styles: { fontStyle: "bold" } },
       poDate
     ],
     [
       { content: "GST No.", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      COMPANY_INFO.gst,
-      { content: "GST No.", styles: { fontStyle: "bold" } },
-      (vendor as any)?.gstNumber || "", // Assuming vendor has gstNumber,
+      vendor?.gstNumber || COMPANY_INFO.gst,
       { content: "Brand", styles: { fontStyle: "bold" } },
-      COMPANY_INFO.brand
-    ],
-    [
-      { content: "PAN No.", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      COMPANY_INFO.pan,
-      { content: "PAN No.", styles: { fontStyle: "bold" } },
-      (vendor as any)?.panNumber || vendor?.pan || "", // Assuming vendor has panNumber
+      vendor?.brand || COMPANY_INFO.brand,
       { content: "Delivery Date", styles: { fontStyle: "bold" } },
       deliveryDate
     ],
     [
+      { content: "PAN No.", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
+      vendor?.pan || COMPANY_INFO.pan,
+      { content: "Total Value INR", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
+      po.total.toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+      { content: "Total Order Qty.", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
+      totalQty.toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+    ],
+    [
       { content: "Invoice To", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      COMPANY_INFO.invoiceTo,
+      vendorAddress || COMPANY_INFO.invoiceTo,
       { content: "Vendor address", styles: { fontStyle: "bold" } },
       vendorAddress,
       { content: "PO Expiry Date", styles: { fontStyle: "bold" } },
       expiryDate
     ],
     [
-      { content: "Company address", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      "", // Left empty in image
-      { content: "", colSpan: 2 },
-      { content: "Total Value INR", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      po.total.toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-    ],
-    [
       { content: "Ship To", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      COMPANY_INFO.shipTo,
-      { content: "", colSpan: 2 },
-      { content: "Total Order Qty.", styles: { fontStyle: "bold", fillColor: [240, 245, 240] } },
-      totalQty.toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      vendorAddress || COMPANY_INFO.shipTo,
+      { content: "Contact Person", styles: { fontStyle: "bold" } },
+      vendor?.displayName || "",
+      { content: "Phone", styles: { fontStyle: "bold" } },
+      vendor?.mobile || vendor?.workPhone || ""
     ]
   ];
 
@@ -123,7 +117,7 @@ export const exportPOToPDF = (po: PurchaseOrder, vendor?: Vendor) => {
     body: [
       [
         { content: "yoho", styles: { halign: "left", fontSize: 16, fontStyle: "bold", textColor: [110, 190, 150] } },
-        { content: COMPANY_INFO.name, styles: { halign: "center", fontStyle: "bold", fontSize: 11 } },
+        { content:vendor?.companyName || COMPANY_INFO.name, styles: { halign: "center", fontStyle: "bold", fontSize: 11 } },
         { content: "Purchase Order", styles: { halign: "left", fontSize: 14, fontStyle: "bold", fillColor: [240, 245, 240] } }
       ]
     ],
@@ -159,59 +153,121 @@ export const exportPOToPDF = (po: PurchaseOrder, vendor?: Vendor) => {
 
   // Table Data Mapping
   // EAN | HSN | STYLE NAME | STYLE NO. | SKU | MARKETED COLOR | GENDER | MRP | PO QTY | UNIT PRICE | TOTAL W/O GST | GST (%) | TOTAL VALUE
-  const itemRows = po.items.map(item => {
-    const parts = item.itemName.split("-");
-    const styleName = parts.length > 0 ? parts[0] : "";
+  // Table Data Mapping - Flattening by size
+  const itemRows: any[] = [];
+  
+  po.items.forEach(item => {
+    // Robustly extract style and color
+    // itemName is often "Style-Color-Range" or "Brand - Style - Color"
+    const parts = item.itemName.split("-").map(p => p.trim());
+    const masterName = parts[0] || ""; // e.g. "Urban"
+    const styleBase = parts.slice(0, 2).join("-"); // e.g. "Urban-Red"
+    const styleNo = styleBase; 
     const color = parts.length > 1 ? parts[1] : "";
-    
-    // Fallbacks if EAN isn't in item
-    const ean = item.sku || ""; 
-    const hsn = item.itemTaxCode || "";
-    // Using Article ID / Variant ID mapping might be needed, but we rely on populated fields
-    const styleNo = item.sku || "";
-    const gender = "M"; // Default from image, or could be mapped if item has gender
+    const gender = "M";
 
-    const totalWoGst = item.quantity * item.basePrice;
+    // Handle potential Map types or plain objects more safely
+    let sizeMap: any = {};
+    if (item.sizeMap) {
+      if (typeof (item.sizeMap as any).get === 'function') {
+        // It's likely a Map
+        (item.sizeMap as any).forEach((v: any, k: string) => {
+          sizeMap[k] = v;
+        });
+      } else {
+        sizeMap = item.sizeMap;
+      }
+    }
 
-    return [
-      ean,
-      hsn,
-      styleName,
-      styleNo,
-      item.sku,
-      color,
-      gender,
-      item.basePrice.toFixed(1), // MRP
-      item.quantity.toFixed(1), // PO QTY
-      item.basePrice.toFixed(1), // UNIT PRICE
-      totalWoGst, // TOTAL W/O GST
-      item.taxRate.toFixed(1), // GST (%)
-      item.unitTotal // TOTAL VALUE
-    ];
+    const sizeEntries = Object.entries(sizeMap);
+    const validSizes = sizeEntries.filter(([_, data]: [string, any]) => data && data.qty > 0);
+
+    if (validSizes.length > 0) {
+      // Create a row for each size in the sizeMap with qty > 0
+      validSizes.forEach(([size, data]: [string, any]) => {
+        const totalWoGst = data.qty * item.basePrice;
+        const totalValue = totalWoGst + (totalWoGst * item.taxRate / 100);
+        
+        // styleName should be master name + size
+        const rowStyleName = `${masterName}-${size}`;
+        // SKU as urban-red-4 (styleBase + size)
+        const rowSku = data.sku || `${styleBase}-${size}`;
+
+        itemRows.push([
+          "",                          // EAN (empty per user request)
+          item.itemTaxCode || "",      // HSN
+          rowStyleName,                // STYLE NAME
+          styleNo,                     // STYLE NO.
+          rowSku,                      // SKU
+          color,                       // MARKETED COLOR
+          gender,                      // GENDER
+          item.mrp.toFixed(1),         // MRP
+          data.qty.toFixed(1),         // PO QTY
+          item.basePrice.toFixed(1),   // UNIT PRICE
+          totalWoGst.toFixed(2),       // TOTAL W/O GST
+          item.taxRate.toFixed(1),     // GST (%)
+          totalValue.toFixed(2)        // TOTAL VALUE
+        ]);
+      });
+    } else {
+      // Fallback: original row if no sizes found
+      const totalWoGst = item.quantity * item.basePrice;
+      itemRows.push([
+        "", // EAN
+        item.itemTaxCode || "",
+        item.itemName,
+        styleNo,
+        item.sku,
+        color,
+        gender,
+        item.mrp.toFixed(1),
+        item.quantity.toFixed(1),
+        item.basePrice.toFixed(1),
+        totalWoGst.toFixed(2),
+        item.taxRate.toFixed(1),
+        item.unitTotal.toFixed(2)
+      ]);
+    }
   });
 
   autoTable(doc, {
     startY: (doc as any).lastAutoTable.finalY + 10,
-    margin: { left: 40, right: 40 },
+    margin: { left: 40, right: 40 }, // Resetting to 40 to match the header table exactly
     theme: "grid",
     headStyles: {
       fillColor: [240, 245, 240],
       textColor: [0, 0, 0],
       fontStyle: "bold",
-      fontSize: 7,
+      fontSize: 6.5,
       lineColor: [0, 0, 0],
       lineWidth: 0.5,
       halign: "center",
       valign: "middle"
     },
     styles: {
-      fontSize: 7,
-      cellPadding: 3,
+      fontSize: 6.5,
+      cellPadding: 2,
       textColor: [0, 0, 0],
       lineColor: [0, 0, 0],
       lineWidth: 0.5,
       halign: "center",
-      valign: "middle"
+      valign: "middle",
+      overflow: "linebreak"
+    },
+    columnStyles: {
+      0: { cellWidth: 25 }, // EAN (narrower since empty)
+      1: { cellWidth: 35 }, // HSN
+      2: { cellWidth: 70.28, halign: "left" }, // STYLE NAME (adjusted to align total width to 515.28)
+      3: { cellWidth: 55 }, // STYLE NO
+      4: { cellWidth: 55 }, // SKU
+      5: { cellWidth: 40 }, // COLOR
+      6: { cellWidth: 25 }, // GENDER
+      7: { cellWidth: 30 }, // MRP
+      8: { cellWidth: 30, fontStyle: "bold" }, // PO QTY
+      9: { cellWidth: 35 }, // UNIT PRICE
+      10: { cellWidth: 40 }, // TOTAL W/O GST
+      11: { cellWidth: 25 }, // GST %
+      12: { cellWidth: 50 }  // TOTAL VALUE (slightly wider)
     },
     head: [[
       "EAN", "HSN", "STYLE\nNAME", "STYLE\nNO.", "SKU", "MARKETED\nCOLOR", 

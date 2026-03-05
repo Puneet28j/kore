@@ -6,7 +6,7 @@ const PurchaseOrderItemSchema = new mongoose.Schema(
     rowId: { type: String, trim: true, default: "" },
 
     articleId: { type: mongoose.Schema.Types.ObjectId, ref: "MasterCatalog", required: false },
-    variantId: { type: mongoose.Schema.Types.ObjectId, required: false },
+    variantId: { type: String, trim: true, default: "" },
 
     itemName: { type: String, trim: true, default: "" },
     image: { type: String, trim: true, default: "" },
@@ -21,10 +21,21 @@ const PurchaseOrderItemSchema = new mongoose.Schema(
     taxType: { type: String, enum: ["GST", "IGST"], default: "GST" },
 
     basePrice: { type: Number, min: 0, default: 0 },
+    mrp: { type: Number, min: 0, default: 0 },
 
     // server computed (store snapshot)
     taxPerItem: { type: Number, min: 0, default: 0 },
     unitTotal: { type: Number, min: 0, default: 0 },
+
+    // Added: store the size-level breakdown in the PO item itself
+    sizeMap: {
+      type: Map,
+      of: {
+        qty: { type: Number, default: 0 },
+        sku: { type: String, default: "" },
+      },
+      default: {},
+    },
   },
   { _id: true }
 );

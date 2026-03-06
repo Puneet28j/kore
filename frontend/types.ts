@@ -15,6 +15,13 @@ export interface User {
   isActive: boolean;
   location?: string;
   companyName?: string;
+  phone?: string;
+  gstNumber?: string;
+  billingAddress?: string;
+  shippingAddress?: string;
+  paymentTerms?: string;
+  discountPercentage?: number;
+  creditLimit?: number;
 }
 
 export enum AssortmentType {
@@ -42,6 +49,7 @@ export interface Variant {
   hsnCode?: string;
   sizeQuantities: Record<string, number>;
   sizeMap?: Record<string, { qty: number; sku: string }>;
+  bookingMap?: Record<string, number>;
 }
 
 export interface Assortment {

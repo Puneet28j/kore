@@ -926,6 +926,9 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-right">
                       Total
                     </th>
+                    <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-center">
+                      Action
+                    </th>
                     <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-right">
                       Status
                     </th>
@@ -955,6 +958,19 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-900 font-bold text-right">
                         ₹{po.total.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => {
+                            const v = vendors.find(ven => ven.id === po.vendorId);
+                            exportPOToPDF(po, v);
+                          }}
+                          className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-all inline-flex items-center gap-1 font-semibold text-xs"
+                          title="Download PDF"
+                        >
+                          <FileText size={16} />
+                          PDF
+                        </button>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <span

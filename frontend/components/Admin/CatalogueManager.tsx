@@ -326,13 +326,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          {/* <button
-            onClick={() => openModal()}
-            className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
-          >
-            <Plus size={18} />
-            New Catalog
-          </button> */}
         </div>
       </div>
 
@@ -537,9 +530,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   Color
                                 </th>
-                                {/* <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                  Sizes
-                                </th> */}
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   HSN Code
                                 </th>
@@ -552,8 +542,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   Selling
                                 </th>
-                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">
-                                  
+                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                  Size & Booking
                                 </th>
                               </tr>
                             </thead>
@@ -561,9 +551,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                               {article.variants!.map((v) => {
                                 const vName =
                                   v.itemName || `${article.name} - ${v.color}`;
-                                const sizeCount = Object.keys(
-                                  v.sizeSkus || {}
-                                ).length;
                                 return (
                                   <tr
                                     key={v.id}
@@ -593,11 +580,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                         {v.color || "—"}
                                       </span>
                                     </td>
-                                    {/* <td className="px-6 py-3">
-                                      <span className="text-xs font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
-                                        {sizeCount} size{sizeCount !== 1 ? "s" : ""}
-                                      </span>
-                                    </td> */}
                                     <td className="px-6 py-3 font-mono text-[11px] text-slate-500">
                                       {v.hsnCode || article.sku || "—"}
                                     </td>
@@ -616,16 +598,32 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                         ₹{(v.sellingPrice || 0).toLocaleString()}
                                       </span>
                                     </td>
-                                    <td className="px-6 py-3 min-w-[200px]">
-                                      <SizeBreakdown 
-                                        sizeRange={v.sizeRange || article.sizeRange || ""} 
-                                        sizeMap={v.sizeMap || v.sizeQuantities || {}} 
-                                      />
-                                    </td>
-                                    <td className="px-6 py-3 text-right">
-                                      <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">
-                                        View →
-                                      </span>
+                                    <td className="px-6 py-3 min-w-[300px]">
+                                      <div className="grid grid-cols-2 gap-2">
+                                        {/* Size Breakdown - Left */}
+                                        <div className="bg-white rounded-lg border border-slate-100 p-2">
+                                          <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
+                                            Size Stock
+                                          </div>
+                                          <SizeBreakdown 
+                                            sizeRange={v.sizeRange || article.sizeRange || ""} 
+                                            sizeMap={v.sizeMap || v.sizeQuantities || {}} 
+                                            type="stock"
+                                          />
+                                        </div>
+                                        
+                                        {/* Booking Breakdown - Right */}
+                                        <div className="bg-white rounded-lg border border-slate-100 p-2">
+                                          <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
+                                            Booked Qty
+                                          </div>
+                                          <SizeBreakdown 
+                                            sizeRange={v.sizeRange || article.sizeRange || ""} 
+                                            sizeMap={v.bookingMap || {}} 
+                                            type="booking"
+                                          />
+                                        </div>
+                                      </div>
                                     </td>
                                   </tr>
                                 );
@@ -639,9 +637,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                           {article.variants!.map((v) => {
                             const vName =
                               v.itemName || `${article.name} - ${v.color}`;
-                            const sizeCount = Object.keys(
-                              v.sizeSkus || {}
-                            ).length;
                             return (
                               <div
                                 key={v.id}
@@ -657,7 +652,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     </p>
                                     <p className="text-[10px] font-mono text-slate-400 tracking-wider mt-0.5">
                                       {v.sku || article.sku || ""}
-                                    </p></div>
+                                    </p>
+                                  </div>
                                   <span className="text-[10px] font-bold text-indigo-500 uppercase shrink-0">
                                     View →
                                   </span>
@@ -672,18 +668,29 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     />
                                     {v.color || "—"}
                                   </span>
-                                  <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">
-                                    {sizeCount} sizes
-                                  </span>
                                   <span className="text-xs font-bold text-indigo-600">
                                     ₹{(v.mrp || 0).toLocaleString()}
                                   </span>
                                 </div>
-                                <div className="mt-2">
-                                  <SizeBreakdown 
-                                    sizeRange={v.sizeRange || article.sizeRange || ""} 
-                                    sizeMap={v.sizeMap || v.sizeQuantities || {}} 
-                                  />
+                                <div className="mt-3 grid grid-cols-2 gap-2">
+                                  <div className="bg-slate-50 rounded-lg p-2">
+                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">Size Stock</div>
+                                    <SizeBreakdown 
+                                      sizeRange={v.sizeRange || article.sizeRange || ""} 
+                                      sizeMap={v.sizeMap || v.sizeQuantities || {}} 
+                                      type="stock"
+                                      compact
+                                    />
+                                  </div>
+                                  <div className="bg-slate-50 rounded-lg p-2">
+                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">Booked</div>
+                                    <SizeBreakdown 
+                                      sizeRange={v.sizeRange || article.sizeRange || ""} 
+                                      sizeMap={v.bookingMap || {}} 
+                                      type="booking"
+                                      compact
+                                    />
+                                  </div>
                                 </div>
                               </div>
                             );
@@ -1018,7 +1025,12 @@ const StatBox: React.FC<{ label: string; value: string; highlight?: boolean }> =
   </div>
 );
 
-const SizeBreakdown: React.FC<{ sizeRange: string; sizeMap: any }> = ({ sizeRange, sizeMap }) => {
+const SizeBreakdown: React.FC<{ 
+  sizeRange: string; 
+  sizeMap: any; 
+  type?: 'stock' | 'booking';
+  compact?: boolean;
+}> = ({ sizeRange, sizeMap, type = 'stock', compact = false }) => {
   const parseSizeRange = (range: string) => {
     const cleaned = range.trim().replace(/\s/g, "");
     const m = cleaned.match(/^(\d+)-(\d+)$/);
@@ -1035,17 +1047,51 @@ const SizeBreakdown: React.FC<{ sizeRange: string; sizeMap: any }> = ({ sizeRang
   const sizes = parseSizeRange(sizeRange);
   if (sizes.length === 0) return null;
 
+  const getQty = (val: any) => {
+    if (typeof val === 'object' && val !== null && 'qty' in val) {
+      return Number(val.qty) || 0;
+    }
+    return Number(val) || 0;
+  };
+
+  if (compact) {
+    return (
+      <div className="flex flex-wrap gap-1">
+        {sizes.map(sz => {
+          const rawVal = sizeMap[sz] || 0;
+          let qty = getQty(rawVal);
+          if (type === 'stock') qty = 0; // Forced to 0 as PO quantities are not GRN inventory
+          return (
+            <div key={sz} className="flex items-center bg-white border border-slate-100 rounded px-1.5 py-0.5">
+              <span className="text-[8px] font-black text-slate-400 mr-1">{sz}:</span>
+              <span className={`text-[9px] font-bold ${qty > 0 ? "text-indigo-600" : "text-slate-300"}`}>
+                {qty}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap gap-1.5">
       {sizes.map(sz => {
-        const data = sizeMap[sz];
-        const qty = typeof data === 'object' ? (data?.qty || 0) : (Number(data) || 0);
+        const rawVal = sizeMap[sz] || 0;
+        let qty = getQty(rawVal);
+        if (type === 'stock') qty = 0; // Forced to 0 as PO quantities are not GRN inventory
+        
+        const isPositive = qty > 0;
+        const colorClass = type === 'stock' 
+          ? (isPositive ? "text-indigo-600" : "text-slate-300")
+          : (isPositive ? "text-emerald-600" : "text-slate-300");
+        
         return (
           <div key={sz} className="flex flex-col items-center min-w-[32px] bg-white border border-slate-100 rounded-md shadow-sm">
             <span className="text-[9px] font-black text-slate-400 border-b border-slate-50 w-full text-center py-0.5">
               {sz}
             </span>
-            <span className={`text-[10px] font-bold py-0.5 ${qty > 0 ? "text-indigo-600" : "text-slate-300"}`}>
+            <span className={`text-[10px] font-bold py-0.5 ${colorClass}`}>
               {qty}
             </span>
           </div>

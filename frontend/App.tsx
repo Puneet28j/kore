@@ -28,6 +28,7 @@ import ProductMaster from "./components/Admin/ProductMaster";
 import VendorManager from "./components/Admin/VendorManager";
 import VariantDetailsPage from "./components/Admin/VariantDetailsPage";
 import UserManager from "./components/Admin/UserManager";
+import DistributorManager from "./components/Admin/DistributorManager";
 import { masterCatalogService } from "./services/masterCatalogService";
 
 // ✅ NEW: Sidebar component (create this file separately)
@@ -521,39 +522,7 @@ const App: React.FC = () => {
         )}
 
         {activeTab === "distributors" && (user.role !== UserRole.DISTRIBUTOR) && (
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left min-w-[600px]">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="px-6 py-4 text-sm font-semibold text-slate-600">Company Name</th>
-                    <th className="px-6 py-4 text-sm font-semibold text-slate-600">Location</th>
-                    <th className="px-6 py-4 text-sm font-semibold text-slate-600">Total Orders</th>
-                    <th className="px-6 py-4 text-sm font-semibold text-slate-600 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {MOCK_DISTRIBUTORS.filter((d) => d.role === UserRole.DISTRIBUTOR).map((dist) => (
-                    <tr key={dist.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-slate-900">{dist.companyName}</td>
-                      <td className="px-6 py-4 text-slate-500">{dist.location}</td>
-                      <td className="px-6 py-4 text-slate-600">
-                        <span className="font-bold">
-                          {orders.filter((o) => o.distributorId === dist.id).length}
-                        </span>{" "}
-                        Completed
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button className="text-indigo-600 hover:text-indigo-800 font-bold text-sm">
-                          View Ledger
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <DistributorManager orders={orders} />
         )}
       </main>
       <Toaster position="top-right" richColors />

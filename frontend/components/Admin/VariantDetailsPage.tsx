@@ -6,9 +6,9 @@ import {
   Tag,
   Package,
   Layers,
-  ArrowRightLeft,
   Copy,
   Check,
+  ShoppingBag,
 } from "lucide-react";
 import { Article, Variant } from "../../types";
 
@@ -60,10 +60,15 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
     : parseSizeRange(variant.sizeRange || article.sizeRange || "");
 
   const currentSizeMap = variant.sizeMap || variant.sizeQuantities || {};
+  const currentBookingMap = variant.bookingMap || {};
 
   const totalPairs = Object.values(currentSizeMap).reduce((s, v) => {
-    const qty = typeof v === 'object' ? (v?.qty || 0) : (Number(v) || 0);
+    const qty = 0; // Forced to 0 as PO quantities are not GRN inventory
     return s + qty;
+  }, 0);
+
+  const totalBooked = Object.values(currentBookingMap).reduce((s, v) => {
+    return s + (Number(v) || 0);
   }, 0);
   
   // Clear identity: Variant SKU or Article SKU, no auto-generated strings
@@ -109,7 +114,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
         </div>
       </div>
 
-      {/* Main 3-column layout */}
+      {/* Main 3-column layout (EXACTLY AS BEFORE) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* ─── Col 1: Image ─── */}
         <div className="lg:col-span-3">
@@ -152,7 +157,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
           </div>
         </div>
 
-        {/* ─── Col 2: Core Details ─── */}
+        {/* ─── Col 2: Core Details (Identity + Pricing + Size) ─── */}
         <div className="lg:col-span-5 space-y-4">
           {/* Identity Card */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
@@ -175,109 +180,26 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
             </div>
 
             {/* SKU + Tags */}
-              <div className="flex items-center gap-2 mt-3 flex-wrap">
-                <button
-                  onClick={() => copySku(primarySku)}
-                  className="inline-flex items-center gap-1.5 font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-100 hover:bg-indigo-100 transition-colors"
-                >
-                  {copiedSku === primarySku ? <Check size={11} /> : <Copy size={11} />}
-                  {primarySku}
-                </button>
+            <div className="flex items-center gap-2 mt-3 flex-wrap">
+              <button
+                onClick={() => copySku(primarySku)}
+                className="inline-flex items-center gap-1.5 font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-100 hover:bg-indigo-100 transition-colors"
+              >
+                {copiedSku === primarySku ? <Check size={11} /> : <Copy size={11} />}
+                {primarySku}
+              </button>
               <Badge icon={<Tag size={8} />} text={article.category} />
               {article.productCategory && <Badge icon={<Package size={8} />} text={article.productCategory} />}
               {article.brand && <Badge icon={<Layers size={8} />} text={article.brand} />}
             </div>
           </div>
+
           {/* Pricing Row */}
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <PriceBox label="MRP" value={mrp} accent="indigo" />
             <PriceBox label="Selling" value={selling} accent="emerald" />
             <PriceBox label="Cost" value={cost} accent="slate" />
-            <div className={`rounded-xl border p-3 flex flex-col justify-center ${
-              margin > 0 ? "bg-amber-50 border-amber-100" : "bg-slate-50 border-slate-200"
-            }`}>
-              <p className={`text-[9px] font-black uppercase tracking-wider ${margin > 0 ? "text-amber-400" : "text-slate-400"}`}>Margin</p>
-              <p className={`text-lg font-black leading-tight ${margin > 0 ? "text-amber-600" : "text-slate-400"}`}>{margin}%</p>
-            </div>
           </div>
-
-          {/* ─── Compact Size Breakdown Grid (Internal) ─── */}
-          {sizes.length > 0 && (
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 mt-2">
-              <div className="flex items-center justify-between mb-3 px-1">
-                 <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                  <Layers size={12} className="text-indigo-500" />
-                  Stock Breakdown
-                </h3>
-                <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
-                  totalPairs > 0 && totalPairs % 24 === 0
-                    ? "bg-emerald-50 text-emerald-600 border border-emerald-100"
-                    : "bg-indigo-50 text-indigo-600 border border-indigo-100"
-                }`}>
-                  {totalPairs} prs Total
-                </span>
-              </div>
-              
-<div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-  {sizes.map((sz) => {
-    const data = currentSizeMap[sz];
-    const qty = typeof data === "object" ? data?.qty || 0 : Number(data) || 0;
-    const sku =
-      (typeof data === "object" ? data?.sku : variant.sizeSkus?.[sz]) || "";
-
-    let statusColor =
-      qty === 0 ? "rose" : qty < 24 ? "amber" : "emerald";
-
-    let bgClass =
-      statusColor === "rose"
-        ? "bg-rose-50/40 border-rose-100"
-        : statusColor === "amber"
-        ? "bg-amber-50/40 border-amber-100"
-        : "bg-emerald-50/40 border-emerald-100";
-
-    let qtyClass =
-      statusColor === "rose"
-        ? "text-rose-600"
-        : statusColor === "amber"
-        ? "text-amber-600"
-        : "text-emerald-600";
-
-    return (
-      <div
-        key={sz}
-        className={`p-3 rounded-xl border transition-all hover:bg-white hover:shadow-md flex flex-col gap-1 ${bgClass}`}
-      >
-        {/* SIZE */}
-        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-          Size {sz}
-        </span>
-
-        {/* BIG QUANTITY */}
-        <div className={`text-2xl font-black leading-none ${qtyClass}`}>
-          {qty}
-        </div>
-
-        {/* SKU */}
-        {sku && (
-          <div className="flex items-center justify-between gap-1 overflow-hidden">
-            <code className="text-[9px] font-mono text-slate-400 truncate bg-white/60 px-1 py-0.5 rounded">
-              {sku}
-            </code>
-
-            <button
-              onClick={() => copySku(sku)}
-              className="p-0.5 text-slate-300 hover:text-indigo-500 transition-colors shrink-0"
-            >
-              <Copy size={10} />
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  })}
-</div>
-            </div>
-          )}
         </div>
 
         {/* ─── Col 3: Specs sidebar ─── */}
@@ -298,7 +220,108 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
         </div>
       </div>
 
+      {/* ─── NEW FULL WIDTH SECTION: Size & Booking Breakdown ─── */}
+      {sizes.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mt-4">
+          {/* Header with totals */}
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <Layers size={18} className="text-indigo-500" />
+              Size & Booking Details
+            </h3>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+                <span className="text-xs font-medium text-slate-600">Stock: <span className="font-bold text-indigo-600">{totalPairs} pairs</span></span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                <span className="text-xs font-medium text-slate-600">Booked: <span className="font-bold text-emerald-600">{totalBooked} pairs</span></span>
+              </div>
+            </div>
+          </div>
+          
+          {/* Two-column grid for size and booking */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Left Column - Size Stock Breakdown */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
+                  <Package size={14} /> Size Stock
+                </h4>
+                <span className="text-[10px] font-bold text-slate-400">with SKU</span>
+              </div>
+              
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                {sizes.map((sz) => {
+                  const data = currentSizeMap[sz];
+                  const qty = 0; // Forced to 0 as PO quantities are not GRN inventory
+                  const sku = (typeof data === "object" ? data?.sku : variant.sizeSkus?.[sz]) || "";
 
+                  let statusColor = qty === 0 ? "rose" : qty < 24 ? "amber" : "emerald";
+                  let bgClass = statusColor === "rose"
+                    ? "bg-rose-50/60 border-rose-200"
+                    : statusColor === "amber"
+                    ? "bg-amber-50/60 border-amber-200"
+                    : "bg-emerald-50/60 border-emerald-200";
+
+                  let qtyClass = statusColor === "rose"
+                    ? "text-rose-600"
+                    : statusColor === "amber"
+                    ? "text-amber-600"
+                    : "text-emerald-600";
+
+                  return (
+                    <div key={sz} className={`p-3 rounded-xl border transition-all hover:shadow-md ${bgClass}`}>
+                      <div className="flex flex-col items-start justify-between mb-1">
+                        <span className="text-xs font-bold text-slate-500">Size {sz}</span>
+                        <div className={`text-xl font-black leading-none ${qtyClass}`}>
+                          {qty}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Right Column - Booking Breakdown */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black text-emerald-600 uppercase tracking-wider flex items-center gap-1.5">
+                  <ShoppingBag size={14} /> Booked Quantity
+                </h4>
+                <span className="text-[10px] font-bold text-slate-400">per size</span>
+              </div>
+              
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                {sizes.map((sz) => {
+                  const bookedQty = currentBookingMap[sz] || 0;
+                  const statusColor = bookedQty === 0 ? "slate" : "emerald";
+                  
+                  return (
+                    <div key={sz} className={`p-3 rounded-xl border transition-all hover:shadow-md ${
+                      statusColor === "emerald"
+                        ? "bg-emerald-50/60 border-emerald-200"
+                        : "bg-slate-50/60 border-slate-200"
+                    }`}>
+                      <div className="flex flex-col items-start justify-between">
+                        <span className="text-xs font-bold text-slate-500">Size {sz}</span>
+                        <div className={`text-xl font-black leading-none ${
+                          bookedQty > 0 ? "text-emerald-600" : "text-slate-300"
+                        }`}>
+                          {bookedQty}
+                        </div>
+                      </div>
+                      
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

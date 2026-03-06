@@ -368,20 +368,30 @@ const GRN: React.FC = () => {
             <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">
               Scan Pair Barcode (Enter)
             </label>
-            <input
-              type="text"
-              placeholder={selectedRef ? "Scan / type barcode..." : "Select PO/CAT first"}
-              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500/20 font-mono tracking-widest"
-              value={pairInput}
-              onChange={(e) => setPairInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  handleScan();
-                }
-              }}
-              disabled={!selectedRef}
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder={selectedRef ? "Scan / type barcode..." : "Select PO/CAT first"}
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500/20 font-mono tracking-widest flex-1"
+                value={pairInput}
+                onChange={(e) => setPairInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleScan();
+                  }
+                }}
+                disabled={!selectedRef}
+              />
+              <button
+                type="button"
+                onClick={handleScan}
+                disabled={!selectedRef || !pairInput.trim()}
+                className="px-4 py-3 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 disabled:bg-slate-300 disabled:text-slate-500 transition-colors shadow-sm whitespace-nowrap"
+              >
+                Scan
+              </button>
+            </div>
 
             <p className="mt-2 text-[11px] text-slate-500">
               ✅ Duplicate scan blocked • ✅ 24 complete → carton auto lock

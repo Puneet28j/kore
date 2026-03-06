@@ -214,6 +214,7 @@ export const MOCK_DISTRIBUTORS: User[] = [
     email: 'star.sales@kore.com',
     name: 'Star sales',
     role: UserRole.DISTRIBUTOR,
+    isActive: true,
     location: 'Jaipur, Rajasthan',
     companyName: 'Star sales & Co.'
   },
@@ -222,6 +223,7 @@ export const MOCK_DISTRIBUTORS: User[] = [
     email: 'neerav.sales@kore.com',
     name: 'Neerav sales',
     role: UserRole.DISTRIBUTOR,
+    isActive: true,
     location: 'Rohtak, Haryana',
     companyName: 'Neerav sales'
   },
@@ -230,6 +232,7 @@ export const MOCK_DISTRIBUTORS: User[] = [
     email: 'mittal.footwear@kore.com',
     name: 'Mittal footwear',
     role: UserRole.DISTRIBUTOR,
+    isActive: true,
     location: 'Bangalore, Karnataka',
     companyName: 'Mittal footwear'
   },
@@ -238,6 +241,7 @@ export const MOCK_DISTRIBUTORS: User[] = [
     email: 'mk.footwear@kore.com',
     name: 'Mk Footwear',
     role: UserRole.DISTRIBUTOR,
+    isActive: true,
     location: 'Uttar Pradesh',
     companyName: 'Mk Footwear'
   },
@@ -246,6 +250,7 @@ export const MOCK_DISTRIBUTORS: User[] = [
     email: 'veda.sales@kore.com',
     name: 'Veda sales',
     role: UserRole.DISTRIBUTOR,
+    isActive: true,
     location: 'Ernakulam, Kerala',
     companyName: 'Veda sales'
   },
@@ -254,5 +259,6 @@ export const MOCK_DISTRIBUTORS: User[] = [
     email: 'admin@kore.com',
     name: 'Super Admin',
     role: UserRole.SUPERADMIN,
+    isActive: true,
   }
 ];

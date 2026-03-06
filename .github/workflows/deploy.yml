@@ -1,23 +1,50 @@
-name: Deploy Kore (Vite)
+name: Deploy Kore to Server
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Deploy via SSH
+      - name: Deploy on server via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
           script: |
             set -e
+
+            echo "Starting deploy..."
+
             cd /var/www/kore
-            git pull origin main
-            npm ci
+
+            echo "Pulling latest code..."
+            export GIT_SSH_COMMAND='ssh -i /root/.ssh/kore_deploy_key -o StrictHostKeyChecking=no'
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "Installing backend dependencies..."
+            cd /var/www/kore/backend
+            npm install
+
+            echo "Restarting backend..."
+            pm2 restart kore-backend || pm2 start src/server.js --name kore-backend
+            pm2 save
+
+            echo "Installing frontend dependencies..."
+            cd /var/www/kore/frontend
+            npm install
+
+            echo "Building frontend..."
             npm run build
-            sudo systemctl reload nginx
+
+            echo "Reloading nginx..."
+            systemctl reload nginx
+
+            echo "Deploy completed successfully."

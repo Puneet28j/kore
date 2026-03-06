@@ -33,7 +33,15 @@ app.use(express.urlencoded({ extended: true })); // for form-data parsing
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 /* ------------------ ROUTES ------------------ */
-
+// Health Check API
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "OK",
+    service: "kore-backend",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
 app.use("/api/auth", authRoutes);
 app.use("/api/users", usersRoutes);
 

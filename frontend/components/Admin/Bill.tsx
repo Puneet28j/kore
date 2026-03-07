@@ -16,17 +16,28 @@ const Bill: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalBills, setTotalBills] = useState(0);
 
-  // Fetch bills on mount
+  // Fetch bills on mount and when search/page changes
   useEffect(() => {
     fetchBills();
-  }, []);
+  }, [currentPage, searchTerm]);
 
   const fetchBills = async () => {
     try {
       setLoading(true);
-      const res = await billService.getBills();
+      const res = await billService.getBills({
+        page: currentPage,
+        limit: 20,
+        q: searchTerm || undefined,
+      });
       setBills(res.data);
+      if (res.meta) {
+        setTotalPages(res.meta.totalPages || 1);
+        setTotalBills(res.meta.total || 0);
+      }
     } catch (err) {
       console.error("Failed to fetch bills", err);
       toast.error("Failed to load bills");
@@ -39,8 +50,8 @@ const Bill: React.FC = () => {
     const q = searchTerm.toLowerCase().trim();
     if (!q) return true;
     return (
-      bill.purchaseOrder.poNumber.toLowerCase().includes(q) ||
-      bill.purchaseOrder.vendorName.toLowerCase().includes(q)
+      bill.poNumber.toLowerCase().includes(q) ||
+      bill.vendorName.toLowerCase().includes(q)
     );
   });
 
@@ -146,25 +157,22 @@ const Bill: React.FC = () => {
                     className="hover:bg-emerald-50/50 transition-colors group cursor-pointer"
                   >
                     <td className="px-6 py-4 text-sm text-slate-600">
-                      {new Date(bill.purchaseOrder.date).toLocaleDateString(
-                        "en-IN",
-                        {
-                          day: "2-digit",
-                          month: "short",
-                          year: "numeric",
-                        }
-                      )}
+                      {new Date(bill.date).toLocaleDateString("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                      })}
                     </td>
                     <td className="px-6 py-4">
                       <span className="font-bold text-slate-900 text-sm group-hover:text-emerald-600 transition-colors">
-                        {bill.purchaseOrder.poNumber}
+                        {bill.poNumber}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-700 font-medium">
-                      {bill.purchaseOrder.vendorName}
+                      {bill.vendorName}
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-900 font-bold text-right">
-                      ₹{bill.purchaseOrder.total.toLocaleString("en-IN")}
+                      ₹{bill.total.toLocaleString("en-IN")}
                     </td>
                     <td className="px-6 py-4 text-center">
                       <span

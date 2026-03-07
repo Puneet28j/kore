@@ -242,4 +242,9 @@ export interface PurchaseOrder {
   total: number;
   status: POStatus;
   createdAt: string;
+  // Bill-related fields
+  billStatus?: "PENDING" | "APPROVED" | "REJECTED";
+  billRemark?: string;
+  billApprovedAt?: string;
+  billRejectedAt?: string;
 }

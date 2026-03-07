@@ -29,12 +29,15 @@ const BillDetails: React.FC<BillDetailsProps> = ({
   onBack,
   onStatusChange,
 }) => {
+  console.log("BillDetails received bill:", bill);
   const [remarks, setRemarks] = useState("");
   const [actionType, setActionType] = useState<"approve" | "reject" | "">("");
   const [actionLoading, setActionLoading] = useState(false);
-  const po = bill.purchaseOrder;
+  const po = bill; // bill is now the PO itself
 
   const handleApprove = async () => {
+    console.log("handleApprove called with bill:", bill);
+    console.log("bill.id in handleApprove:", bill.id);
     setActionLoading(true);
     try {
       await billService.approveBill(bill.id, remarks);
@@ -475,12 +478,12 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                   Remarks:
                 </p>
                 <p className="text-sm text-emerald-700 mb-3">
-                  {bill.approvalRemarks}
+                  {bill.billRemark}
                 </p>
-                {bill.approvedAt && (
+                {bill.billApprovedAt && (
                   <p className="text-xs text-emerald-600">
                     Approved on{" "}
-                    {new Date(bill.approvedAt).toLocaleString("en-IN")}
+                    {new Date(bill.billApprovedAt).toLocaleString("en-IN")}
                   </p>
                 )}
               </div>
@@ -495,13 +498,11 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                 <p className="text-sm text-red-800 font-medium mb-2">
                   Remarks:
                 </p>
-                <p className="text-sm text-red-700 mb-3">
-                  {bill.rejectionRemarks}
-                </p>
-                {bill.rejectedAt && (
+                <p className="text-sm text-red-700 mb-3">{bill.billRemark}</p>
+                {bill.billRejectedAt && (
                   <p className="text-xs text-red-600">
                     Rejected on{" "}
-                    {new Date(bill.rejectedAt).toLocaleString("en-IN")}
+                    {new Date(bill.billRejectedAt).toLocaleString("en-IN")}
                   </p>
                 )}
               </div>

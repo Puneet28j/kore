@@ -1,7 +1,7 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || 'AIzaSyA4_JpjKdRh7o1rqYP-GRvGtg-qRO19p2o' });
 
 export const getInventoryInsights = async (inventoryData: any) => {
   const ai = getAI();

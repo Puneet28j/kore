@@ -45,7 +45,9 @@ class BillService {
   // Add new bill (when PO is created/sent)
   addBill(bill: Bill): void {
     // Remove existing bill with same PO id if it exists (for updates)
-    this.bills = this.bills.filter((b) => b.purchaseOrder.id !== bill.purchaseOrder.id);
+    this.bills = this.bills.filter(
+      (b) => b.purchaseOrder.id !== bill.purchaseOrder.id
+    );
     // Add new bill at the beginning
     this.bills.unshift(bill);
     this.saveBills();

@@ -1467,7 +1467,9 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
         await poService.updatePO(editingPOId, poData);
         // Fetch the updated PO to get the complete data
         const res = await poService.listPOs();
-        createdOrUpdatedPO = res.data.find((p: any) => p._id === editingPOId || p.id === editingPOId);
+        createdOrUpdatedPO = res.data.find(
+          (p: any) => p._id === editingPOId || p.id === editingPOId
+        );
       } else {
         const res = await poService.createPO(poData);
         createdOrUpdatedPO = res.data || res;

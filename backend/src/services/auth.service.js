@@ -3,7 +3,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 exports.login = async ({ email, password }) => {
-  const user = await User.findOne({ email }).select("+password");
+  const cleanEmail = String(email || "").trim().toLowerCase();
+
+  const user = await User.findOne({ email: cleanEmail }).select("+password");
   if (!user) {
     const err = new Error("Invalid credentials");
     err.status = 400;
@@ -16,7 +18,7 @@ exports.login = async ({ email, password }) => {
     throw err;
   }
 
-  const isMatch = await bcrypt.compare(password, user.password);
+  const isMatch = await bcrypt.compare(String(password), user.password);
   if (!isMatch) {
     const err = new Error("Invalid credentials");
     err.status = 400;
@@ -24,7 +26,11 @@ exports.login = async ({ email, password }) => {
   }
 
   const token = jwt.sign(
-    { id: user._id.toString(), role: user.role },
+    {
+      id: user._id.toString(),
+      role: user.role,
+      distributorId: user.distributorId ? user.distributorId.toString() : null,
+    },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
@@ -32,5 +38,12 @@ exports.login = async ({ email, password }) => {
   const safeUser = user.toObject();
   delete safeUser.password;
 
-  return { token, user: safeUser };
+  return {
+    token,
+    user: {
+      ...safeUser,
+      id: safeUser._id,
+      distributorId: safeUser.distributorId || null,
+    },
+  };
 };

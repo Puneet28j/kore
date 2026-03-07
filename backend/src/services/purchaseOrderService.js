@@ -161,6 +161,11 @@ exports.create = async (body) => {
       total: totals.total,
 
       status: body.status === "SENT" ? "SENT" : "DRAFT",
+
+      billStatus: "PENDING",
+      billRemark: "",
+      billApprovedAt: null,
+      billRejectedAt: null,
     });
 
     return doc;
@@ -235,12 +240,97 @@ exports.list = async (query) => {
   };
 };
 
+// ✅ bill page list
+exports.listBills = async (query) => {
+  const {
+    q,
+    billStatus,
+    vendorId,
+    page = 1,
+    limit = 10,
+    from,
+    to,
+  } = query;
+
+  const normalizedPage = normalizePage(page);
+  const normalizedLimit = normalizeLimit(limit);
+  const skip = (normalizedPage - 1) * normalizedLimit;
+
+  const filter = {
+    isDeleted: false,
+    status: "SENT", // bill page me sirf sent PO dikhana better rahega
+  };
+
+  if (billStatus) filter.billStatus = billStatus;
+
+  if (vendorId) {
+    ensureValidId(vendorId, "vendorId");
+    filter.vendorId = vendorId;
+  }
+
+  if (from || to) {
+    filter.date = {};
+    if (from) filter.date.$gte = new Date(from);
+    if (to) filter.date.$lte = new Date(to);
+  }
+
+  if (q) {
+    filter.$or = [
+      { poNumber: { $regex: q, $options: "i" } },
+      { vendorName: { $regex: q, $options: "i" } },
+      { referenceNumber: { $regex: q, $options: "i" } },
+      { billRemark: { $regex: q, $options: "i" } },
+    ];
+  }
+
+  const [items, total] = await Promise.all([
+    PurchaseOrder.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(normalizedLimit)
+      .lean(),
+    PurchaseOrder.countDocuments(filter),
+  ]);
+
+  const totalPages = Math.ceil(total / normalizedLimit) || 1;
+
+  return {
+    items,
+    total,
+    page: normalizedPage,
+    limit: normalizedLimit,
+    totalPages,
+    hasNextPage: normalizedPage < totalPages,
+    hasPrevPage: normalizedPage > 1,
+    pageSizeOptions: ALLOWED_PAGE_LIMITS,
+  };
+};
+
 exports.getById = async (id) => {
   ensureValidId(id, "po id");
 
   const doc = await PurchaseOrder.findOne({ _id: id, isDeleted: false }).lean();
   if (!doc) {
     const err = new Error("Not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  return doc;
+};
+
+// ✅ bill detail
+exports.getBillById = async (id) => {
+  ensureValidId(id, "bill id");
+
+  const doc = await PurchaseOrder.findOne({
+    _id: id,
+    isDeleted: false,
+    status: "SENT",
+  }).lean();
+
+  if (!doc) {
+    const err = new Error("Bill not found");
     err.statusCode = 404;
     throw err;
   }
@@ -356,6 +446,56 @@ exports.update = async (id, body) => {
     throw e;
   }
 
+  return doc;
+};
+
+// ✅ approve bill
+exports.approveBill = async (id, body) => {
+  ensureValidId(id, "bill id");
+
+  const doc = await PurchaseOrder.findOne({
+    _id: id,
+    isDeleted: false,
+    status: "SENT",
+  });
+
+  if (!doc) {
+    const err = new Error("Bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  doc.billStatus = "APPROVED";
+  doc.billRemark = body?.remark || "";
+  doc.billApprovedAt = new Date();
+  doc.billRejectedAt = null;
+
+  await doc.save();
+  return doc;
+};
+
+// ✅ reject bill
+exports.rejectBill = async (id, body) => {
+  ensureValidId(id, "bill id");
+
+  const doc = await PurchaseOrder.findOne({
+    _id: id,
+    isDeleted: false,
+    status: "SENT",
+  });
+
+  if (!doc) {
+    const err = new Error("Bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  doc.billStatus = "REJECTED";
+  doc.billRemark = body?.remark || "";
+  doc.billRejectedAt = new Date();
+  doc.billApprovedAt = null;
+
+  await doc.save();
   return doc;
 };
 

@@ -72,7 +72,23 @@ const PurchaseOrderSchema = new mongoose.Schema(
     totalTax: { type: Number, min: 0, default: 0 },
     total: { type: Number, min: 0, default: 0 },
 
-    status: { type: String, enum: ["DRAFT", "SENT"], default: "DRAFT", index: true },
+    status: {
+      type: String,
+      enum: ["DRAFT", "SENT"],
+      default: "DRAFT",
+      index: true,
+    },
+
+    // ✅ bill workflow fields
+    billStatus: {
+      type: String,
+      enum: ["PENDING", "APPROVED", "REJECTED"],
+      default: "PENDING",
+      index: true,
+    },
+    billRemark: { type: String, trim: true, default: "" },
+    billApprovedAt: { type: Date, default: null },
+    billRejectedAt: { type: Date, default: null },
 
     isDeleted: { type: Boolean, default: false, index: true },
   },
@@ -83,5 +99,6 @@ PurchaseOrderSchema.index({ poNumber: 1, isDeleted: 1 }, { unique: true });
 PurchaseOrderSchema.index({ isDeleted: 1, createdAt: -1 });
 PurchaseOrderSchema.index({ isDeleted: 1, status: 1, createdAt: -1 });
 PurchaseOrderSchema.index({ isDeleted: 1, vendorId: 1, createdAt: -1 });
+PurchaseOrderSchema.index({ isDeleted: 1, billStatus: 1, createdAt: -1 });
 
 module.exports = mongoose.model("PurchaseOrder", PurchaseOrderSchema);

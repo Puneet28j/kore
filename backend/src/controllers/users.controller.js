@@ -3,19 +3,23 @@ const { created, ok, fail } = require("../utils/apiResponse");
 const mongoose = require("mongoose");
 
 /* --------------------------------------------------
-   👤 CREATE USER (Superadmin Only)
+   👤 CREATE USER (Superadmin / Admin as per route middleware)
 -------------------------------------------------- */
 exports.createUser = async (req, res, next) => {
   try {
     const user = await usersService.createUser(req.body);
-    return created(res, { message: "User created successfully", data: user });
+
+    return created(res, {
+      message: "User created successfully",
+      data: user,
+    });
   } catch (err) {
     next(err);
   }
 };
 
 /* --------------------------------------------------
-   📋 LIST USERS (Admin / Superadmin)
+   📋 LIST USERS
 -------------------------------------------------- */
 exports.listUsers = async (req, res, next) => {
   try {
@@ -36,37 +40,70 @@ exports.listUsers = async (req, res, next) => {
 -------------------------------------------------- */
 exports.me = async (req, res, next) => {
   try {
-    const user = await usersService.getMe(req.user.id);
-    return ok(res, { message: "Profile fetched", data: user });
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return fail(res, { status: 401, message: "Not authorized" });
+    }
+
+    const user = await usersService.getMe(userId);
+
+    return ok(res, {
+      message: "Profile fetched successfully",
+      data: user,
+    });
   } catch (err) {
     next(err);
   }
 };
 
 /* --------------------------------------------------
-   ✏ UPDATE PROFILE
+   ✏ UPDATE MY PROFILE
 -------------------------------------------------- */
 exports.updateMe = async (req, res, next) => {
   try {
-    const user = await usersService.updateMe(req.user.id, req.body);
-    return ok(res, { message: "Profile updated successfully", data: user });
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return fail(res, { status: 401, message: "Not authorized" });
+    }
+
+    const user = await usersService.updateMe(userId, req.body);
+
+    return ok(res, {
+      message: "Profile updated successfully",
+      data: user,
+    });
   } catch (err) {
     next(err);
   }
 };
 
 /* --------------------------------------------------
-   🔐 CHANGE PASSWORD
+   🔐 CHANGE MY PASSWORD
 -------------------------------------------------- */
 exports.changePassword = async (req, res, next) => {
   try {
-    await usersService.changePassword(req.user.id, req.body);
-    return ok(res, { message: "Password updated successfully", data: null });
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return fail(res, { status: 401, message: "Not authorized" });
+    }
+
+    await usersService.changePassword(userId, req.body);
+
+    return ok(res, {
+      message: "Password updated successfully",
+      data: null,
+    });
   } catch (err) {
     next(err);
   }
 };
 
+/* --------------------------------------------------
+   ✏ UPDATE USER
+-------------------------------------------------- */
 exports.updateUser = async (req, res, next) => {
   try {
     const targetUserId = req.params.id;
@@ -76,20 +113,27 @@ exports.updateUser = async (req, res, next) => {
       return fail(res, { status: 401, message: "Not authorized" });
     }
 
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return fail(res, { status: 400, message: "Invalid user ID" });
+    }
+
     const user = await usersService.updateUser(
       actorUserId,
       targetUserId,
       req.body
     );
 
-    return ok(res, { message: "User updated successfully", data: user });
+    return ok(res, {
+      message: "User updated successfully",
+      data: user,
+    });
   } catch (err) {
     next(err);
   }
 };
 
 /* --------------------------------------------------
-   🗑 DELETE USER (Superadmin)
+   🗑 DELETE USER
 -------------------------------------------------- */
 exports.deleteUser = async (req, res, next) => {
   try {
@@ -106,7 +150,10 @@ exports.deleteUser = async (req, res, next) => {
 
     await usersService.deleteUser(actorUserId, targetUserId);
 
-    return ok(res, { message: "User deleted successfully", data: null });
+    return ok(res, {
+      message: "User deleted successfully",
+      data: null,
+    });
   } catch (err) {
     next(err);
   }

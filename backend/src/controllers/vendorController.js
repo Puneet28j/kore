@@ -19,7 +19,15 @@ exports.getVendorList = async (req, res) => {
     const result = await vendorService.list(req.query);
     return res.json({
       data: result.items,
-      meta: { total: result.total, page: result.page, limit: result.limit },
+      meta: {
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        hasNextPage: result.hasNextPage,
+        hasPrevPage: result.hasPrevPage,
+        pageSizeOptions: result.pageSizeOptions,
+      },
     });
   } catch (err) {
     return sendError(res, err);
@@ -39,6 +47,18 @@ exports.updateVendor = async (req, res) => {
   try {
     const doc = await vendorService.update(req.params.id, req.body);
     return res.json({ message: "Vendor updated", data: doc });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+exports.toggleVendorStatus = async (req, res) => {
+  try {
+    const doc = await vendorService.toggleActive(req.params.id);
+    return res.json({
+      message: `Vendor ${doc.isActive ? "activated" : "deactivated"} successfully`,
+      data: doc,
+    });
   } catch (err) {
     return sendError(res, err);
   }

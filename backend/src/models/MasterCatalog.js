@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-// Size cell: har size ke andar qty + sku aata hai (UI me same dikh raha)
+// Size cell: har size ke andar qty + sku aata hai
 const SizeCellSchema = new mongoose.Schema(
   {
     qty: { type: Number, default: 0, min: 0 },
@@ -11,21 +11,16 @@ const SizeCellSchema = new mongoose.Schema(
 
 const VariantSchema = new mongoose.Schema(
   {
-    // UI: "runner-Red-5-7" type item name
     itemName: { type: String, required: true, trim: true },
 
-    // UI: cost + selling + mrp + hsnCode
     costPrice: { type: Number, default: 0, min: 0 },
     sellingPrice: { type: Number, default: 0, min: 0 },
     mrp: { type: Number, default: 0, min: 0 },
     hsnCode: { type: String, trim: true, default: "" },
 
-    // UI: variant level pe color + sizeRange
-    color: { type: String, trim: true, default: "" }, // "Red", "Black"
-    sizeRange: { type: String, trim: true, default: "" }, // "5-7", "7-11"
+    color: { type: String, trim: true, default: "" },
+    sizeRange: { type: String, trim: true, default: "" },
 
-    // ✅ important: sizes ka object map (size => {qty, sku})
-    // example: { "5": {qty:11, sku:"runner-Red-5"}, "6": {...} }
     sizeMap: {
       type: Map,
       of: SizeCellSchema,
@@ -37,10 +32,10 @@ const VariantSchema = new mongoose.Schema(
 
 const MasterCatalogSchema = new mongoose.Schema(
   {
-    // ---------- PART 1 (Top form) ----------
+    // ---------- PART 1 ----------
     articleName: { type: String, required: true, trim: true },
     soleColor: { type: String, trim: true, default: "" },
-    mrp: { type: Number, required: true, min: 0 }, // ✅ UI me MRP top pe
+    mrp: { type: Number, required: true, min: 0 },
 
     gender: {
       type: String,
@@ -48,7 +43,6 @@ const MasterCatalogSchema = new mongoose.Schema(
       required: true,
     },
 
-    // taxonomy
     categoryId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Category",
@@ -60,7 +54,6 @@ const MasterCatalogSchema = new mongoose.Schema(
       required: true,
     },
 
-    // manufacturing
     manufacturerCompanyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Manufacturer",
@@ -72,19 +65,19 @@ const MasterCatalogSchema = new mongoose.Schema(
       required: true,
     },
 
-    // attributes
-    productColors: [{ type: String, trim: true }], // ✅ UI: chips (Red, Black)
-    sizeRanges: [{ type: String, trim: true }], // ✅ UI: chips (5-7, 7-11)
+    productColors: [{ type: String, trim: true }],
+    sizeRanges: [{ type: String, trim: true }],
 
-    // listing status
     stage: {
       type: String,
       enum: ["AVAILABLE", "WISHLIST"],
       default: "AVAILABLE",
     },
-    expectedAvailableDate: { type: Date }, // required if WISHLIST
+    expectedAvailableDate: { type: Date },
 
-    // media
+    // ✅ new active/inactive toggle field
+    isActive: { type: Boolean, default: true, index: true },
+
     primaryImage: {
       url: { type: String, required: true },
       key: { type: String },
@@ -96,16 +89,15 @@ const MasterCatalogSchema = new mongoose.Schema(
       },
     ],
 
-    // ---------- PART 2 (variants table) ----------
+    // ---------- PART 2 ----------
     variants: { type: [VariantSchema], default: [] },
 
     isActive: { type: Boolean, default: true },
-    isDeleted: { type: Boolean, default: false },
+    isDeleted: { type: Boolean, default: false, index: true },
   },
   { timestamps: true }
 );
 
-// ✅ Validation: wishlist me date required
 MasterCatalogSchema.pre("validate", function () {
   if (this.stage === "WISHLIST" && !this.expectedAvailableDate) {
     this.invalidate(

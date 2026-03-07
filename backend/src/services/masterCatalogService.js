@@ -1,12 +1,11 @@
+const mongoose = require("mongoose");
 const MasterCatalog = require("../models/MasterCatalog");
 
-/**
- * multipart/form-data me JSON string aa sakta hai
- * json me already object/array hota hai
- */
+const ALLOWED_PAGE_LIMITS = [10, 20, 30, 50, 100, 200, 500, 1000];
+
 const parseMaybeJson = (val, fallback) => {
   if (val === undefined || val === null) return fallback;
-  if (typeof val === "object") return val; // already parsed
+  if (typeof val === "object") return val;
   try {
     return JSON.parse(val);
   } catch {
@@ -22,7 +21,6 @@ const makeFileUrl = (req, filePath) => {
 const buildImagesPayload = (req) => {
   const body = req.body || {};
 
-  // primary: file OR url
   let primaryImage = null;
 
   if (req.files?.primaryImage?.[0]) {
@@ -32,7 +30,6 @@ const buildImagesPayload = (req) => {
     primaryImage = { url: body.primaryImageUrl };
   }
 
-  // secondary: files + urls
   const secondaryImages = [];
 
   if (req.files?.secondaryImages?.length) {
@@ -43,17 +40,18 @@ const buildImagesPayload = (req) => {
 
   const secondaryImageUrls = parseMaybeJson(body.secondaryImageUrls, []);
   if (Array.isArray(secondaryImageUrls)) {
-    for (const u of secondaryImageUrls) secondaryImages.push({ url: u });
+    for (const u of secondaryImageUrls) {
+      secondaryImages.push({ url: u });
+    }
   }
 
   return { primaryImage, secondaryImages };
 };
 
-/** ✅ frontend table ke hisaab se variants normalize */
 const normalizeVariants = (variantsRaw) => {
   const variants = Array.isArray(variantsRaw) ? variantsRaw : [];
+
   return variants.map((v) => {
-    // sizeMap: object ya map string dono aa sakta hai
     const sizeMap = parseMaybeJson(v.sizeMap, v.sizeMap || {});
     return {
       itemName: v.itemName,
@@ -68,9 +66,33 @@ const normalizeVariants = (variantsRaw) => {
   });
 };
 
+const parseBoolean = (value, fallback = undefined) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (v === "true") return true;
+    if (v === "false") return false;
+  }
+
+  return fallback;
+};
+
+const normalizeLimit = (limit) => {
+  const parsed = Number(limit);
+  if (ALLOWED_PAGE_LIMITS.includes(parsed)) return parsed;
+  return 10; // default
+};
+
+const normalizePage = (page) => {
+  const parsed = Number(page);
+  if (!Number.isInteger(parsed) || parsed < 1) return 1;
+  return parsed;
+};
+
 exports.create = async (req) => {
   const body = req.body || {};
-
   const { primaryImage, secondaryImages } = buildImagesPayload(req);
 
   if (!primaryImage?.url) {
@@ -86,28 +108,21 @@ exports.create = async (req) => {
   const variants = normalizeVariants(parseMaybeJson(body.variants, []));
 
   const doc = await MasterCatalog.create({
-    // ---- PART 1 ----
     articleName: body.articleName,
     soleColor: body.soleColor,
     mrp: Number(body.mrp || 0),
-
     gender: body.gender,
-
     categoryId: body.categoryId,
     brandId: body.brandId,
     manufacturerCompanyId: body.manufacturerCompanyId,
     unitId: body.unitId,
-
     productColors: Array.isArray(productColors) ? productColors : [],
     sizeRanges: Array.isArray(sizeRanges) ? sizeRanges : [],
-
     stage: body.stage || "AVAILABLE",
     expectedAvailableDate: body.expectedAvailableDate || null,
-
+    isActive: parseBoolean(body.isActive, true),
     primaryImage,
     secondaryImages,
-
-    // ---- PART 2 ----
     variants,
   });
 
@@ -122,43 +137,75 @@ exports.list = async (query) => {
     brandId,
     manufacturerCompanyId,
     gender,
+    isActive,
     page = 1,
-    limit = 20,
+    limit = 10,
   } = query;
+
+  const normalizedPage = normalizePage(page);
+  const normalizedLimit = normalizeLimit(limit);
+  const skip = (normalizedPage - 1) * normalizedLimit;
 
   const filter = { isDeleted: false };
 
   if (stage) filter.stage = stage;
-  if (categoryId) filter.categoryId = categoryId;
-  if (brandId) filter.brandId = brandId;
-  if (manufacturerCompanyId)
-    filter.manufacturerCompanyId = manufacturerCompanyId;
   if (gender) filter.gender = gender;
+
+  if (categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
+    filter.categoryId = categoryId;
+  }
+
+  if (brandId && mongoose.Types.ObjectId.isValid(brandId)) {
+    filter.brandId = brandId;
+  }
+
+  if (
+    manufacturerCompanyId &&
+    mongoose.Types.ObjectId.isValid(manufacturerCompanyId)
+  ) {
+    filter.manufacturerCompanyId = manufacturerCompanyId;
+  }
+
+  const parsedIsActive = parseBoolean(isActive, undefined);
+  if (parsedIsActive !== undefined) {
+    filter.isActive = parsedIsActive;
+  }
 
   if (q) {
     filter.$or = [
       { articleName: { $regex: q, $options: "i" } },
       { soleColor: { $regex: q, $options: "i" } },
       { productColors: { $in: [new RegExp(q, "i")] } },
+      { "variants.itemName": { $regex: q, $options: "i" } },
+      { "variants.color": { $regex: q, $options: "i" } },
+      { "variants.hsnCode": { $regex: q, $options: "i" } },
     ];
   }
 
-  const skip = (Number(page) - 1) * Number(limit);
+  // ✅ only requested page data
+  const items = await MasterCatalog.find(filter)
+    .populate("categoryId", "name")
+    .populate("brandId", "name")
+    .populate("manufacturerCompanyId", "name")
+    .populate("unitId", "name")
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(normalizedLimit)
+    .lean();
 
-  const [items, total] = await Promise.all([
-    MasterCatalog.find(filter)
-      .populate("categoryId", "name")
-      .populate("brandId", "name")
-      .populate("manufacturerCompanyId", "name")
-      .populate("unitId", "name")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit))
-      .lean(),
-    MasterCatalog.countDocuments(filter),
-  ]);
+  // ✅ total count alag se pagination ke liye
+  const total = await MasterCatalog.countDocuments(filter);
 
-  return { items, total, page: Number(page), limit: Number(limit) };
+  return {
+    items,
+    total,
+    page: normalizedPage,
+    limit: normalizedLimit,
+    totalPages: Math.ceil(total / normalizedLimit) || 1,
+    hasNextPage: normalizedPage < Math.ceil(total / normalizedLimit),
+    hasPrevPage: normalizedPage > 1,
+    pageSizeOptions: ALLOWED_PAGE_LIMITS,
+  };
 };
 
 exports.getById = async (id) => {
@@ -168,11 +215,13 @@ exports.getById = async (id) => {
     .populate("manufacturerCompanyId", "name")
     .populate("unitId", "name")
     .lean();
+
   if (!doc) {
     const err = new Error("Not found");
     err.statusCode = 404;
     throw err;
   }
+
   return doc;
 };
 
@@ -188,53 +237,24 @@ exports.update = async (req, id) => {
     throw err;
   }
 
-  if (isJsonRequest) {
-    // Simple JSON update
-    const allowedFields = [
-      "isActive",
-      "articleName",
-      "soleColor",
-      "mrp",
-      "gender",
-      "stage",
-      "expectedAvailableDate",
-    ];
-    allowedFields.forEach((field) => {
-      if (body[field] !== undefined) {
-        if (field === "mrp") {
-          doc[field] = Number(body[field] || 0);
-        } else {
-          doc[field] = body[field];
-        }
-      }
-    });
-    await doc.save();
-    return doc;
-  }
-
-  // ---- multipart/form-data update ----
   const patch = {
     articleName: body.articleName,
     soleColor: body.soleColor,
     mrp: body.mrp !== undefined ? Number(body.mrp || 0) : undefined,
-
     gender: body.gender,
-
     categoryId: body.categoryId,
     brandId: body.brandId,
     manufacturerCompanyId: body.manufacturerCompanyId,
     unitId: body.unitId,
-
     stage: body.stage,
     expectedAvailableDate: body.expectedAvailableDate || null,
-    isActive: body.isActive,
+    isActive: parseBoolean(body.isActive, undefined),
   };
 
   Object.keys(patch).forEach((k) => {
     if (patch[k] !== undefined) doc[k] = patch[k];
   });
 
-  // ---- attributes arrays ----
   if (body.productColors !== undefined) {
     const productColors = parseMaybeJson(body.productColors, []);
     doc.productColors = Array.isArray(productColors) ? productColors : [];
@@ -245,7 +265,6 @@ exports.update = async (req, id) => {
     doc.sizeRanges = Array.isArray(sizeRanges) ? sizeRanges : [];
   }
 
-  // ---- images ----
   const replaceSecondary =
     body.replaceSecondary === "true" || body.replaceSecondary === true;
   if (replaceSecondary) doc.secondaryImages = [];
@@ -255,12 +274,24 @@ exports.update = async (req, id) => {
   if (primaryImage?.url) doc.primaryImage = primaryImage;
   if (secondaryImages?.length) doc.secondaryImages.push(...secondaryImages);
 
-  // ---- variants (replace only if provided) ----
   if (body.variants !== undefined) {
     const variantsRaw = parseMaybeJson(body.variants, []);
     doc.variants = normalizeVariants(variantsRaw);
   }
 
+  await doc.save();
+  return doc;
+};
+
+exports.toggleActive = async (id) => {
+  const doc = await MasterCatalog.findOne({ _id: id, isDeleted: false });
+  if (!doc) {
+    const err = new Error("Not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  doc.isActive = !doc.isActive;
   await doc.save();
   return doc;
 };
@@ -272,6 +303,7 @@ exports.softDelete = async (id) => {
     err.statusCode = 404;
     throw err;
   }
+
   doc.isDeleted = true;
   await doc.save();
   return true;

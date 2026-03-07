@@ -8,7 +8,10 @@ const sendError = (res, err) => {
 exports.createMasterCatalog = async (req, res) => {
   try {
     const doc = await masterCatalogService.create(req);
-    return res.status(201).json({ message: "Master catalog created", data: doc });
+    return res.status(201).json({
+      message: "Master catalog created",
+      data: doc,
+    });
   } catch (err) {
     console.log("ERROR:", err);
     return sendError(res, err);
@@ -18,9 +21,18 @@ exports.createMasterCatalog = async (req, res) => {
 exports.getMasterCatalogList = async (req, res) => {
   try {
     const result = await masterCatalogService.list(req.query);
+
     return res.json({
       data: result.items,
-      meta: { total: result.total, page: result.page, limit: result.limit },
+      meta: {
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        hasNextPage: result.hasNextPage,
+        hasPrevPage: result.hasPrevPage,
+        pageSizeOptions: result.pageSizeOptions,
+      },
     });
   } catch (err) {
     return sendError(res, err);
@@ -39,7 +51,22 @@ exports.getMasterCatalogById = async (req, res) => {
 exports.updateMasterCatalog = async (req, res) => {
   try {
     const doc = await masterCatalogService.update(req, req.params.id);
-    return res.json({ message: "Updated", data: doc });
+    return res.json({
+      message: "Updated",
+      data: doc,
+    });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+exports.toggleMasterCatalogStatus = async (req, res) => {
+  try {
+    const doc = await masterCatalogService.toggleActive(req.params.id);
+    return res.json({
+      message: `Catalog ${doc.isActive ? "activated" : "deactivated"} successfully`,
+      data: doc,
+    });
   } catch (err) {
     return sendError(res, err);
   }

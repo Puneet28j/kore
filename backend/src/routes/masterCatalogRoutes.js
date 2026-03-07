@@ -7,7 +7,6 @@ const catalogUpload = upload.fields([
   { name: "secondaryImages", maxCount: 10 },
 ]);
 
-// ✅ JSON requests me multer run nahi hoga
 const maybeUpload = (req, res, next) => {
   const ct = req.headers["content-type"] || "";
   if (ct.includes("multipart/form-data")) return catalogUpload(req, res, next);
@@ -18,6 +17,10 @@ router.post("/", maybeUpload, ctrl.createMasterCatalog);
 router.get("/", ctrl.getMasterCatalogList);
 router.get("/:id", ctrl.getMasterCatalogById);
 router.put("/:id", maybeUpload, ctrl.updateMasterCatalog);
+
+// ✅ active / inactive toggle
+router.patch("/:id/toggle-status", ctrl.toggleMasterCatalogStatus);
+
 router.delete("/:id", ctrl.deleteMasterCatalog);
 
 module.exports = router;

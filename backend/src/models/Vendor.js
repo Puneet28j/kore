@@ -17,7 +17,6 @@ const AddressSchema = new mongoose.Schema(
 
 const BankDetailSchema = new mongoose.Schema(
   {
-    // frontend id: bk-...
     rowId: { type: String, trim: true, default: "" },
 
     accountHolderName: { type: String, trim: true, default: "" },
@@ -36,7 +35,7 @@ const VendorSchema = new mongoose.Schema(
 
     companyName: { type: String, trim: true, default: "" },
     vendorCode: { type: String, trim: true, uppercase: true, default: "" },
-    displayName: { type: String, required: true, trim: true }, // ✅ required
+    displayName: { type: String, required: true, trim: true },
     email: { type: String, trim: true, lowercase: true, default: "" },
 
     workPhone: { type: String, trim: true, default: "" },
@@ -59,14 +58,17 @@ const VendorSchema = new mongoose.Schema(
     bankDetails: { type: [BankDetailSchema], default: [] },
 
     isActive: { type: Boolean, default: true },
-    isDeleted: { type: Boolean, default: false },
+    // ✅ active / inactive toggle
+    isActive: { type: Boolean, default: true, index: true },
+
+    isDeleted: { type: Boolean, default: false, index: true },
   },
   { timestamps: true }
 );
 
-// helpful indexes
 VendorSchema.index({ displayName: 1, isDeleted: 1 });
 VendorSchema.index({ companyName: 1, isDeleted: 1 });
 VendorSchema.index({ email: 1, isDeleted: 1 });
+VendorSchema.index({ isDeleted: 1, isActive: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Vendor", VendorSchema);

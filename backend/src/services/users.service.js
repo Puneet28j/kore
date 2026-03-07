@@ -2,7 +2,7 @@ const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
 
-const ALLOWED_ROLES = ["admin", "manager", "supervisor", "accountant", "staff"]; // 👈 superadmin API se create nahi hoga
+const ALLOWED_ROLES = ["admin", "manager", "supervisor", "accountant", "staff", "distributor"]; // 👈 superadmin API se create nahi hoga
 const SALT_ROUNDS = 10;
 
 const normalizeEmail = (email) =>

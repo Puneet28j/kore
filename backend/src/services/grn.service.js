@@ -12,29 +12,99 @@ const todayYYYYMMDD = () => {
 
 const makeCartonBarcode = (refType, refNo, serial) => {
   // refNo: "1023" from "PO-1023"
-  return `CTN-${todayYYYYMMDD()}-${refType}-${refNo}-${String(serial).padStart(3, "0")}`;
+  return `CTN-${todayYYYYMMDD()}-${refType}-${refNo}-${String(serial).padStart(
+    3,
+    "0"
+  )}`;
 };
 
 const makeGRNNo = () => {
   return `GRN-${todayYYYYMMDD()}-${Math.floor(Math.random() * 900 + 100)}`;
 };
 
-// ✅ Demo reference list (abhi hard; baad me PO/Catalog models se fetch kar lena)
-const demoRefs = [
-  { id: "PO-1023", refType: "PO", party: "ABC Manufacturing", article: "SNEAKER-A1" },
-  { id: "CAT-2045", refType: "CAT", party: "Internal Catalog", article: "RUNNER-B2" },
-];
+// when running in production we want to return actual PO and catalogue references
+const PurchaseOrder = require("../models/PurchaseOrder");
+const MasterCatalog = require("../models/MasterCatalog");
+const Brand = require("../models/Brand");
+
+// helper to build regex for search
+const makeRegex = (str) => {
+  if (!str) return null;
+  return new RegExp(str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+};
 
 exports.listReferences = async (search = "") => {
-  const q = (search || "").trim().toLowerCase();
-  if (!q) return demoRefs;
+  const q = (search || "").trim();
+  const regex = makeRegex(q);
 
-  return demoRefs.filter(
-    (r) =>
-      r.id.toLowerCase().includes(q) ||
-      (r.party || "").toLowerCase().includes(q) ||
-      (r.article || "").toLowerCase().includes(q)
-  );
+  // fetch PO docs matching search (po number or vendor name)
+  const poFilter = { isDeleted: false };
+  if (regex) {
+    poFilter.$or = [
+      { poNumber: regex },
+      { vendorName: regex },
+      { "items.itemName": regex },
+    ];
+  }
+  // include minimal item information so we can show names in dropdown
+  const poDocs = await PurchaseOrder.find(poFilter)
+    .select("poNumber vendorName items.itemName items.sku")
+    .limit(100)
+    .lean();
+
+  // fetch catalog items matching search (article name)
+  const catFilter = { isDeleted: false };
+  if (regex) {
+    catFilter.articleName = regex;
+  }
+  let catDocs = await MasterCatalog.find(catFilter)
+    .select("articleName brandId")
+    .limit(100)
+    .lean();
+
+  // populate brand name for catalogs
+  const brandIds = [
+    ...new Set(catDocs.map((c) => c.brandId?.toString())),
+  ].filter(Boolean);
+  const brands = brandIds.length
+    ? await Brand.find({ _id: { $in: brandIds } })
+        .select("name")
+        .lean()
+    : [];
+  const brandMap = brands.reduce((acc, b) => {
+    acc[b._id.toString()] = b.name;
+    return acc;
+  }, {});
+
+  // map to unified structure
+  const list = [];
+
+  poDocs.forEach((po) => {
+    // build a small summary of items we care about for display
+    let articleDesc = "";
+    if (po.items && po.items.length > 0) {
+      const names = po.items.map((it) => it.itemName || it.sku).filter(Boolean);
+      articleDesc = names.slice(0, 2).join(", ");
+      if (names.length > 2) articleDesc += ` (+${names.length - 2} more)`;
+    }
+    list.push({
+      id: po.poNumber,
+      refType: "PO",
+      party: po.vendorName,
+      article: articleDesc,
+    });
+  });
+
+  catDocs.forEach((cat) => {
+    list.push({
+      id: `CAT-${cat._id}`,
+      refType: "CAT",
+      party: brandMap[cat.brandId?.toString()] || "",
+      article: cat.articleName,
+    });
+  });
+
+  return list;
 };
 
 exports.createDraft = async ({ refType, refId }) => {
@@ -73,8 +143,10 @@ exports.scanPair = async (draftId, pairBarcodeRaw) => {
   if (draft.status !== "DRAFT") throw new Error("GRN already submitted");
 
   // duplicate rules
-  if (draft.currentPairs.includes(pairBarcode)) throw new Error("Duplicate in current carton not allowed");
-  if (draft.scannedSet.includes(pairBarcode)) throw new Error("Duplicate in this GRN not allowed");
+  if (draft.currentPairs.includes(pairBarcode))
+    throw new Error("Duplicate in current carton not allowed");
+  if (draft.scannedSet.includes(pairBarcode))
+    throw new Error("Duplicate in this GRN not allowed");
 
   // add
   draft.currentPairs.push(pairBarcode);
@@ -83,7 +155,11 @@ exports.scanPair = async (draftId, pairBarcodeRaw) => {
   // auto lock at 24
   if (draft.currentPairs.length === PAIRS_PER_CARTON) {
     const refNo = String(draft.refId).split("-")[1] || draft.refId; // "1023"
-    const cartonBarcode = makeCartonBarcode(draft.refType, refNo, draft.cartonSerial);
+    const cartonBarcode = makeCartonBarcode(
+      draft.refType,
+      refNo,
+      draft.cartonSerial
+    );
 
     draft.cartons.unshift({
       cartonBarcode,
@@ -128,7 +204,9 @@ exports.removeCarton = async (draftId, cartonBarcode) => {
   draft.scannedSet = draft.scannedSet.filter((x) => !removeSet.has(x));
 
   // remove carton
-  draft.cartons = draft.cartons.filter((c) => c.cartonBarcode !== cartonBarcode);
+  draft.cartons = draft.cartons.filter(
+    (c) => c.cartonBarcode !== cartonBarcode
+  );
 
   await draft.save();
   return draft;
@@ -140,7 +218,9 @@ exports.submitDraft = async (draftId) => {
   if (draft.status !== "DRAFT") throw new Error("GRN already submitted");
 
   if (draft.currentPairs.length !== 0) {
-    throw new Error(`Current carton incomplete (${draft.currentPairs.length}/${PAIRS_PER_CARTON})`);
+    throw new Error(
+      `Current carton incomplete (${draft.currentPairs.length}/${PAIRS_PER_CARTON})`
+    );
   }
   if (draft.cartons.length === 0) throw new Error("Add at least 1 carton");
 
@@ -159,7 +239,8 @@ exports.submitDraft = async (draftId) => {
 exports.getHistory = async (search = "") => {
   const q = (search || "").trim();
   const filter = { status: "SUBMITTED" };
-  if (q) filter.$or = [{ grnNo: new RegExp(q, "i") }, { refId: new RegExp(q, "i") }];
+  if (q)
+    filter.$or = [{ grnNo: new RegExp(q, "i") }, { refId: new RegExp(q, "i") }];
 
   const list = await GRNDraft.find(filter).sort({ submittedAt: -1 }).limit(50);
 

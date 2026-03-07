@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { ShoppingBag, Package, Truck, ShoppingCart, Clock, Loader2 } from "lucide-react";
+import {
+  ShoppingBag,
+  Package,
+  Truck,
+  ShoppingCart,
+  Clock,
+  Loader2,
+} from "lucide-react";
 
 import {
   User,
@@ -29,12 +36,14 @@ import VendorManager from "./components/Admin/VendorManager";
 import VariantDetailsPage from "./components/Admin/VariantDetailsPage";
 import UserManager from "./components/Admin/UserManager";
 import DistributorManager from "./components/Admin/DistributorManager";
+import ProfilePage from "./components/Admin/ProfilePage";
 import { masterCatalogService } from "./services/masterCatalogService";
 
 // ✅ NEW: Sidebar component (create this file separately)
 import Sidebar from "./components/Layout/Sidebar";
 import { useKoreStore } from "./store";
 import { Toaster, toast } from "sonner";
+import Bill from "./components/Admin/Bill";
 
 const App: React.FC = () => {
   const store = useKoreStore();
@@ -44,17 +53,62 @@ const App: React.FC = () => {
     checkAuth();
   }, []);
 
-  const [activeTab, setActiveTab] = useState("dashboard");
+  // Use URL hash for reliable tab persistence
+  const [activeTab, setActiveTab] = useState(() => {
+    const hash = window.location.hash.replace("#", "");
+    return hash || localStorage.getItem("kore_activeTab") || "dashboard";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("kore_activeTab", activeTab);
+    window.location.hash = activeTab;
+
+    // Listen for hash changes so browser back/forward buttons work
+    const onHashChange = () => {
+      const hash = window.location.hash.replace("#", "");
+      if (hash && hash !== activeTab) {
+        setActiveTab(hash);
+      }
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [activeTab]);
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   // Articles state from API
   const [articles, setArticles] = useState<Article[]>([]);
   const [loadingArticles, setLoadingArticles] = useState(true);
-  const [editingArticleId, setEditingArticleId] = useState<string | null>(null);
-  const [viewingVariant, setViewingVariant] = useState<{ articleId: string; variantId: string } | null>(null);
-  const [catalogueExpandedIds, setCatalogueExpandedIds] = useState<Set<string>>(new Set());
-  const [previousTab, setPreviousTab] = useState<string>("catalogue");
+  // --- Deep Link Draft Persistence ---
+  const savedAppDraftStr = localStorage.getItem("kore_app_draft");
+  const savedAppDraft = savedAppDraftStr ? JSON.parse(savedAppDraftStr) : null;
+
+  const [editingArticleId, setEditingArticleId] = useState<string | null>(
+    savedAppDraft?.editingArticleId || null
+  );
+  const [viewingVariant, setViewingVariant] = useState<{
+    articleId: string;
+    variantId: string;
+  } | null>(savedAppDraft?.viewingVariant || null);
+  const [catalogueExpandedIds, setCatalogueExpandedIds] = useState<Set<string>>(
+    new Set(savedAppDraft?.catalogueExpandedIds || [])
+  );
+  const [previousTab, setPreviousTab] = useState<string>(
+    savedAppDraft?.previousTab || "catalogue"
+  );
+
+  useEffect(() => {
+    localStorage.setItem(
+      "kore_app_draft",
+      JSON.stringify({
+        editingArticleId,
+        viewingVariant,
+        catalogueExpandedIds: Array.from(catalogueExpandedIds),
+        previousTab,
+      })
+    );
+  }, [editingArticleId, viewingVariant, catalogueExpandedIds, previousTab]);
 
   const handleViewVariant = (articleId: string, variantId: string) => {
     setPreviousTab("catalogue");
@@ -87,7 +141,7 @@ const App: React.FC = () => {
             ...v,
             id: v._id || Math.random().toString(36).substr(2, 9),
             sizeSkus,
-            sizeQuantities
+            sizeQuantities,
           };
         });
 
@@ -107,12 +161,15 @@ const App: React.FC = () => {
           manufacturer: item.manufacturerCompanyId?.name,
           unit: item.unitId?.name,
           status: item.stage,
-          expectedDate: item.expectedAvailableDate ? new Date(item.expectedAvailableDate).toISOString().split('T')[0] : "",
+          expectedDate: item.expectedAvailableDate
+            ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
+            : "",
           imageUrl: item.primaryImage?.url,
           secondaryImages: item.secondaryImages || [],
           selectedSizes: item.sizeRanges || [],
           selectedColors: item.productColors || [],
           variants: normalizedVariants,
+          isActive: item.isActive !== false,
         };
       });
       setArticles(mapped);
@@ -142,7 +199,9 @@ const App: React.FC = () => {
     }));
   });
 
-  const [cart, setCart] = useState<{ articleId: string; cartons: number }[]>([]);
+  const [cart, setCart] = useState<{ articleId: string; cartons: number }[]>(
+    []
+  );
 
   // PERSISTENCE
   useEffect(() => {
@@ -211,7 +270,8 @@ const App: React.FC = () => {
   };
 
   const deleteArticle = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this master article?")) return;
+    if (!window.confirm("Are you sure you want to delete this master article?"))
+      return;
 
     const deletePromise = async () => {
       await masterCatalogService.deleteMasterItem(id);
@@ -335,16 +395,21 @@ const App: React.FC = () => {
   const updateOrderStatus = (orderId: string, status: OrderStatus) => {
     const updatePromise = async () => {
       // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
       setOrders((prev) =>
         prev.map((o) => {
           if (o.id === orderId) {
             // dispatch: deduct actual + release reserved (only once)
-            if (status === OrderStatus.DISPATCHED && o.status !== OrderStatus.DISPATCHED) {
+            if (
+              status === OrderStatus.DISPATCHED &&
+              o.status !== OrderStatus.DISPATCHED
+            ) {
               setInventory((invs) =>
                 invs.map((inv) => {
-                  const item = o.items.find((i) => i.articleId === inv.articleId);
+                  const item = o.items.find(
+                    (i) => i.articleId === inv.articleId
+                  );
                   if (item) {
                     const newActual = inv.actualStock - item.cartonCount;
                     const newReserved = inv.reservedStock - item.cartonCount;
@@ -401,22 +466,30 @@ const App: React.FC = () => {
       />
 
       {/* Main Content */}
-     <main className={`flex-1 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300
+      <main
+        className={`flex-1 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300
   ${isCollapsed ? "md:ml-20" : "md:ml-64"}
-`}>
+`}
+      >
         <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
           <div>
             <h2 className="text-2xl font-bold capitalize text-slate-900">
               {activeTab.replace(/_/g, " ")}
             </h2>
-            <p className="text-slate-500 text-sm">Kore Kollective Distribution Portal</p>
+            <p className="text-slate-500 text-sm">
+              Kore Kollective Distribution Portal
+            </p>
           </div>
         </header>
 
         {/* Content Router */}
         {activeTab === "dashboard" &&
           (user.role !== UserRole.DISTRIBUTOR ? (
-            <AdminDashboard orders={orders} inventory={inventory} articles={articles} />
+            <AdminDashboard
+              orders={orders}
+              inventory={inventory}
+              articles={articles}
+            />
           ) : (
             <DistributorDashboard
               user={user}
@@ -426,19 +499,26 @@ const App: React.FC = () => {
             />
           ))}
 
-        {activeTab === "master" && (user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN || user.role === UserRole.MANAGER) && (
-          <ProductMaster 
-            addArticle={addArticle} 
-            editingId={editingArticleId}
-            onSuccess={fetchArticles}
-            onCancelEdit={() => {
-              setEditingArticleId(null);
-              setActiveTab(previousTab === "variant_details" ? "variant_details" : "catalogue");
-            }}
-          />
-        )}
+        {activeTab === "master" &&
+          (user.role === UserRole.ADMIN ||
+            user.role === UserRole.SUPERADMIN ||
+            user.role === UserRole.MANAGER) && (
+            <ProductMaster
+              addArticle={addArticle}
+              editingId={editingArticleId}
+              onSuccess={fetchArticles}
+              onCancelEdit={() => {
+                setEditingArticleId(null);
+                setActiveTab(
+                  previousTab === "variant_details"
+                    ? "variant_details"
+                    : "catalogue"
+                );
+              }}
+            />
+          )}
 
-        {activeTab === "catalogue" && (user.role !== UserRole.DISTRIBUTOR) && (
+        {activeTab === "catalogue" && user.role !== UserRole.DISTRIBUTOR && (
           <CatalogueManager
             articles={articles}
             addArticle={addArticle}
@@ -451,50 +531,81 @@ const App: React.FC = () => {
           />
         )}
 
-        {activeTab === "variant_details" && viewingVariant && (user.role !== UserRole.DISTRIBUTOR) && (() => {
-          const art = articles.find(a => a.id === viewingVariant.articleId);
-          const vari = art?.variants?.find(v => v.id === viewingVariant.variantId);
-          if (!art || !vari) return <div className="text-center text-slate-400 py-12">Variant not found.</div>;
-          return (
-            <VariantDetailsPage
-              article={art}
-              variant={vari}
-              onBack={() => { setViewingVariant(null); setActiveTab("catalogue"); }}
-              onEditArticle={handleEditArticle}
-              onDelete={(id) => { deleteArticle(id); setViewingVariant(null); setActiveTab("catalogue"); }}
+        {activeTab === "variant_details" &&
+          viewingVariant &&
+          user.role !== UserRole.DISTRIBUTOR &&
+          (() => {
+            const art = articles.find((a) => a.id === viewingVariant.articleId);
+            const vari = art?.variants?.find(
+              (v) => v.id === viewingVariant.variantId
+            );
+            if (!art || !vari)
+              return (
+                <div className="text-center text-slate-400 py-12">
+                  Variant not found.
+                </div>
+              );
+            return (
+              <VariantDetailsPage
+                article={art}
+                variant={vari}
+                onBack={() => {
+                  setViewingVariant(null);
+                  setActiveTab("catalogue");
+                }}
+                onEditArticle={handleEditArticle}
+                onDelete={(id) => {
+                  deleteArticle(id);
+                  setViewingVariant(null);
+                  setActiveTab("catalogue");
+                }}
+              />
+            );
+          })()}
+        {activeTab === "po" && user.role !== UserRole.DISTRIBUTOR && (
+          <POPage articles={articles} onSyncSuccess={fetchArticles} />
+        )}
+        {activeTab === "grn" && user.role !== UserRole.DISTRIBUTOR && <GRN />}
+        {activeTab === "bills" && user.role !== UserRole.DISTRIBUTOR && (
+          <Bill />
+        )}
+        {activeTab === "vendors" && user.role !== UserRole.DISTRIBUTOR && (
+          <VendorManager />
+        )}
+        {activeTab === "users" && user.role === UserRole.SUPERADMIN && (
+          <UserManager />
+        )}
+        {activeTab === "master_inventory" &&
+          user.role !== UserRole.DISTRIBUTOR && (
+            <MasterInventory
+              inventory={inventory}
+              articles={articles}
+              onInward={handleInwardStock}
+              onOutward={handleOutwardStock}
             />
-          );
-        })()}
-{activeTab === "po" && (user.role !== UserRole.DISTRIBUTOR) && (
-  <POPage articles={articles} onSyncSuccess={fetchArticles} />
-)}
-{activeTab === "grn" && (user.role !== UserRole.DISTRIBUTOR) && (
-  <GRN />
-)}
-{activeTab === "vendors" && (user.role !== UserRole.DISTRIBUTOR) && (
-  <VendorManager />
-)}
-{activeTab === "users" && user.role === UserRole.SUPERADMIN && (
-  <UserManager />
-)}
-        {activeTab === "master_inventory" && (user.role !== UserRole.DISTRIBUTOR) && (
-          <MasterInventory
-            inventory={inventory}
-            articles={articles}
-            onInward={handleInwardStock}
-            onOutward={handleOutwardStock}
-          />
-        )}
+          )}
 
-        {activeTab === "booking_inventory" && (user.role !== UserRole.DISTRIBUTOR) && (
-          <BookingInventory inventory={inventory} articles={articles} orders={orders} />
-        )}
+        {activeTab === "booking_inventory" &&
+          user.role !== UserRole.DISTRIBUTOR && (
+            <BookingInventory
+              inventory={inventory}
+              articles={articles}
+              orders={orders}
+            />
+          )}
 
         {activeTab === "orders" &&
           (user.role !== UserRole.DISTRIBUTOR ? (
-            <OrderProcessor orders={orders} updateStatus={updateOrderStatus} articles={articles} />
+            <OrderProcessor
+              orders={orders}
+              updateStatus={updateOrderStatus}
+              articles={articles}
+            />
           ) : (
-            <MyOrders orders={orders.filter((o) => o.distributorId === user.id)} articles={articles} />
+            <MyOrders
+              orders={orders.filter((o) => o.distributorId === user.id)}
+              articles={articles}
+            />
           ))}
 
         {activeTab === "shop" && user.role === UserRole.DISTRIBUTOR && (
@@ -521,8 +632,17 @@ const App: React.FC = () => {
           />
         )}
 
-        {activeTab === "distributors" && (user.role !== UserRole.DISTRIBUTOR) && (
+        {activeTab === "distributors" && user.role !== UserRole.DISTRIBUTOR && (
           <DistributorManager orders={orders} />
+        )}
+
+        {activeTab === "profile" && user && (
+          <ProfilePage
+            user={user}
+            onProfileUpdate={(updatedUser) => {
+              store.setCurrentUser(updatedUser);
+            }}
+          />
         )}
       </main>
       <Toaster position="top-right" richColors />
@@ -542,14 +662,28 @@ const DistributorDashboard: React.FC<{
   const pending = userOrders.filter(
     (o) => o.status === OrderStatus.BOOKED || o.status === OrderStatus.PENDING
   ).length;
-  const dispatched = userOrders.filter((o) => o.status === OrderStatus.DISPATCHED).length;
+  const dispatched = userOrders.filter(
+    (o) => o.status === OrderStatus.DISPATCHED
+  ).length;
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard label="My Orders" value={userOrders.length} icon={<ShoppingBag className="text-indigo-600" />} />
-        <StatCard label="Pending" value={pending} icon={<Clock className="text-amber-600" />} />
-        <StatCard label="In Transit" value={dispatched} icon={<Truck className="text-emerald-600" />} />
+        <StatCard
+          label="My Orders"
+          value={userOrders.length}
+          icon={<ShoppingBag className="text-indigo-600" />}
+        />
+        <StatCard
+          label="Pending"
+          value={pending}
+          icon={<Clock className="text-amber-600" />}
+        />
+        <StatCard
+          label="In Transit"
+          value={dispatched}
+          icon={<Truck className="text-emerald-600" />}
+        />
         <div
           onClick={goToCart}
           className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-all group"
@@ -569,14 +703,20 @@ const DistributorDashboard: React.FC<{
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
           <div className="flex justify-between items-center mb-6">
-            <h3 className="text-lg font-bold text-slate-900">Recent Shipments</h3>
-            <button className="text-indigo-600 font-bold text-sm">View All</button>
+            <h3 className="text-lg font-bold text-slate-900">
+              Recent Shipments
+            </h3>
+            <button className="text-indigo-600 font-bold text-sm">
+              View All
+            </button>
           </div>
 
           {userOrders.length === 0 ? (
             <div className="py-12 text-center flex flex-col items-center">
               <Package className="text-slate-200 mb-2" size={40} />
-              <p className="text-slate-400 text-sm">No recent bookings found.</p>
+              <p className="text-slate-400 text-sm">
+                No recent bookings found.
+              </p>
             </div>
           ) : (
             <div className="space-y-4">
@@ -593,7 +733,11 @@ const DistributorDashboard: React.FC<{
                           : "bg-indigo-100 text-indigo-600"
                       }`}
                     >
-                      {order.status === OrderStatus.DISPATCHED ? <Truck size={20} /> : <Clock size={20} />}
+                      {order.status === OrderStatus.DISPATCHED ? (
+                        <Truck size={20} />
+                      ) : (
+                        <Clock size={20} />
+                      )}
                     </div>
                     <div>
                       <p className="font-bold text-slate-900">{order.id}</p>
@@ -604,10 +748,14 @@ const DistributorDashboard: React.FC<{
                   </div>
 
                   <div className="text-right">
-                    <p className="font-bold text-slate-900">₹{order.totalAmount.toLocaleString()}</p>
+                    <p className="font-bold text-slate-900">
+                      ₹{order.totalAmount.toLocaleString()}
+                    </p>
                     <p
                       className={`text-[10px] font-bold uppercase tracking-widest ${
-                        order.status === OrderStatus.DISPATCHED ? "text-emerald-600" : "text-indigo-600"
+                        order.status === OrderStatus.DISPATCHED
+                          ? "text-emerald-600"
+                          : "text-indigo-600"
                       }`}
                     >
                       {order.status.replace(/_/g, " ")}
@@ -623,13 +771,16 @@ const DistributorDashboard: React.FC<{
           <div className="relative z-10">
             <h3 className="text-2xl font-bold mb-2">Grow Your Distribution</h3>
             <p className="text-indigo-100 text-sm max-w-xs leading-relaxed">
-              Book more than 50 cartons this month and unlock a 5% early-bird discount on your next purchase.
+              Book more than 50 cartons this month and unlock a 5% early-bird
+              discount on your next purchase.
             </p>
           </div>
 
           <div className="mt-8 relative z-10">
             <div className="flex justify-between items-end mb-2">
-              <p className="text-xs font-bold text-indigo-200 uppercase tracking-widest">Monthly Target</p>
+              <p className="text-xs font-bold text-indigo-200 uppercase tracking-widest">
+                Monthly Target
+              </p>
               <p className="text-lg font-bold">
                 14 / 50 <span className="text-sm font-normal">Cartons</span>
               </p>

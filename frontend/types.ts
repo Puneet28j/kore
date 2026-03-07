@@ -84,6 +84,7 @@ export interface Article {
   variants?: Variant[];
   secondaryImages?: { url: string }[];
   sizeRange?: string;
+  isActive?: boolean;
 }
 
 export interface Inventory {
@@ -188,6 +189,7 @@ export interface Vendor {
   paymentTerms: string;
   tds: string;
   enablePortal: boolean;
+  isActive: boolean;
   // Addresses
   billingAddress: VendorAddress;
   shippingAddress: VendorAddress;

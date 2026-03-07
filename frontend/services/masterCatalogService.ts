@@ -1,12 +1,14 @@
 import { apiFetch } from "./api";
 
 export const masterCatalogService = {
-  async listMasterItems(query: { q?: string; page?: number; limit?: number } = {}) {
+  async listMasterItems(
+    query: { q?: string; page?: number; limit?: number } = {}
+  ) {
     const params = new URLSearchParams();
     if (query.q) params.append("q", query.q);
     if (query.page) params.append("page", query.page.toString());
     if (query.limit) params.append("limit", query.limit.toString());
-    
+
     const queryString = params.toString() ? `?${params.toString()}` : "";
     return apiFetch(`/master-catalog${queryString}`);
   },
@@ -16,9 +18,10 @@ export const masterCatalogService = {
   },
 
   async createMasterItem(formData: FormData) {
-    const token = localStorage.getItem('kore_token');
-    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5005/api';
-    
+    const token = localStorage.getItem("kore_token");
+    const API_BASE_URL =
+      import.meta.env.VITE_API_BASE_URL || "http://localhost:5005/api";
+
     const response = await fetch(`${API_BASE_URL}/master-catalog`, {
       method: "POST",
       headers: {
@@ -29,15 +32,16 @@ export const masterCatalogService = {
 
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.message || 'Something went wrong');
+      throw new Error(data.message || "Something went wrong");
     }
     return data;
   },
 
   async updateMasterItem(id: string, formData: FormData) {
-    const token = localStorage.getItem('kore_token');
-    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5005/api';
-    
+    const token = localStorage.getItem("kore_token");
+    const API_BASE_URL =
+      import.meta.env.VITE_API_BASE_URL || "http://localhost:5005/api";
+
     const response = await fetch(`${API_BASE_URL}/master-catalog/${id}`, {
       method: "PUT",
       headers: {
@@ -48,9 +52,16 @@ export const masterCatalogService = {
 
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.message || 'Something went wrong');
+      throw new Error(data.message || "Something went wrong");
     }
     return data;
+  },
+
+  async updateMasterItemFields(id: string, fields: Record<string, any>) {
+    return apiFetch(`/master-catalog/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(fields),
+    });
   },
 
   // Taxonomy Services

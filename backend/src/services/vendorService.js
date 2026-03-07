@@ -34,6 +34,7 @@ const sanitizeVendorPayload = (body = {}) => {
     tds: body.tds,
 
     enablePortal: body.enablePortal,
+    isActive: body.isActive,
 
     billingAddress: body.billingAddress,
     shippingAddress: body.shippingAddress,
@@ -91,7 +92,11 @@ exports.list = async (query) => {
   const skip = (Number(page) - 1) * Number(limit);
 
   const [items, total] = await Promise.all([
-    Vendor.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    Vendor.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .lean(),
     Vendor.countDocuments(filter),
   ]);
 

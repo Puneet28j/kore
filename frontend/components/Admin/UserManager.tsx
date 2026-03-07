@@ -13,19 +13,33 @@ const UserManager: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [showModal, setShowModal] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
+  // --- Draft Persistence ---
+  const savedUserDraftStr = localStorage.getItem("kore_user_draft");
+  const savedUserDraft = savedUserDraftStr ? JSON.parse(savedUserDraftStr) : null;
+
+  const [showModal, setShowModal] = useState(savedUserDraft?.showModal || false);
+  const [editingUser, setEditingUser] = useState<User | null>(savedUserDraft?.editingUser || null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
   // Form State
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState(savedUserDraft?.formData || {
     name: '',
     email: '',
     password: '',
     role: 'manager'
   });
+
+  useEffect(() => {
+    if (showModal) {
+      localStorage.setItem("kore_user_draft", JSON.stringify({
+        showModal, editingUser, formData
+      }));
+    } else {
+      localStorage.removeItem("kore_user_draft");
+    }
+  }, [showModal, editingUser, formData]);
 
   const fetchUsers = async () => {
     setLoading(true);

@@ -20,6 +20,8 @@ import {
   Loader2,
 } from "lucide-react";
 import { Article, AssortmentType } from "../../types";
+import Switch from "../ui/Switch";
+import { masterCatalogService } from "../../services/masterCatalogService";
 
 type CatalogStatus = "AVAILABLE" | "WISHLIST";
 
@@ -115,7 +117,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const totalPairs = useMemo(() => {
     return Object.values(formData.sizeBreakup || {}).reduce(
       (sum, v) => sum + (Number(v) || 0),
-      0,
+      0
     );
   }, [formData.sizeBreakup]);
 
@@ -124,7 +126,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   // ---------- Image ----------
   const handleImageSelect = (files: FileList | null) => {
     if (!files) return;
-    const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    const fileArray = Array.from(files).filter((f) =>
+      f.type.startsWith("image/")
+    );
     if (fileArray.length === 0) return;
     const previewUrls = fileArray.map((file) => URL.createObjectURL(file));
     setFormData((prev) => ({
@@ -169,6 +173,26 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     });
   };
 
+  const handleStatusToggle = async (article: Article, newStatus: boolean) => {
+    const updated: Article = {
+      ...article,
+      isActive: newStatus,
+    };
+
+    try {
+      await masterCatalogService.updateMasterItemFields(article.id, {
+        isActive: newStatus,
+      });
+      // Update local state
+      updateArticle(updated);
+      toast.success(
+        `Article ${newStatus ? "activated" : "deactivated"} successfully`
+      );
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update status");
+    }
+  };
+
   // ---------- Toggle Accordion ----------
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -189,13 +213,21 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       // Match on article name, sku, or any variant name/sku
       if ((a.name || "").toLowerCase().includes(q)) return true;
       if ((a.sku || "").toLowerCase().includes(q)) return true;
-      if (a.variants?.some((v) => {
-        const vName = v.itemName || `${a.name} - ${v.color}`;
-        if (vName.toLowerCase().includes(q)) return true;
-        if ((v.sku || "").toLowerCase().includes(q)) return true;
-        if (Object.values(v.sizeSkus || {}).some((sk) => sk.toLowerCase().includes(q))) return true;
-        return false;
-      })) return true;
+      if (
+        a.variants?.some((v) => {
+          const vName = v.itemName || `${a.name} - ${v.color}`;
+          if (vName.toLowerCase().includes(q)) return true;
+          if ((v.sku || "").toLowerCase().includes(q)) return true;
+          if (
+            Object.values(v.sizeSkus || {}).some((sk) =>
+              sk.toLowerCase().includes(q)
+            )
+          )
+            return true;
+          return false;
+        })
+      )
+        return true;
       return false;
     });
   }, [articles, activeTab, searchTerm]);
@@ -211,7 +243,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
     if (article) {
       setEditingArticle(article);
-      const status: CatalogStatus = (article.status as CatalogStatus) || "AVAILABLE";
+      const status: CatalogStatus =
+        (article.status as CatalogStatus) || "AVAILABLE";
       setFormData({
         name: article.name || "",
         category: article.category,
@@ -220,7 +253,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         sizeBreakup: (article as any).sizeBreakup || {},
         images: [],
         catalogStatus: status,
-        expectedAvailableDate: String((article as any).expectedAvailableDate || ""),
+        expectedAvailableDate: String(
+          (article as any).expectedAvailableDate || ""
+        ),
       });
       const savedUrls: string[] = (article as any).images || [];
       if (savedUrls.length) setImagePreviews(savedUrls);
@@ -246,11 +281,19 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     e.preventDefault();
     if (!formData.name.trim()) return toast.error("Article name required");
     if (formData.mrp <= 0) return toast.error("MRP must be > 0");
-    if (Object.keys(formData.sizeBreakup || {}).length > 0 && !isValidMultiple) {
+    if (
+      Object.keys(formData.sizeBreakup || {}).length > 0 &&
+      !isValidMultiple
+    ) {
       return toast.error("Total pairs must be 24, 48, 72... (multiple of 24)");
     }
-    if (formData.catalogStatus === "WISHLIST" && !formData.expectedAvailableDate) {
-      return toast.error("Expected available date is required for Wish List items.");
+    if (
+      formData.catalogStatus === "WISHLIST" &&
+      !formData.expectedAvailableDate
+    ) {
+      return toast.error(
+        "Expected available date is required for Wish List items."
+      );
     }
     const storedImages: string[] = imagePreviews;
     const payload: Article = {
@@ -269,7 +312,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       // @ts-ignore
       images: storedImages,
       status: formData.catalogStatus,
-      expectedDate: formData.catalogStatus === "WISHLIST" ? formData.expectedAvailableDate : "",
+      expectedDate:
+        formData.catalogStatus === "WISHLIST"
+          ? formData.expectedAvailableDate
+          : "",
     };
 
     const savePromise = async () => {
@@ -286,7 +332,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     const promise = savePromise();
     toast.promise(promise, {
       loading: editingArticle ? "Updating..." : "Creating...",
-      success: editingArticle ? "Updated successfully!" : "Created successfully!",
+      success: editingArticle
+        ? "Updated successfully!"
+        : "Created successfully!",
       error: "Failed to save catalogue item",
     });
     promise.finally(() => setLoading(false));
@@ -309,7 +357,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           <div>
             <h3 className="text-xl font-bold text-slate-900">Catalogue</h3>
             <p className="text-sm text-slate-500">
-              {filteredMasters.length} Master{filteredMasters.length !== 1 ? "s" : ""} •{" "}
+              {filteredMasters.length} Master
+              {filteredMasters.length !== 1 ? "s" : ""} •{" "}
               <b>{activeTab === "AVAILABLE" ? "Available" : "Wish List"}</b>
             </p>
           </div>
@@ -317,7 +366,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
         <div className="flex flex-wrap gap-2 w-full lg:w-auto">
           <div className="relative flex-1 lg:w-72">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              size={18}
+            />
             <input
               type="text"
               placeholder="Search master, variant or SKU..."
@@ -371,24 +423,43 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           const cover = imgSrc(article.imageUrl);
 
           // Calculate price ranges
-          const sellingPrices = article.variants?.map(v => v.sellingPrice || 0).filter(p => p > 0) || [];
-          const costPrices = article.variants?.map(v => v.costPrice || 0).filter(p => p > 0) || [];
-          const mrpPrices = article.variants?.map(v => v.mrp || 0).filter(p => p > 0) || [];
+          const sellingPrices =
+            article.variants
+              ?.map((v) => v.sellingPrice || 0)
+              .filter((p) => p > 0) || [];
+          const costPrices =
+            article.variants
+              ?.map((v) => v.costPrice || 0)
+              .filter((p) => p > 0) || [];
+          const mrpPrices =
+            article.variants?.map((v) => v.mrp || 0).filter((p) => p > 0) || [];
 
           const formatRange = (prices: number[], fallback: number) => {
             if (!prices.length) return `₹${fallback.toLocaleString()}`;
             const min = Math.min(...prices);
             const max = Math.max(...prices);
-            return min === max ? `₹${min.toLocaleString()}` : `₹${min.toLocaleString()} - ₹${max.toLocaleString()}`;
+            return min === max
+              ? `₹${min.toLocaleString()}`
+              : `₹${min.toLocaleString()} - ₹${max.toLocaleString()}`;
           };
 
-          const sellingDisplay = formatRange(sellingPrices, article.pricePerPair || 0);
+          const sellingDisplay = formatRange(
+            sellingPrices,
+            article.pricePerPair || 0
+          );
           const costDisplay = formatRange(costPrices, 0);
           const mrpDisplay = formatRange(mrpPrices, article.mrp || 0);
 
           // Find common HSN
-          const hsnCodes = Array.from(new Set(article.variants?.map(v => v.hsnCode).filter(Boolean)));
-          const hsnDisplay = hsnCodes.length === 1 ? hsnCodes[0] : hsnCodes.length > 1 ? "Multiple" : "N/A";
+          const hsnCodes = Array.from(
+            new Set(article.variants?.map((v) => v.hsnCode).filter(Boolean))
+          );
+          const hsnDisplay =
+            hsnCodes.length === 1
+              ? hsnCodes[0]
+              : hsnCodes.length > 1
+              ? "Multiple"
+              : "N/A";
 
           return (
             <div
@@ -433,16 +504,24 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     {status === "WISHLIST" && article.expectedDate && (
                       <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 text-[9px] font-bold flex items-center gap-1 border border-rose-100/50">
                         <CalendarDays size={8} />
-                        ETA: {new Date(article.expectedDate).toLocaleDateString()}
+                        ETA:{" "}
+                        {new Date(article.expectedDate).toLocaleDateString()}
                       </span>
                     )}
                   </div>
-                  
+
                   {/* Compact Stats Row */}
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                    <StatItem label="Brand" value={article.brand || "Internal"} />
+                    <StatItem
+                      label="Brand"
+                      value={article.brand || "Internal"}
+                    />
                     <div className="flex items-center gap-2">
-                      <StatBox label="Selling" value={sellingDisplay} highlight />
+                      <StatBox
+                        label="Selling"
+                        value={sellingDisplay}
+                        highlight
+                      />
                       <StatBox label="Cost" value={costDisplay} />
                       <StatBox label="MRP" value={mrpDisplay} />
                     </div>
@@ -494,6 +573,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   >
                     <Trash2 size={16} />
                   </button>
+
+                  <Switch
+                    checked={article.isActive !== false}
+                    onCheckedChange={(checked) =>
+                      handleStatusToggle(article, checked)
+                    }
+                    className="scale-90"
+                  />
                 </div>
 
                 {/* Chevron */}
@@ -573,8 +660,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                           className="w-3 h-3 rounded-full border border-slate-300 shrink-0"
                                           style={{
                                             backgroundColor:
-                                              v.color?.toLowerCase() ||
-                                              "#ccc",
+                                              v.color?.toLowerCase() || "#ccc",
                                           }}
                                         />
                                         {v.color || "—"}
@@ -595,7 +681,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     </td>
                                     <td className="px-6 py-3">
                                       <span className="text-sm font-bold text-indigo-600">
-                                        ₹{(v.sellingPrice || 0).toLocaleString()}
+                                        ₹
+                                        {(v.sellingPrice || 0).toLocaleString()}
                                       </span>
                                     </td>
                                     <td className="px-6 py-3 min-w-[300px]">
@@ -605,21 +692,33 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                           <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
                                             Size Stock
                                           </div>
-                                          <SizeBreakdown 
-                                            sizeRange={v.sizeRange || article.sizeRange || ""} 
-                                            sizeMap={v.sizeMap || v.sizeQuantities || {}} 
+                                          <SizeBreakdown
+                                            sizeRange={
+                                              v.sizeRange ||
+                                              article.sizeRange ||
+                                              ""
+                                            }
+                                            sizeMap={
+                                              v.sizeMap ||
+                                              v.sizeQuantities ||
+                                              {}
+                                            }
                                             type="stock"
                                           />
                                         </div>
-                                        
+
                                         {/* Booking Breakdown - Right */}
                                         <div className="bg-white rounded-lg border border-slate-100 p-2">
                                           <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
                                             Booked Qty
                                           </div>
-                                          <SizeBreakdown 
-                                            sizeRange={v.sizeRange || article.sizeRange || ""} 
-                                            sizeMap={v.bookingMap || {}} 
+                                          <SizeBreakdown
+                                            sizeRange={
+                                              v.sizeRange ||
+                                              article.sizeRange ||
+                                              ""
+                                            }
+                                            sizeMap={v.bookingMap || {}}
                                             type="booking"
                                           />
                                         </div>
@@ -640,9 +739,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                             return (
                               <div
                                 key={v.id}
-                                onClick={() =>
-                                  onViewVariant(article.id, v.id)
-                                }
+                                onClick={() => onViewVariant(article.id, v.id)}
                                 className="bg-white border border-slate-200 rounded-xl p-3 cursor-pointer hover:border-indigo-200 transition-colors"
                               >
                                 <div className="flex justify-between items-start">
@@ -663,7 +760,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     <span
                                       className="w-2.5 h-2.5 rounded-full border border-slate-300"
                                       style={{
-                                        backgroundColor: v.color?.toLowerCase() || "#ccc",
+                                        backgroundColor:
+                                          v.color?.toLowerCase() || "#ccc",
                                       }}
                                     />
                                     {v.color || "—"}
@@ -674,19 +772,29 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                 </div>
                                 <div className="mt-3 grid grid-cols-2 gap-2">
                                   <div className="bg-slate-50 rounded-lg p-2">
-                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">Size Stock</div>
-                                    <SizeBreakdown 
-                                      sizeRange={v.sizeRange || article.sizeRange || ""} 
-                                      sizeMap={v.sizeMap || v.sizeQuantities || {}} 
+                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">
+                                      Size Stock
+                                    </div>
+                                    <SizeBreakdown
+                                      sizeRange={
+                                        v.sizeRange || article.sizeRange || ""
+                                      }
+                                      sizeMap={
+                                        v.sizeMap || v.sizeQuantities || {}
+                                      }
                                       type="stock"
                                       compact
                                     />
                                   </div>
                                   <div className="bg-slate-50 rounded-lg p-2">
-                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">Booked</div>
-                                    <SizeBreakdown 
-                                      sizeRange={v.sizeRange || article.sizeRange || ""} 
-                                      sizeMap={v.bookingMap || {}} 
+                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">
+                                      Booked
+                                    </div>
+                                    <SizeBreakdown
+                                      sizeRange={
+                                        v.sizeRange || article.sizeRange || ""
+                                      }
+                                      sizeMap={v.bookingMap || {}}
                                       type="booking"
                                       compact
                                     />
@@ -744,7 +852,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
                       value={formData.name}
                       onChange={(e) =>
-                        setFormData((p) => ({ ...p, name: capFirst(e.target.value) }))
+                        setFormData((p) => ({
+                          ...p,
+                          name: capFirst(e.target.value),
+                        }))
                       }
                     />
                   </Field>
@@ -769,7 +880,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       </select>
                     </Field>
 
-                    <Field label="MRP (per pair)" required icon={<ShoppingBag size={12} />}>
+                    <Field
+                      label="MRP (per pair)"
+                      required
+                      icon={<ShoppingBag size={12} />}
+                    >
                       <input
                         type="number"
                         min={0}
@@ -786,7 +901,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     </Field>
                   </div>
 
-                  <Field label="Assortment (Size Range)" icon={<Layers size={12} />}>
+                  <Field
+                    label="Assortment (Size Range)"
+                    icon={<Layers size={12} />}
+                  >
                     <input
                       type="text"
                       placeholder="e.g. 4-8"
@@ -803,54 +921,70 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     </p>
                     <div
                       className={`p-3 border rounded-2xl transition ${
-                        isValidMultiple ? "bg-slate-50 border-slate-200" : "bg-rose-50 border-rose-300"
+                        isValidMultiple
+                          ? "bg-slate-50 border-slate-200"
+                          : "bg-rose-50 border-rose-300"
                       }`}
                     >
                       <div className="flex flex-wrap gap-2">
-                        {Object.keys(formData.sizeBreakup || {}).length === 0 ? (
+                        {Object.keys(formData.sizeBreakup || {}).length ===
+                        0 ? (
                           <div className="text-xs text-slate-400 italic">
                             Type size range to generate boxes (e.g. 4-8).
                           </div>
                         ) : (
-                          Object.entries(formData.sizeBreakup || {}).map(([size, qty]) => (
-                            <div
-                              key={size}
-                              className="w-[64px] bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm"
-                            >
-                              <div className="text-center text-xs font-black text-slate-600 py-2">
-                                {size}
+                          Object.entries(formData.sizeBreakup || {}).map(
+                            ([size, qty]) => (
+                              <div
+                                key={size}
+                                className="w-[64px] bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm"
+                              >
+                                <div className="text-center text-xs font-black text-slate-600 py-2">
+                                  {size}
+                                </div>
+                                <div className="border-t border-slate-100 px-1 py-1">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    placeholder="0"
+                                    className="w-full text-center text-sm font-bold text-indigo-600 bg-transparent outline-none placeholder:text-slate-300"
+                                    value={
+                                      (qty ?? 0) === 0 ? "" : String(qty ?? 0)
+                                    }
+                                    onChange={(e) => {
+                                      const raw = e.target.value;
+                                      const val =
+                                        raw === "" ? 0 : Number(raw) || 0;
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        sizeBreakup: {
+                                          ...(prev.sizeBreakup || {}),
+                                          [size]: val,
+                                        },
+                                      }));
+                                    }}
+                                  />
+                                </div>
                               </div>
-                              <div className="border-t border-slate-100 px-1 py-1">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  placeholder="0"
-                                  className="w-full text-center text-sm font-bold text-indigo-600 bg-transparent outline-none placeholder:text-slate-300"
-                                  value={(qty ?? 0) === 0 ? "" : String(qty ?? 0)}
-                                  onChange={(e) => {
-                                    const raw = e.target.value;
-                                    const val = raw === "" ? 0 : Number(raw) || 0;
-                                    setFormData((prev) => ({
-                                      ...prev,
-                                      sizeBreakup: {
-                                        ...(prev.sizeBreakup || {}),
-                                        [size]: val,
-                                      },
-                                    }));
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          ))
+                            )
+                          )
                         )}
                       </div>
                       {Object.keys(formData.sizeBreakup || {}).length > 0 && (
                         <div className="mt-3 text-xs font-bold">
-                          <span className={isValidMultiple ? "text-emerald-600" : "text-rose-600"}>
+                          <span
+                            className={
+                              isValidMultiple
+                                ? "text-emerald-600"
+                                : "text-rose-600"
+                            }
+                          >
                             Total Pairs: {totalPairs}
                           </span>
                           {!isValidMultiple && totalPairs > 0 && (
-                            <span className="ml-2 text-rose-600">(Must be 24, 48, 72...)</span>
+                            <span className="ml-2 text-rose-600">
+                              (Must be 24, 48, 72...)
+                            </span>
                           )}
                         </div>
                       )}
@@ -883,7 +1017,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       <button
                         type="button"
                         onClick={() =>
-                          setFormData((p) => ({ ...p, catalogStatus: "WISHLIST" }))
+                          setFormData((p) => ({
+                            ...p,
+                            catalogStatus: "WISHLIST",
+                          }))
                         }
                         className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
                           formData.catalogStatus === "WISHLIST"
@@ -895,11 +1032,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       </button>
                     </div>
                     <p className="mt-2 text-[11px] text-slate-500">
-                      ✅ Rule: <b>Catalogue → Wish</b> not allowed. Only <b>Wish → Catalogue</b>.
+                      ✅ Rule: <b>Catalogue → Wish</b> not allowed. Only{" "}
+                      <b>Wish → Catalogue</b>.
                     </p>
                     {formData.catalogStatus === "WISHLIST" && (
                       <div className="mt-4">
-                        <Field label="Expected Available Date" required icon={<CalendarDays size={12} />}>
+                        <Field
+                          label="Expected Available Date"
+                          required
+                          icon={<CalendarDays size={12} />}
+                        >
                           <input
                             type="date"
                             className="w-full p-3 bg-white border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
@@ -943,7 +1085,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
                       {imagePreviews.length === 0 ? (
                         <div className="col-span-2 sm:col-span-3 text-center text-slate-400 italic py-10">
-                          <ImageIcon size={32} className="mx-auto mb-2 text-slate-300" />
+                          <ImageIcon
+                            size={32}
+                            className="mx-auto mb-2 text-slate-300"
+                          />
                           Selected images will preview here.
                         </div>
                       ) : (
@@ -973,7 +1118,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
                     <p className="font-bold text-slate-900 mb-1">Rules</p>
                     <p className="text-slate-600 text-sm">
-                      1) Create master → choose <b>Catalogue</b> or <b>Wish List</b> before submit <br />
+                      1) Create master → choose <b>Catalogue</b> or{" "}
+                      <b>Wish List</b> before submit <br />
                       2) <b>Catalogue → Wish</b> not allowed <br />
                       3) Only <b>Wish → Catalogue</b> allowed (Move button)
                     </p>
@@ -1005,32 +1151,60 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 };
 
 /* ---------- Helper Components ---------- */
-const StatItem: React.FC<{ label: string; value: string; mono?: boolean }> = ({ label, value, mono }) => (
+const StatItem: React.FC<{ label: string; value: string; mono?: boolean }> = ({
+  label,
+  value,
+  mono,
+}) => (
   <div className="flex items-center gap-1.5 overflow-hidden">
-    <span className="text-[10px] text-slate-400 uppercase font-black shrink-0">{label}:</span>
-    <span className={`text-[11px] text-slate-600 truncate ${mono ? "font-mono" : "font-semibold"}`}>{value}</span>
-  </div>
-);
-
-const StatBox: React.FC<{ label: string; value: string; highlight?: boolean }> = ({ label, value, highlight }) => (
-  <div className={`px-2 py-1 rounded-lg border flex flex-col justify-center ${
-    highlight ? "bg-indigo-50 border-indigo-100" : "bg-slate-50 border-slate-100"
-  }`}>
-    <span className={`text-[8px] uppercase font-black tracking-tighter ${highlight ? "text-indigo-400" : "text-slate-400"}`}>
-      {label}
+    <span className="text-[10px] text-slate-400 uppercase font-black shrink-0">
+      {label}:
     </span>
-    <span className={`text-[11px] font-bold leading-none ${highlight ? "text-indigo-600" : "text-slate-800"}`}>
+    <span
+      className={`text-[11px] text-slate-600 truncate ${
+        mono ? "font-mono" : "font-semibold"
+      }`}
+    >
       {value}
     </span>
   </div>
 );
 
-const SizeBreakdown: React.FC<{ 
-  sizeRange: string; 
-  sizeMap: any; 
-  type?: 'stock' | 'booking';
+const StatBox: React.FC<{
+  label: string;
+  value: string;
+  highlight?: boolean;
+}> = ({ label, value, highlight }) => (
+  <div
+    className={`px-2 py-1 rounded-lg border flex flex-col justify-center ${
+      highlight
+        ? "bg-indigo-50 border-indigo-100"
+        : "bg-slate-50 border-slate-100"
+    }`}
+  >
+    <span
+      className={`text-[8px] uppercase font-black tracking-tighter ${
+        highlight ? "text-indigo-400" : "text-slate-400"
+      }`}
+    >
+      {label}
+    </span>
+    <span
+      className={`text-[11px] font-bold leading-none ${
+        highlight ? "text-indigo-600" : "text-slate-800"
+      }`}
+    >
+      {value}
+    </span>
+  </div>
+);
+
+const SizeBreakdown: React.FC<{
+  sizeRange: string;
+  sizeMap: any;
+  type?: "stock" | "booking";
   compact?: boolean;
-}> = ({ sizeRange, sizeMap, type = 'stock', compact = false }) => {
+}> = ({ sizeRange, sizeMap, type = "stock", compact = false }) => {
   const parseSizeRange = (range: string) => {
     const cleaned = range.trim().replace(/\s/g, "");
     const m = cleaned.match(/^(\d+)-(\d+)$/);
@@ -1048,7 +1222,7 @@ const SizeBreakdown: React.FC<{
   if (sizes.length === 0) return null;
 
   const getQty = (val: any) => {
-    if (typeof val === 'object' && val !== null && 'qty' in val) {
+    if (typeof val === "object" && val !== null && "qty" in val) {
       return Number(val.qty) || 0;
     }
     return Number(val) || 0;
@@ -1057,14 +1231,23 @@ const SizeBreakdown: React.FC<{
   if (compact) {
     return (
       <div className="flex flex-wrap gap-1">
-        {sizes.map(sz => {
+        {sizes.map((sz) => {
           const rawVal = sizeMap[sz] || 0;
           let qty = getQty(rawVal);
-          if (type === 'stock') qty = 0; // Forced to 0 as PO quantities are not GRN inventory
+          if (type === "stock") qty = 0; // Forced to 0 as PO quantities are not GRN inventory
           return (
-            <div key={sz} className="flex items-center bg-white border border-slate-100 rounded px-1.5 py-0.5">
-              <span className="text-[8px] font-black text-slate-400 mr-1">{sz}:</span>
-              <span className={`text-[9px] font-bold ${qty > 0 ? "text-indigo-600" : "text-slate-300"}`}>
+            <div
+              key={sz}
+              className="flex items-center bg-white border border-slate-100 rounded px-1.5 py-0.5"
+            >
+              <span className="text-[8px] font-black text-slate-400 mr-1">
+                {sz}:
+              </span>
+              <span
+                className={`text-[9px] font-bold ${
+                  qty > 0 ? "text-indigo-600" : "text-slate-300"
+                }`}
+              >
                 {qty}
               </span>
             </div>
@@ -1076,18 +1259,26 @@ const SizeBreakdown: React.FC<{
 
   return (
     <div className="flex flex-wrap gap-1.5">
-      {sizes.map(sz => {
+      {sizes.map((sz) => {
         const rawVal = sizeMap[sz] || 0;
         let qty = getQty(rawVal);
-        if (type === 'stock') qty = 0; // Forced to 0 as PO quantities are not GRN inventory
-        
+        if (type === "stock") qty = 0; // Forced to 0 as PO quantities are not GRN inventory
+
         const isPositive = qty > 0;
-        const colorClass = type === 'stock' 
-          ? (isPositive ? "text-indigo-600" : "text-slate-300")
-          : (isPositive ? "text-emerald-600" : "text-slate-300");
-        
+        const colorClass =
+          type === "stock"
+            ? isPositive
+              ? "text-indigo-600"
+              : "text-slate-300"
+            : isPositive
+            ? "text-emerald-600"
+            : "text-slate-300";
+
         return (
-          <div key={sz} className="flex flex-col items-center min-w-[32px] bg-white border border-slate-100 rounded-md shadow-sm">
+          <div
+            key={sz}
+            className="flex flex-col items-center min-w-[32px] bg-white border border-slate-100 rounded-md shadow-sm"
+          >
             <span className="text-[9px] font-black text-slate-400 border-b border-slate-50 w-full text-center py-0.5">
               {sz}
             </span>

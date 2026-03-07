@@ -28,6 +28,7 @@ import {
   VendorBankDetail,
 } from "../../types";
 import { vendorService } from "../../services/vendorService";
+import Switch from "../ui/Switch";
 
 // ─── Empty Defaults ────────────────────────────────────
 const emptyAddress = (): VendorAddress => ({
@@ -80,6 +81,7 @@ const emptyVendor = (): Vendor => ({
   paymentTerms: "Due on Receipt",
   tds: "",
   enablePortal: false,
+  isActive: true,
   billingAddress: emptyAddress(),
   shippingAddress: emptyAddress(),
   contactPersons: [],
@@ -125,13 +127,39 @@ const VendorManager: React.FC = () => {
     fetchVendors();
   }, []);
 
+  // ── Draft Persistence ──
+  const savedDraftStr = localStorage.getItem("kore_vendor_draft");
+  const savedDraft = savedDraftStr ? JSON.parse(savedDraftStr) : null;
+
   // ── UI state ──
-  const [view, setView] = useState<"list" | "form">("list");
-  const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
-  const [formData, setFormData] = useState<Vendor>(emptyVendor());
-  const [activeFormTab, setActiveFormTab] = useState("other");
+  const [view, setView] = useState<"list" | "form">(savedDraft?.view || "list");
+  const [editingVendor, setEditingVendor] = useState<Vendor | null>(
+    savedDraft?.editingVendor || null
+  );
+  const [formData, setFormData] = useState<Vendor>(
+    savedDraft?.formData || emptyVendor()
+  );
+  const [activeFormTab, setActiveFormTab] = useState(
+    savedDraft?.activeFormTab || "other"
+  );
   const [search, setSearch] = useState("");
   const [confirmAccountNumber, setConfirmAccountNumber] = useState("");
+
+  useEffect(() => {
+    if (view === "form") {
+      localStorage.setItem(
+        "kore_vendor_draft",
+        JSON.stringify({
+          view,
+          editingVendor,
+          formData,
+          activeFormTab,
+        })
+      );
+    } else {
+      localStorage.removeItem("kore_vendor_draft");
+    }
+  }, [view, editingVendor, formData, activeFormTab]);
 
   // ── Actions ──
   const openAddForm = () => {
@@ -154,6 +182,7 @@ const VendorManager: React.FC = () => {
     setView("list");
     setFormData(emptyVendor());
     setEditingVendor(null);
+    localStorage.removeItem("kore_vendor_draft");
   };
 
   const saveVendor = async () => {
@@ -171,13 +200,16 @@ const VendorManager: React.FC = () => {
       setView("list");
       setFormData(emptyVendor());
       setEditingVendor(null);
+      localStorage.removeItem("kore_vendor_draft");
     };
 
     setLoading(true);
     const promise = savePromise();
     toast.promise(promise, {
       loading: editingVendor ? "Updating vendor..." : "Creating vendor...",
-      success: editingVendor ? "Vendor updated successfully!" : "Vendor created successfully!",
+      success: editingVendor
+        ? "Vendor updated successfully!"
+        : "Vendor created successfully!",
       error: (err) => err.message || "Failed to save vendor",
     });
     promise.finally(() => setLoading(false));
@@ -201,25 +233,36 @@ const VendorManager: React.FC = () => {
     }
   };
 
+  const handleStatusToggle = async (vendor: Vendor, newStatus: boolean) => {
+    const vendorId = vendor.id;
+    if (!vendorId) return;
+
+    try {
+      await vendorService.updateVendor(vendorId, { isActive: newStatus });
+      setVendors((prev) =>
+        prev.map((v) => (v.id === vendorId ? { ...v, isActive: newStatus } : v))
+      );
+      toast.success(
+        `Vendor ${newStatus ? "activated" : "deactivated"} successfully`
+      );
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update status");
+    }
+  };
+
   // ── Helpers ──
   const updateField = (field: keyof Vendor, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const updateBillingAddress = (
-    field: keyof VendorAddress,
-    value: string
-  ) => {
+  const updateBillingAddress = (field: keyof VendorAddress, value: string) => {
     setFormData((prev) => ({
       ...prev,
       billingAddress: { ...prev.billingAddress, [field]: value },
     }));
   };
 
-  const updateShippingAddress = (
-    field: keyof VendorAddress,
-    value: string
-  ) => {
+  const updateShippingAddress = (field: keyof VendorAddress, value: string) => {
     setFormData((prev) => ({
       ...prev,
       shippingAddress: { ...prev.shippingAddress, [field]: value },
@@ -304,14 +347,42 @@ const VendorManager: React.FC = () => {
 
   // Indian states
   const indianStates = [
-    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
-    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand",
-    "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur",
-    "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab",
-    "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
-    "Uttar Pradesh", "Uttarakhand", "West Bengal",
-    "Delhi", "Jammu & Kashmir", "Ladakh", "Puducherry",
-    "Chandigarh", "Andaman & Nicobar", "Dadra & Nagar Haveli", "Lakshadweep",
+    "Andhra Pradesh",
+    "Arunachal Pradesh",
+    "Assam",
+    "Bihar",
+    "Chhattisgarh",
+    "Goa",
+    "Gujarat",
+    "Haryana",
+    "Himachal Pradesh",
+    "Jharkhand",
+    "Karnataka",
+    "Kerala",
+    "Madhya Pradesh",
+    "Maharashtra",
+    "Manipur",
+    "Meghalaya",
+    "Mizoram",
+    "Nagaland",
+    "Odisha",
+    "Punjab",
+    "Rajasthan",
+    "Sikkim",
+    "Tamil Nadu",
+    "Telangana",
+    "Tripura",
+    "Uttar Pradesh",
+    "Uttarakhand",
+    "West Bengal",
+    "Delhi",
+    "Jammu & Kashmir",
+    "Ladakh",
+    "Puducherry",
+    "Chandigarh",
+    "Andaman & Nicobar",
+    "Dadra & Nagar Haveli",
+    "Lakshadweep",
   ];
 
   // ═════════════════ RENDER ═════════════════
@@ -393,6 +464,9 @@ const VendorManager: React.FC = () => {
                     <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider">
                       Phone
                     </th>
+                    <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider">
+                      Status
+                    </th>
                     <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-right">
                       Actions
                     </th>
@@ -423,6 +497,17 @@ const VendorManager: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         {vendor.workPhone || vendor.mobile || "—"}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <Switch
+                            checked={vendor.isActive !== false}
+                            onCheckedChange={(checked) =>
+                              handleStatusToggle(vendor, checked)
+                            }
+                            className="scale-90"
+                          />
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -483,9 +568,7 @@ const VendorManager: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* PRIMARY CONTACT */}
             <div>
-              <label className={labelClass}>
-                Primary Contact
-              </label>
+              <label className={labelClass}>Primary Contact</label>
               <div className="grid grid-cols-1 sm:grid-cols-[120px_1fr_1fr] gap-2">
                 <select
                   disabled={loading}
@@ -550,7 +633,9 @@ const VendorManager: React.FC = () => {
                   placeholder="Code"
                   className={inputClass}
                   value={formData.vendorCode}
-                  onChange={(e) => updateField("vendorCode", e.target.value.toUpperCase())}
+                  onChange={(e) =>
+                    updateField("vendorCode", e.target.value.toUpperCase())
+                  }
                 />
               </div>
             </div>
@@ -677,17 +762,13 @@ const VendorManager: React.FC = () => {
                     type="text"
                     className={inputClass}
                     value={formData.brand}
-                    onChange={(e) =>
-                      updateField("brand", e.target.value)
-                    }
+                    onChange={(e) => updateField("brand", e.target.value)}
                   />
                 </div>
               </div>
 
               <div className="flex items-center gap-3">
-                <label className={labelClass + " mb-0"}>
-                  MSME Registered?
-                </label>
+                <label className={labelClass + " mb-0"}>MSME Registered?</label>
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input
                     type="checkbox"
@@ -814,7 +895,6 @@ const VendorManager: React.FC = () => {
             </div>
           )}
 
-    
           {/* ─── BANK DETAILS ─── */}
           {activeFormTab === "bank" && (
             <div className="space-y-6">

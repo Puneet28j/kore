@@ -1,27 +1,47 @@
-import { apiFetch } from './api';
-import { User } from '../types';
+import { apiFetch } from "./api";
+import { User } from "../types";
 
 export const userService = {
-  createUser: async (userData: { name: string; email: string; password: string; role: string }) => {
-    const response = await apiFetch('/users', {
-      method: 'POST',
+  createUser: async (userData: {
+    name: string;
+    email: string;
+    password: string;
+    role: string;
+  }) => {
+    const response = await apiFetch("/users", {
+      method: "POST",
       body: JSON.stringify(userData),
     });
     return response.data;
   },
 
-  listUsers: async (params: { page?: number; limit?: number; search?: string; role?: string } = {}) => {
+  listUsers: async (
+    params: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      role?: string;
+    } = {}
+  ) => {
     const query = new URLSearchParams();
-    if (params.page) query.append('page', params.page.toString());
-    if (params.limit) query.append('limit', params.limit.toString());
-    if (params.search) query.append('search', params.search);
-    if (params.role) query.append('role', params.role);
+    if (params.page) query.append("page", params.page.toString());
+    if (params.limit) query.append("limit", params.limit.toString());
+    if (params.search) query.append("search", params.search);
+    if (params.role) query.append("role", params.role);
 
     const response = await apiFetch(`/users?${query.toString()}`);
     return response; // { data: items[], meta: {} }
   },
 
-  updateUser: async (userId: string, userData: Partial<{ name: string; email: string; role: string; isActive: boolean }>) => {
+  updateUser: async (
+    userId: string,
+    userData: Partial<{
+      name: string;
+      email: string;
+      role: string;
+      isActive: boolean;
+    }>
+  ) => {
     const response = await apiFetch(`/users/${userId}`, {
       method: "PATCH",
       body: JSON.stringify(userData),
@@ -31,7 +51,34 @@ export const userService = {
 
   deleteUser: async (userId: string) => {
     await apiFetch(`/users/${userId}`, {
-      method: 'DELETE',
+      method: "DELETE",
     });
-  }
+  },
+
+  // Profile methods for current user
+  getProfile: async () => {
+    const response = await apiFetch("/users/me", {
+      method: "GET",
+    });
+    return response.data;
+  },
+
+  updateProfile: async (userData: { name: string; email: string }) => {
+    const response = await apiFetch("/users/me", {
+      method: "PATCH",
+      body: JSON.stringify(userData),
+    });
+    return response.data;
+  },
+
+  changePassword: async (passwordData: {
+    oldPassword: string;
+    newPassword: string;
+  }) => {
+    const response = await apiFetch("/users/me/password", {
+      method: "PATCH",
+      body: JSON.stringify(passwordData),
+    });
+    return response.data;
+  },
 };

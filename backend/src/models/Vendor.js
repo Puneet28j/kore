@@ -58,6 +58,7 @@ const VendorSchema = new mongoose.Schema(
 
     bankDetails: { type: [BankDetailSchema], default: [] },
 
+    isActive: { type: Boolean, default: true },
     isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true }

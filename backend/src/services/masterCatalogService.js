@@ -74,7 +74,9 @@ exports.create = async (req) => {
   const { primaryImage, secondaryImages } = buildImagesPayload(req);
 
   if (!primaryImage?.url) {
-    const err = new Error("primaryImage is required (upload file or send primaryImageUrl)");
+    const err = new Error(
+      "primaryImage is required (upload file or send primaryImageUrl)"
+    );
     err.statusCode = 400;
     throw err;
   }
@@ -129,7 +131,8 @@ exports.list = async (query) => {
   if (stage) filter.stage = stage;
   if (categoryId) filter.categoryId = categoryId;
   if (brandId) filter.brandId = brandId;
-  if (manufacturerCompanyId) filter.manufacturerCompanyId = manufacturerCompanyId;
+  if (manufacturerCompanyId)
+    filter.manufacturerCompanyId = manufacturerCompanyId;
   if (gender) filter.gender = gender;
 
   if (q) {
@@ -175,6 +178,8 @@ exports.getById = async (id) => {
 
 exports.update = async (req, id) => {
   const body = req.body || {};
+  const isJsonRequest =
+    req.headers["content-type"] === "application/json" || !req.files;
 
   const doc = await MasterCatalog.findOne({ _id: id, isDeleted: false });
   if (!doc) {
@@ -183,7 +188,31 @@ exports.update = async (req, id) => {
     throw err;
   }
 
-  // ---- base fields (only if provided) ----
+  if (isJsonRequest) {
+    // Simple JSON update
+    const allowedFields = [
+      "isActive",
+      "articleName",
+      "soleColor",
+      "mrp",
+      "gender",
+      "stage",
+      "expectedAvailableDate",
+    ];
+    allowedFields.forEach((field) => {
+      if (body[field] !== undefined) {
+        if (field === "mrp") {
+          doc[field] = Number(body[field] || 0);
+        } else {
+          doc[field] = body[field];
+        }
+      }
+    });
+    await doc.save();
+    return doc;
+  }
+
+  // ---- multipart/form-data update ----
   const patch = {
     articleName: body.articleName,
     soleColor: body.soleColor,
@@ -198,6 +227,7 @@ exports.update = async (req, id) => {
 
     stage: body.stage,
     expectedAvailableDate: body.expectedAvailableDate || null,
+    isActive: body.isActive,
   };
 
   Object.keys(patch).forEach((k) => {
@@ -216,7 +246,8 @@ exports.update = async (req, id) => {
   }
 
   // ---- images ----
-  const replaceSecondary = body.replaceSecondary === "true" || body.replaceSecondary === true;
+  const replaceSecondary =
+    body.replaceSecondary === "true" || body.replaceSecondary === true;
   if (replaceSecondary) doc.secondaryImages = [];
 
   const { primaryImage, secondaryImages } = buildImagesPayload(req);

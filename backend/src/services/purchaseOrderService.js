@@ -6,7 +6,26 @@ const round2 = (n) => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 
 const computeItem = (it) => {
   const base = Number(it.basePrice || 0);
-  const qty = Math.max(1, Number(it.quantity || 1));
+
+  // Calculate quantity from sizeMap if it exists
+  let qty = Number(it.quantity || 1);
+  if (it.sizeMap) {
+    let derivedQty = 0;
+    if (it.sizeMap instanceof Map) {
+      it.sizeMap.forEach((value) => {
+        derivedQty += Number(value?.qty || 0);
+      });
+    } else if (typeof it.sizeMap === "object" && it.sizeMap !== null) {
+      Object.values(it.sizeMap).forEach((value) => {
+        derivedQty += Number(value?.qty || 0);
+      });
+    }
+    if (derivedQty > 0) {
+      qty = derivedQty;
+    }
+  }
+  qty = Math.max(1, qty);
+
   const taxRate = Number(it.taxRate || 0);
 
   const taxPerItem = round2((base * taxRate) / 100);
@@ -26,19 +45,32 @@ const computeTotals = (items, discountPercent) => {
   const computed = items.map(computeItem);
 
   const subTotal = round2(
-    computed.reduce((sum, it) => sum + Number(it.basePrice || 0) * Number(it.quantity || 0), 0)
+    computed.reduce(
+      (sum, it) => sum + Number(it.basePrice || 0) * Number(it.quantity || 0),
+      0
+    )
   );
 
   const discPct = Math.min(100, Math.max(0, Number(discountPercent || 0)));
   const discountAmount = round2((subTotal * discPct) / 100);
 
   const totalTax = round2(
-    computed.reduce((sum, it) => sum + Number(it.taxPerItem || 0) * Number(it.quantity || 0), 0)
+    computed.reduce(
+      (sum, it) => sum + Number(it.taxPerItem || 0) * Number(it.quantity || 0),
+      0
+    )
   );
 
   const total = round2(subTotal - discountAmount + totalTax);
 
-  return { items: computed, subTotal, discountPercent: discPct, discountAmount, totalTax, total };
+  return {
+    items: computed,
+    subTotal,
+    discountPercent: discPct,
+    discountAmount,
+    totalTax,
+    total,
+  };
 };
 
 const ensureValidId = (id, name = "ID") => {
@@ -50,7 +82,9 @@ const ensureValidId = (id, name = "ID") => {
 };
 
 exports.generateNextPONumber = async () => {
-  const last = await PurchaseOrder.findOne({ isDeleted: false }).sort({ createdAt: -1 }).lean();
+  const last = await PurchaseOrder.findOne({ isDeleted: false })
+    .sort({ createdAt: -1 })
+    .lean();
   const lastNum = last?.poNumber?.match(/PO-(\d+)/)?.[1];
   const next = (lastNum ? parseInt(lastNum, 10) : 0) + 1;
   return `PO-${String(next).padStart(5, "0")}`;
@@ -73,7 +107,9 @@ exports.create = async (body) => {
   }
 
   const rawItems = Array.isArray(body.items) ? body.items : [];
-  const filtered = rawItems.filter((it) => it.articleId || it.itemName || it.sku);
+  const filtered = rawItems.filter(
+    (it) => it.articleId || it.itemName || it.sku
+  );
 
   if (filtered.length === 0) {
     const err = new Error("At least one item is required");
@@ -86,7 +122,8 @@ exports.create = async (body) => {
   try {
     const doc = await PurchaseOrder.create({
       vendorId: body.vendorId,
-      vendorName: body.vendorName || vendor.displayName || vendor.companyName || "",
+      vendorName:
+        body.vendorName || vendor.displayName || vendor.companyName || "",
 
       poNumber: body.poNumber,
       referenceNumber: body.referenceNumber || "",
@@ -100,27 +137,53 @@ exports.create = async (body) => {
       notes: body.notes || "",
       termsAndConditions: body.termsAndConditions || "",
 
-      items: totals.items.map((it) => ({
-        rowId: it.id || it.rowId || "",
-        articleId: mongoose.Types.ObjectId.isValid(it.articleId) ? it.articleId : undefined,
-        variantId: it.variantId || "",
+      items: totals.items.map((it) => {
+        // Ensure sizeMap is a proper object (Mongoose will convert to Map)
+        let sizeMapData = {};
+        if (it.sizeMap) {
+          if (it.sizeMap instanceof Map) {
+            // Convert Map to plain object
+            it.sizeMap.forEach((value, key) => {
+              sizeMapData[String(key)] = {
+                qty: Number(value?.qty || 0),
+                sku: String(value?.sku || ""),
+              };
+            });
+          } else if (typeof it.sizeMap === "object" && it.sizeMap !== null) {
+            // Already an object, ensure proper structure
+            Object.entries(it.sizeMap).forEach(([key, value]) => {
+              sizeMapData[String(key)] = {
+                qty: Number(value?.qty || 0),
+                sku: String(value?.sku || ""),
+              };
+            });
+          }
+        }
 
-        itemName: it.itemName || "",
-        image: it.image || "",
-        sku: it.sku || "",
-        skuCompany: it.skuCompany || "",
-        itemTaxCode: it.itemTaxCode || "",
+        return {
+          rowId: it.id || it.rowId || "",
+          articleId: mongoose.Types.ObjectId.isValid(it.articleId)
+            ? it.articleId
+            : undefined,
+          variantId: it.variantId || "",
 
-        quantity: it.quantity,
-        taxRate: it.taxRate,
-        taxType: it.taxType || "GST",
-        basePrice: it.basePrice,
-        mrp: it.mrp || 0,
+          itemName: it.itemName || "",
+          image: it.image || "",
+          sku: it.sku || "",
+          skuCompany: it.skuCompany || "",
+          itemTaxCode: it.itemTaxCode || "",
 
-        taxPerItem: it.taxPerItem,
-        unitTotal: it.unitTotal,
-        sizeMap: it.sizeMap || {},
-      })),
+          quantity: it.quantity,
+          taxRate: it.taxRate,
+          taxType: it.taxType || "GST",
+          basePrice: it.basePrice,
+          mrp: it.mrp || 0,
+
+          taxPerItem: it.taxPerItem,
+          unitTotal: it.unitTotal,
+          sizeMap: sizeMapData,
+        };
+      }),
 
       subTotal: totals.subTotal,
       discountPercent: totals.discountPercent,
@@ -170,7 +233,11 @@ exports.list = async (query) => {
   const skip = (Number(page) - 1) * Number(limit);
 
   const [items, total] = await Promise.all([
-    PurchaseOrder.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    PurchaseOrder.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .lean(),
     PurchaseOrder.countDocuments(filter),
   ]);
 
@@ -224,21 +291,32 @@ exports.update = async (id, body) => {
       throw err;
     }
     doc.vendorId = patch.vendorId;
-    doc.vendorName = patch.vendorName || vendor.displayName || vendor.companyName || "";
+    doc.vendorName =
+      patch.vendorName || vendor.displayName || vendor.companyName || "";
   }
 
   // header fields
-  ["poNumber","referenceNumber","paymentTerms","shipmentPreference","notes","termsAndConditions"].forEach((k) => {
+  [
+    "poNumber",
+    "referenceNumber",
+    "paymentTerms",
+    "shipmentPreference",
+    "notes",
+    "termsAndConditions",
+  ].forEach((k) => {
     if (patch[k] !== undefined) doc[k] = patch[k];
   });
   if (patch.date !== undefined) doc.date = patch.date;
   if (patch.deliveryDate !== undefined) doc.deliveryDate = patch.deliveryDate;
-  if (patch.status !== undefined) doc.status = patch.status === "SENT" ? "SENT" : "DRAFT";
+  if (patch.status !== undefined)
+    doc.status = patch.status === "SENT" ? "SENT" : "DRAFT";
 
   // items replace + totals recompute (only if provided)
   if (body.items !== undefined) {
     const rawItems = Array.isArray(body.items) ? body.items : [];
-    const filtered = rawItems.filter((it) => it.articleId || it.itemName || it.sku);
+    const filtered = rawItems.filter(
+      (it) => it.articleId || it.itemName || it.sku
+    );
     if (filtered.length === 0) {
       const err = new Error("At least one item is required");
       err.statusCode = 400;
@@ -247,24 +325,50 @@ exports.update = async (id, body) => {
 
     const totals = computeTotals(filtered, body.discountPercent);
 
-    doc.items = totals.items.map((it) => ({
-      rowId: it.id || it.rowId || "",
-      articleId: mongoose.Types.ObjectId.isValid(it.articleId) ? it.articleId : undefined,
-      variantId: it.variantId || "",
-      itemName: it.itemName || "",
-      image: it.image || "",
-      sku: it.sku || "",
-      skuCompany: it.skuCompany || "",
-      itemTaxCode: it.itemTaxCode || "",
-      quantity: it.quantity,
-      taxRate: it.taxRate,
-      taxType: it.taxType || "GST",
-      basePrice: it.basePrice,
-      mrp: it.mrp || 0,
-      taxPerItem: it.taxPerItem,
-      unitTotal: it.unitTotal,
-      sizeMap: it.sizeMap || {},
-    }));
+    doc.items = totals.items.map((it) => {
+      // Ensure sizeMap is a proper object (Mongoose will convert to Map)
+      let sizeMapData = {};
+      if (it.sizeMap) {
+        if (it.sizeMap instanceof Map) {
+          // Convert Map to plain object
+          it.sizeMap.forEach((value, key) => {
+            sizeMapData[String(key)] = {
+              qty: Number(value?.qty || 0),
+              sku: String(value?.sku || ""),
+            };
+          });
+        } else if (typeof it.sizeMap === "object" && it.sizeMap !== null) {
+          // Already an object, ensure proper structure
+          Object.entries(it.sizeMap).forEach(([key, value]) => {
+            sizeMapData[String(key)] = {
+              qty: Number(value?.qty || 0),
+              sku: String(value?.sku || ""),
+            };
+          });
+        }
+      }
+
+      return {
+        rowId: it.id || it.rowId || "",
+        articleId: mongoose.Types.ObjectId.isValid(it.articleId)
+          ? it.articleId
+          : undefined,
+        variantId: it.variantId || "",
+        itemName: it.itemName || "",
+        image: it.image || "",
+        sku: it.sku || "",
+        skuCompany: it.skuCompany || "",
+        itemTaxCode: it.itemTaxCode || "",
+        quantity: it.quantity,
+        taxRate: it.taxRate,
+        taxType: it.taxType || "GST",
+        basePrice: it.basePrice,
+        mrp: it.mrp || 0,
+        taxPerItem: it.taxPerItem,
+        unitTotal: it.unitTotal,
+        sizeMap: sizeMapData,
+      };
+    });
 
     doc.subTotal = totals.subTotal;
     doc.discountPercent = totals.discountPercent;

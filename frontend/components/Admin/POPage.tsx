@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback,
+} from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import {
@@ -29,6 +35,7 @@ import {
 import { poService } from "../../services/poService";
 import { vendorService } from "../../services/vendorService";
 import { masterCatalogService } from "../../services/masterCatalogService";
+import { billService } from "../../services/billService";
 import { exportPOToPDF } from "../../utils/exportPO";
 
 // ─── Reusable styles ───────────────────────────────────
@@ -71,6 +78,53 @@ const generatePONumber = (existingPOs: PurchaseOrder[]): string => {
 // ─── Format date for input ─────────────────────────────
 const todayStr = () => new Date().toISOString().split("T")[0];
 
+// ─── Computations ──────────────────────────────────────
+const computeItem = (item: PurchaseOrderItem): PurchaseOrderItem => {
+  let derivedQty = 0;
+
+  // Handle sizeMap - convert Map to plain object if needed
+  let sizeMapPlain: Record<string, { qty: number; sku: string }> = {};
+  if (item.sizeMap) {
+    if (item.sizeMap instanceof Map) {
+      item.sizeMap.forEach((value, key) => {
+        sizeMapPlain[String(key)] = {
+          qty: Number(value?.qty || 0),
+          sku: String(value?.sku || ""),
+        };
+      });
+    } else if (typeof item.sizeMap === "object" && item.sizeMap !== null) {
+      Object.entries(item.sizeMap).forEach(([key, value]: [string, any]) => {
+        sizeMapPlain[key] = {
+          qty: Number(value?.qty || 0),
+          sku: String(value?.sku || ""),
+        };
+      });
+    }
+  }
+
+  // Calculate total quantity from sizeMap
+  if (Object.keys(sizeMapPlain).length > 0) {
+    Object.values(sizeMapPlain).forEach((val) => {
+      derivedQty += val.qty || 0;
+    });
+  }
+
+  // Always use derivedQty if sizeMap exists, otherwise use item.quantity
+  const qty =
+    Object.keys(sizeMapPlain).length > 0 ? derivedQty : item.quantity || 0;
+  const taxPerItem = (item.basePrice * item.taxRate) / 100;
+  const unitTotal = (item.basePrice + taxPerItem) * qty;
+
+  return {
+    ...item,
+    quantity: qty,
+    // Ensure sizeMap is always a plain object (not Map) for easier handling
+    sizeMap: sizeMapPlain,
+    taxPerItem: Math.round(taxPerItem * 100) / 100,
+    unitTotal: Math.round(unitTotal * 100) / 100,
+  };
+};
+
 interface POPageProps {
   articles: Article[];
   onSyncSuccess?: () => void;
@@ -84,31 +138,48 @@ const QuantityGridModal: React.FC<{
   variantId: string | null;
   rowId: string | null;
   existingItems: PurchaseOrderItem[];
-  onSave: (aggregatedItem: Partial<PurchaseOrderItem>, fullGrid: Record<string, Record<string, { qty: number; sku: string }>>) => void;
-}> = ({ isOpen, onClose, article, variantId, rowId, existingItems, onSave }) => {
+  onSave: (
+    aggregatedItem: Partial<PurchaseOrderItem>,
+    fullGrid: Record<string, Record<string, { qty: number; sku: string }>>
+  ) => void;
+}> = ({
+  isOpen,
+  onClose,
+  article,
+  variantId,
+  rowId,
+  existingItems,
+  onSave,
+}) => {
   if (!isOpen || !article) return null;
 
   // Search for the specific variant (match id or _id, fallback to all)
   const allVariants = article.variants || [];
   const variants = useMemo(() => {
-    const targetId = String(variantId || "").trim().toLowerCase();
-    
+    const targetId = String(variantId || "")
+      .trim()
+      .toLowerCase();
+
     // 1. Primary Match: Normalized ID
     let matched = allVariants.filter((v: any) => {
-      const vId = String(v.id || v._id || "").trim().toLowerCase();
+      const vId = String(v.id || v._id || "")
+        .trim()
+        .toLowerCase();
       return vId === targetId && targetId !== "";
     });
 
     // 2. Secondary Match: Soft match by Color and Range from the row's name
     if (matched.length === 0 && rowId) {
-      const currentRow = existingItems.find(it => it.id === rowId);
+      const currentRow = existingItems.find((it) => it.id === rowId);
       if (currentRow?.itemName) {
         //itemName fmt: "Urban-Red-4-7"
-        const parts = currentRow.itemName.split("-").map(p => p.trim().toLowerCase());
+        const parts = currentRow.itemName
+          .split("-")
+          .map((p) => p.trim().toLowerCase());
         if (parts.length >= 3) {
           const color = parts[1];
           const range = parts.slice(2).join("-"); // handle "4-7"
-          
+
           matched = allVariants.filter((v: any) => {
             const vColor = (v.color || "").trim().toLowerCase();
             const vRange = (v.sizeRange || "").trim().toLowerCase();
@@ -162,42 +233,192 @@ const QuantityGridModal: React.FC<{
     });
   }, [variants, article.selectedSizes]);
 
-  // Initialize grid state once on mount (stable due to key change on parent)
+  // Get the current row's sizeMap for change detection
+  const currentRow = useMemo(() => {
+    return existingItems.find((it) => it.id === rowId);
+  }, [existingItems, rowId]);
+
+  // Create a serialized key from the row's sizeMap to detect changes
+  const sizeMapKey = useMemo(() => {
+    if (!currentRow?.sizeMap) return "";
+    return JSON.stringify(currentRow.sizeMap);
+  }, [currentRow?.sizeMap]);
+
+  // Initialize grid state - recalculate whenever modal opens or data changes
   const initialGrid = useMemo(() => {
-      const initial: Record<
-        string,
-        Record<string, { qty: number; sku: string }>
-      > = {};
+    const initial: Record<
+      string,
+      Record<string, { qty: number; sku: string }>
+    > = {};
 
-      variants.forEach((v) => {
-        const vId = v.id || v._id || "";
-        initial[vId] = {};
-        
-        // 1. Check if this variant already has data in this specific PO row
-        const existingRow = existingItems.find(it => it.id === rowId);
-        const poSizeMap = (existingRow?.variantId === vId || existingRow?.variantId === v._id || existingRow?.variantId === v.id) 
-          ? existingRow.sizeMap 
-          : null;
+    variants.forEach((v) => {
+      const vId = v.id || v._id || "";
+      initial[vId] = {};
 
-        sizes.forEach((sz) => {
-          // Priority: 1. This PO Row's sizeMap, 2. Master Catalog's sizeMap
-          if (poSizeMap && poSizeMap[sz]) {
-            initial[vId][sz] = {
-              qty: poSizeMap[sz].qty,
-              sku: poSizeMap[sz].sku,
+      // 1. Check if this variant already has data in this specific PO row
+      const existingRow = existingItems.find((it) => it.id === rowId);
+
+      // CRITICAL: ALWAYS use PO row's sizeMap if it exists and has data
+      // The PO row is what the user is editing, so we must show its sizeMap
+      // Only fall back to master catalog if PO row has no sizeMap or it's empty
+      let rawPoSizeMap = null;
+      if (existingRow?.sizeMap) {
+        // Check if sizeMap has any data (handle both Map and plain object)
+        let hasData = false;
+        if (existingRow.sizeMap instanceof Map) {
+          hasData = existingRow.sizeMap.size > 0;
+        } else if (
+          typeof existingRow.sizeMap === "object" &&
+          existingRow.sizeMap !== null
+        ) {
+          hasData = Object.keys(existingRow.sizeMap).length > 0;
+        }
+
+        if (hasData) {
+          rawPoSizeMap = existingRow.sizeMap;
+        }
+      }
+
+      // Convert PO sizeMap to plain object (handle both Map and object)
+      const poSizeMapPlain: Record<string, { qty: number; sku: string }> = {};
+      if (rawPoSizeMap) {
+        if (rawPoSizeMap instanceof Map) {
+          rawPoSizeMap.forEach((value, key) => {
+            poSizeMapPlain[String(key)] = {
+              qty: Number(value?.qty || 0),
+              sku: String(value?.sku || ""),
             };
-          } else {
-            initial[vId][sz] = {
-              qty: v.sizeQuantities?.[sz] || 0,
-              sku: v.sizeSkus?.[sz] || "",
-            };
-          }
-        });
+          });
+        } else if (typeof rawPoSizeMap === "object" && rawPoSizeMap !== null) {
+          Object.entries(rawPoSizeMap).forEach(
+            ([key, value]: [string, any]) => {
+              poSizeMapPlain[key] = {
+                qty: Number(value?.qty || 0),
+                sku: String(value?.sku || ""),
+              };
+            }
+          );
+        }
+      }
+
+      sizes.forEach((sz) => {
+        // Priority: 1. This PO Row's sizeMap, 2. Master Catalog's sizeMap
+        // CRITICAL: Check if this size exists in PO's sizeMap (even if qty is 0)
+        // If it exists in PO sizeMap, use it (user may have explicitly set it to 0)
+        if (sz in poSizeMapPlain) {
+          initial[vId][sz] = {
+            qty: Number(poSizeMapPlain[sz]?.qty || 0),
+            sku: String(poSizeMapPlain[sz]?.sku || ""),
+          };
+        } else {
+          // Only use master catalog if this size is NOT in PO's sizeMap
+          initial[vId][sz] = {
+            qty: v.sizeQuantities?.[sz] || 0,
+            sku: v.sizeSkus?.[sz] || "",
+          };
+        }
       });
-      return initial;
+    });
+    return initial;
+  }, [variants, sizes, existingItems, rowId, sizeMapKey]);
+
+  // Initialize grid state - will be reset by useEffect when dialog opens
+  const [grid, setGrid] = useState(initialGrid);
+  const prevIsOpenRef = useRef(false);
+
+  // Helper function to build grid from current state
+  const buildGridFromItems = useCallback(() => {
+    const updated: Record<
+      string,
+      Record<string, { qty: number; sku: string }>
+    > = {};
+
+    variants.forEach((v) => {
+      const vId = v.id || v._id || "";
+      updated[vId] = {};
+
+      // Always get the latest row from existingItems
+      const existingRow = existingItems.find((it) => it.id === rowId);
+
+      // CRITICAL: ALWAYS use PO row's sizeMap if it exists and has data
+      // The PO row is what the user is editing, so we must show its sizeMap
+      // Only fall back to master catalog if PO row has no sizeMap or it's empty
+      let rawPoSizeMap = null;
+      if (existingRow?.sizeMap) {
+        // Check if sizeMap has any data (handle both Map and plain object)
+        let hasData = false;
+        if (existingRow.sizeMap instanceof Map) {
+          hasData = existingRow.sizeMap.size > 0;
+        } else if (
+          typeof existingRow.sizeMap === "object" &&
+          existingRow.sizeMap !== null
+        ) {
+          hasData = Object.keys(existingRow.sizeMap).length > 0;
+        }
+
+        if (hasData) {
+          rawPoSizeMap = existingRow.sizeMap;
+        }
+      }
+
+      // Convert PO sizeMap to plain object (handle both Map and object)
+      const poSizeMapPlain: Record<string, { qty: number; sku: string }> = {};
+      if (rawPoSizeMap) {
+        if (rawPoSizeMap instanceof Map) {
+          rawPoSizeMap.forEach((value, key) => {
+            poSizeMapPlain[String(key)] = {
+              qty: Number(value?.qty || 0),
+              sku: String(value?.sku || ""),
+            };
+          });
+        } else if (typeof rawPoSizeMap === "object" && rawPoSizeMap !== null) {
+          Object.entries(rawPoSizeMap).forEach(
+            ([key, value]: [string, any]) => {
+              poSizeMapPlain[key] = {
+                qty: Number(value?.qty || 0),
+                sku: String(value?.sku || ""),
+              };
+            }
+          );
+        }
+      }
+
+      sizes.forEach((sz) => {
+        // Priority: 1. This PO Row's sizeMap, 2. Master Catalog's sizeMap
+        // CRITICAL: Check if this size exists in PO's sizeMap (even if qty is 0)
+        // If it exists in PO sizeMap, use it (user may have explicitly set it to 0)
+        if (sz in poSizeMapPlain) {
+          updated[vId][sz] = {
+            qty: Number(poSizeMapPlain[sz]?.qty || 0),
+            sku: String(poSizeMapPlain[sz]?.sku || ""),
+          };
+        } else {
+          // Only use master catalog if this size is NOT in PO's sizeMap
+          updated[vId][sz] = {
+            qty: v.sizeQuantities?.[sz] || 0,
+            sku: v.sizeSkus?.[sz] || "",
+          };
+        }
+      });
+    });
+
+    return updated;
   }, [variants, sizes, existingItems, rowId]);
 
-  const [grid, setGrid] = useState(initialGrid);
+  useEffect(() => {
+    // ALWAYS sync grid when dialog opens or sizeMap changes
+    // This ensures we always have the latest data from existingItems
+    if (isOpen && rowId) {
+      // Always rebuild grid from latest existingItems
+      // This is critical to show updated quantities when dialog reopens
+      const updated = buildGridFromItems();
+      setGrid(updated);
+
+      prevIsOpenRef.current = isOpen;
+    } else {
+      prevIsOpenRef.current = false;
+    }
+  }, [isOpen, rowId, buildGridFromItems, sizeMapKey, existingItems]);
 
   const handleUpdate = (
     variantId: string,
@@ -221,10 +442,12 @@ const QuantityGridModal: React.FC<{
     // 1. Prepare aggregated item for PO table
     let totalQty = 0;
     let firstSku = "";
-    
+
     // We only have one variant in this modal now due to filtering
     // Use the same robust matching logic as in the render section
-    const variant = variants.find((v: any) => v.id === variantId || v._id === variantId) || variants[0];
+    const variant =
+      variants.find((v: any) => v.id === variantId || v._id === variantId) ||
+      variants[0];
     if (!variant) return;
     const vId = variant.id || variant._id || "";
 
@@ -242,10 +465,13 @@ const QuantityGridModal: React.FC<{
     const aggregatedItem: Partial<PurchaseOrderItem> = {
       variantId: vId,
       articleId: article.id,
-      itemName: `${article.name}-${variant.color || "Default"}-${variant.sizeRange || "Range"}`,
+      itemName: `${article.name}-${variant.color || "Default"}-${
+        variant.sizeRange || "Range"
+      }`,
       sku: firstSku || variant.sku || article.sku,
       quantity: totalQty,
-      basePrice: variant.costPrice || variant.sellingPrice || article.pricePerPair || 0,
+      basePrice:
+        variant.costPrice || variant.sellingPrice || article.pricePerPair || 0,
       mrp: variant.mrp || article.mrp || 0,
       image: article.imageUrl || "",
       skuCompany: article.brand || "",
@@ -286,77 +512,77 @@ const QuantityGridModal: React.FC<{
         <div className="flex-1 overflow-auto p-6">
           {variants.length === 0 ? (
             <div className="py-20 text-center text-slate-400">
-                No variants found for this article.
+              No variants found for this article.
             </div>
           ) : (
             <table className="w-full text-left border-collapse">
-                <thead>
+              <thead>
                 <tr className="border-b border-slate-100">
-                    <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 sticky left-0 z-10">
+                  <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 sticky left-0 z-10">
                     Color / Variant
-                    </th>
-                    {sizes.map((sz) => (
+                  </th>
+                  {sizes.map((sz) => (
                     <th
-                        key={sz}
-                        className="py-3 px-4 text-[10px] font-black text-indigo-600 uppercase tracking-widest text-center min-w-[120px]"
+                      key={sz}
+                      className="py-3 px-4 text-[10px] font-black text-indigo-600 uppercase tracking-widest text-center min-w-[120px]"
                     >
-                        Size {sz}
+                      Size {sz}
                     </th>
-                    ))}
+                  ))}
                 </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
+              </thead>
+              <tbody className="divide-y divide-slate-50">
                 {variants.map((v) => {
-                    const vId = v.id || v._id || "";
-                    return (
-                        <tr
-                        key={vId}
-                        className="hover:bg-slate-50/50 transition-colors"
-                        >
-                        <td className="py-4 px-4 font-bold text-slate-700 bg-white sticky left-0 z-10 shadow-[4px_0_4px_-2px_rgba(0,0,0,0.05)]">
-                            <div className="flex flex-col">
-                            <span>{v.color || "Default"}</span>
-                            <span className="text-[10px] font-medium text-slate-400">
-                                {v.itemName || ""}
-                            </span>
-                            </div>
-                        </td>
-                        {sizes.map((sz) => (
-                            <td key={sz} className="py-4 px-3">
-                            <div className="space-y-2">
-                                <div className="relative">
-                                <input
-                                    type="number"
-                                    min="0"
-                                    placeholder="Qty"
-                                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-center text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
-                                    value={grid[vId]?.[sz]?.qty || ""}
-                                    onChange={(e) =>
-                                    handleUpdate(
-                                        vId,
-                                        sz,
-                                        "qty",
-                                        parseInt(e.target.value) || 0
-                                    )
-                                    }
-                                />
-                                </div>
-                                <input
-                                type="text"
-                                placeholder="SKU"
-                                className="w-full min-w-[100px] p-1.5 bg-white border border-slate-100 rounded-lg text-[10px] font-mono outline-none focus:border-indigo-300 transition-all"
-                                value={grid[vId]?.[sz]?.sku || ""}
+                  const vId = v.id || v._id || "";
+                  return (
+                    <tr
+                      key={vId}
+                      className="hover:bg-slate-50/50 transition-colors"
+                    >
+                      <td className="py-4 px-4 font-bold text-slate-700 bg-white sticky left-0 z-10 shadow-[4px_0_4px_-2px_rgba(0,0,0,0.05)]">
+                        <div className="flex flex-col">
+                          <span>{v.color || "Default"}</span>
+                          <span className="text-[10px] font-medium text-slate-400">
+                            {v.itemName || ""}
+                          </span>
+                        </div>
+                      </td>
+                      {sizes.map((sz) => (
+                        <td key={sz} className="py-4 px-3">
+                          <div className="space-y-2">
+                            <div className="relative">
+                              <input
+                                type="number"
+                                min="0"
+                                placeholder="Qty"
+                                className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-center text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
+                                value={grid[vId]?.[sz]?.qty || ""}
                                 onChange={(e) =>
-                                    handleUpdate(vId, sz, "sku", e.target.value)
+                                  handleUpdate(
+                                    vId,
+                                    sz,
+                                    "qty",
+                                    parseInt(e.target.value) || 0
+                                  )
                                 }
-                                />
+                              />
                             </div>
-                            </td>
-                        ))}
-                        </tr>
-                    );
+                            <input
+                              type="text"
+                              placeholder="SKU"
+                              className="w-full min-w-[100px] p-1.5 bg-white border border-slate-100 rounded-lg text-[10px] font-mono outline-none focus:border-indigo-300 transition-all"
+                              value={grid[vId]?.[sz]?.sku || ""}
+                              onChange={(e) =>
+                                handleUpdate(vId, sz, "sku", e.target.value)
+                              }
+                            />
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                  );
                 })}
-                </tbody>
+              </tbody>
             </table>
           )}
         </div>
@@ -364,7 +590,8 @@ const QuantityGridModal: React.FC<{
         {/* Footer */}
         <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
           <p className="text-xs text-slate-400 font-medium whitespace-pre-wrap">
-            Entering quantities will create/update rows in the PO item table.<br/>
+            Entering quantities will create/update rows in the PO item table.
+            <br />
             Existing rows for other articles will be preserved.
           </p>
           <div className="flex items-center gap-3">
@@ -404,7 +631,9 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
         poService.listPOs(),
         vendorService.listVendors(),
       ]);
-      setPurchaseOrders(poRes.data.map((p: any) => ({ ...p, id: p._id || p.id })));
+      setPurchaseOrders(
+        poRes.data.map((p: any) => ({ ...p, id: p._id || p.id }))
+      );
       setVendors(vendorRes.data.map((v: any) => ({ ...v, id: v._id || v.id })));
     } catch (err) {
       console.error("Failed to fetch PO data", err);
@@ -417,40 +646,115 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     fetchData();
   }, []);
 
+  // ── Draft Persistence ──
+  const savedDraftStr = localStorage.getItem("kore_po_draft");
+  const savedDraft = savedDraftStr ? JSON.parse(savedDraftStr) : null;
+
   // ── UI State ──
-  const [view, setView] = useState<"list" | "form">("list");
+  const [view, setView] = useState<"list" | "form">(
+    savedDraft ? "form" : "list"
+  );
   const [searchTerm, setSearchTerm] = useState("");
-  const [editingPOId, setEditingPOId] = useState<string | null>(null);
+  const [editingPOId, setEditingPOId] = useState<string | null>(
+    savedDraft?.editingPOId || null
+  );
 
   // ── Form State ──
-  const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [selectedVendorId, setSelectedVendorId] = useState(
+    savedDraft?.selectedVendorId || ""
+  );
   const [vendorSearch, setVendorSearch] = useState("");
   const [showVendorDropdown, setShowVendorDropdown] = useState(false);
   const vendorDropdownRef = useRef<HTMLDivElement>(null);
 
-  const [poNumber, setPONumber] = useState("");
-  const [referenceNumber, setReferenceNumber] = useState("");
-  const [poDate, setPODate] = useState(todayStr());
-  const [deliveryDate, setDeliveryDate] = useState("");
-  const [paymentTerms, setPaymentTerms] = useState("Due on Receipt");
-  const [shipmentPreference, setShipmentPreference] = useState("");
-  const [notes, setNotes] = useState("");
-  const [termsAndConditions, setTermsAndConditions] = useState("");
-  const [items, setItems] = useState<PurchaseOrderItem[]>([emptyItem()]);
-  const [discountPercent, setDiscountPercent] = useState(0);
+  const [poNumber, setPONumber] = useState(savedDraft?.poNumber || "");
+  const [referenceNumber, setReferenceNumber] = useState(
+    savedDraft?.referenceNumber || ""
+  );
+  const [poDate, setPODate] = useState(savedDraft?.poDate || todayStr());
+  const [deliveryDate, setDeliveryDate] = useState(
+    savedDraft?.deliveryDate || ""
+  );
+  const [paymentTerms, setPaymentTerms] = useState(
+    savedDraft?.paymentTerms || "Due on Receipt"
+  );
+  const [shipmentPreference, setShipmentPreference] = useState(
+    savedDraft?.shipmentPreference || ""
+  );
+  const [notes, setNotes] = useState(savedDraft?.notes || "");
+  const [termsAndConditions, setTermsAndConditions] = useState(
+    savedDraft?.termsAndConditions || ""
+  );
+  const [items, setItems] = useState<PurchaseOrderItem[]>(() => {
+    if (savedDraft?.items) {
+      return savedDraft.items.map((it: any) => computeItem(it));
+    }
+    return [emptyItem()];
+  });
+  const [discountPercent, setDiscountPercent] = useState(
+    savedDraft?.discountPercent || 0
+  );
+
+  // Save draft whenever it changes
+  useEffect(() => {
+    if (view === "form") {
+      localStorage.setItem(
+        "kore_po_draft",
+        JSON.stringify({
+          editingPOId,
+          selectedVendorId,
+          poNumber,
+          referenceNumber,
+          poDate,
+          deliveryDate,
+          paymentTerms,
+          shipmentPreference,
+          notes,
+          termsAndConditions,
+          items,
+          discountPercent,
+        })
+      );
+    } else {
+      localStorage.removeItem("kore_po_draft");
+    }
+  }, [
+    view,
+    editingPOId,
+    selectedVendorId,
+    poNumber,
+    referenceNumber,
+    poDate,
+    deliveryDate,
+    paymentTerms,
+    shipmentPreference,
+    notes,
+    termsAndConditions,
+    items,
+    discountPercent,
+  ]);
 
   // ── Item picker state ──
   const [activeItemPickerIdx, setActiveItemPickerIdx] = useState<number | null>(
     null
   );
-  const [pickerPos, setPickerPos] = useState({ top: 0, left: 0, width: 0, openUp: false });
+  const [pickerPos, setPickerPos] = useState({
+    top: 0,
+    left: 0,
+    width: 0,
+    openUp: false,
+  });
   const [itemPickerSearch, setItemPickerSearch] = useState("");
   const itemPickerRef = useRef<HTMLDivElement>(null);
 
   // ── Quantity Grid Modal state ──
   const [showQtyModal, setShowQtyModal] = useState(false);
-  const [qtyModalArticleId, setQtyModalArticleId] = useState<string | null>(null);
-  const [qtyModalVariantId, setQtyModalVariantId] = useState<string | null>(null);
+  const [qtyModalArticleId, setQtyModalArticleId] = useState<string | null>(
+    null
+  );
+  const [qtyModalVariantId, setQtyModalVariantId] = useState<string | null>(
+    null
+  );
   const [qtyModalRowId, setQtyModalRowId] = useState<string | null>(null);
 
   // ── Click outside handlers ──
@@ -505,12 +809,18 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
             articleId: article.id,
             masterName: article.name,
             variantId: variant.id,
-            name: `${article.name}-${variant.color || "Default"}-${variant.sizeRange || "NoRange"}`,
+            name: `${article.name}-${variant.color || "Default"}-${
+              variant.sizeRange || "NoRange"
+            }`,
             sku: variant.sku || article.sku,
             brand: article.brand || "",
             hsnCode: variant.hsnCode || article.sku || "",
             image: article.imageUrl || "",
-            basePrice: variant.costPrice || variant.sellingPrice || article.pricePerPair || 0,
+            basePrice:
+              variant.costPrice ||
+              variant.sellingPrice ||
+              article.pricePerPair ||
+              0,
             mrp: variant.mrp || article.mrp || 0,
           });
         });
@@ -554,14 +864,12 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
   }, [itemOptions, itemPickerSearch]);
 
   // ── Computations ──
-  const computeItem = (item: PurchaseOrderItem): PurchaseOrderItem => {
-    const taxPerItem = (item.basePrice * item.taxRate) / 100;
-    const unitTotal = (item.basePrice + taxPerItem) * item.quantity;
-    return { ...item, taxPerItem: Math.round(taxPerItem * 100) / 100, unitTotal: Math.round(unitTotal * 100) / 100 };
-  };
-
-  const subTotal = items.reduce((sum, it) => sum + it.basePrice * it.quantity, 0);
-  const discountAmount = Math.round((subTotal * discountPercent) / 100 * 100) / 100;
+  const subTotal = items.reduce(
+    (sum, it) => sum + it.basePrice * it.quantity,
+    0
+  );
+  const discountAmount =
+    Math.round(((subTotal * discountPercent) / 100) * 100) / 100;
   const totalTax = items.reduce(
     (sum, it) => sum + it.taxPerItem * it.quantity,
     0
@@ -602,6 +910,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
   const cancelForm = () => {
     setView("list");
     resetForm();
+    localStorage.removeItem("kore_po_draft");
   };
 
   const handleEditPO = (po: PurchaseOrder) => {
@@ -626,10 +935,18 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     setShipmentPreference(po.shipmentPreference || "");
     setNotes(po.notes || "");
     setTermsAndConditions(po.termsAndConditions || "");
-    setItems(po.items.map((it: any) => ({
-      ...it,
-      id: it.rowId || it._id || it.id || `poi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-    })));
+    setItems(
+      po.items.map((it: any) =>
+        computeItem({
+          ...it,
+          id:
+            it.rowId ||
+            it._id ||
+            it.id ||
+            `poi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        })
+      )
+    );
     setDiscountPercent(po.discountPercent || 0);
     setEditingPOId(po.id);
     setView("form");
@@ -678,17 +995,31 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     }
   };
 
-  const selectItemForRow = (
-    rowId: string,
-    option: (typeof itemOptions)[0]
-  ) => {
+  const selectItemForRow = (rowId: string, option: (typeof itemOptions)[0]) => {
+    // Find matching article and variant to extract default sizing
+    const targetArticle = articles.find((a) => a.id === option.articleId);
+    const targetVariant = targetArticle?.variants?.find(
+      (v) => v.id === option.variantId || v._id === option.variantId
+    );
+
+    // Construct default sizeMap from master catalog quantities
+    const defaultSizeMap: Record<string, { qty: number; sku: string }> = {};
+    if (targetVariant && targetVariant.sizeQuantities) {
+      Object.entries(targetVariant.sizeQuantities).forEach(([sz, qty]) => {
+        defaultSizeMap[sz] = {
+          qty: Number(qty) || 0,
+          sku: targetVariant.sizeSkus?.[sz] || "",
+        };
+      });
+    }
+
     setItems((prev) =>
       prev.map((it) => {
         if (it.id !== rowId) return it;
         return computeItem({
           ...it,
           articleId: option.articleId,
-          variantId: option.variantId, 
+          variantId: option.variantId,
           itemName: option.name,
           sku: option.sku,
           skuCompany: option.brand,
@@ -696,6 +1027,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
           image: option.image,
           basePrice: option.basePrice,
           mrp: option.mrp || 0,
+          sizeMap: defaultSizeMap,
         });
       })
     );
@@ -710,10 +1042,36 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     aggregatedItem: Partial<PurchaseOrderItem>,
     fullGrid: Record<string, Record<string, { qty: number; sku: string }>>
   ) => {
+    // Capture previous state BEFORE updating (for master catalog sync)
+    const existingPOItem = items.find((it) => it.id === qtyModalRowId);
+    const previousSizeMap = existingPOItem?.sizeMap || {};
+
+    // Convert previousSizeMap to plain object for comparison
+    const previousSizeMapPlain: Record<string, { qty: number; sku: string }> =
+      {};
+    if (previousSizeMap instanceof Map) {
+      previousSizeMap.forEach((value, key) => {
+        previousSizeMapPlain[String(key)] = {
+          qty: Number(value?.qty || 0),
+          sku: String(value?.sku || ""),
+        };
+      });
+    } else if (
+      typeof previousSizeMap === "object" &&
+      previousSizeMap !== null
+    ) {
+      Object.entries(previousSizeMap).forEach(([key, value]: [string, any]) => {
+        previousSizeMapPlain[key] = {
+          qty: Number(value?.qty || 0),
+          sku: String(value?.sku || ""),
+        };
+      });
+    }
+
     // 1. Update PO State (Use row ID for reliable matching)
     setItems((prev) => {
       const exists = prev.find((it) => it.id === qtyModalRowId);
-      
+
       if (!exists) {
         // If somehow the row is gone, add it as a new item
         const newItem: PurchaseOrderItem = {
@@ -722,81 +1080,230 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
           id: qtyModalRowId || `poi-${Date.now()}`,
           taxRate: 18,
           taxType: "GST",
+          // Ensure sizeMap is set and quantity will be recalculated from it
+          sizeMap: aggregatedItem.sizeMap || {},
         };
         return [...prev, computeItem(newItem)];
       }
 
       return prev.map((it) => {
         if (it.id !== qtyModalRowId) return it;
-        return computeItem({
+        // Merge the existing item with the aggregated item, ensuring sizeMap is preserved
+        // CRITICAL: aggregatedItem.sizeMap contains the updated grid data - always use it
+        // Even if all quantities are 0, we should preserve the sizeMap structure
+        const updatedSizeMap = aggregatedItem.sizeMap || {};
+
+        const updatedItem = {
           ...it,
           ...aggregatedItem,
-          taxRate: 18,
-          taxType: "GST",
-        });
+          taxRate: it.taxRate || 18,
+          taxType: it.taxType || "GST",
+          // CRITICAL: Always use aggregatedItem.sizeMap from the grid
+          // This contains the exact quantities the user entered in the dialog
+          sizeMap: updatedSizeMap,
+        };
+        // computeItem will recalculate quantity from sizeMap
+        return computeItem(updatedItem);
       });
     });
 
     // 2. Sync with Real Master (Article)
     if (qtyModalArticleId && qtyModalVariantId) {
+      console.log(
+        "🔄 Updating Master Catalog for article:",
+        qtyModalArticleId,
+        "variant:",
+        qtyModalVariantId
+      );
+      console.log("Previous sizeMap:", previousSizeMapPlain);
+      console.log("New grid data:", fullGrid[qtyModalVariantId]);
       try {
         const res = await masterCatalogService.getMasterItem(qtyModalArticleId);
         const article = res.data || res;
-        
+
         if (article && article.variants) {
           // Find and update the specific variant's sizeMap
+          // IMPORTANT: ADD quantities to master catalog, don't replace them
+          // For updates: Subtract old PO quantities, then add new ones
           const updatedVariants = article.variants.map((v: any) => {
             const vId = v._id || v.id;
-            if (vId === qtyModalVariantId || v.id === qtyModalVariantId || v._id === qtyModalVariantId) {
-              const newSizeMap = { ...(v.sizeMap || {}) };
+            if (
+              vId === qtyModalVariantId ||
+              v.id === qtyModalVariantId ||
+              v._id === qtyModalVariantId
+            ) {
+              // Start with existing sizeMap from master catalog
+              const existingSizeMap = v.sizeMap || {};
+              const newSizeMap: Record<string, { qty: number; sku: string }> =
+                {};
+
+              // Convert Mongoose Map to plain object if needed
+              const existingPlain: Record<
+                string,
+                { qty: number; sku: string }
+              > = {};
+              if (existingSizeMap instanceof Map) {
+                existingSizeMap.forEach((value, key) => {
+                  existingPlain[String(key)] = {
+                    qty: Number(value?.qty || 0),
+                    sku: String(value?.sku || ""),
+                  };
+                });
+              } else if (typeof existingSizeMap === "object") {
+                Object.entries(existingSizeMap).forEach(
+                  ([key, value]: [string, any]) => {
+                    existingPlain[key] = {
+                      qty: Number(value?.qty || 0),
+                      sku: String(value?.sku || ""),
+                    };
+                  }
+                );
+              }
+
+              // Start with master catalog's current quantities
+              Object.keys(existingPlain).forEach((sz) => {
+                newSizeMap[sz] = { ...existingPlain[sz] };
+              });
+
+              // Adjust inventory: Add back old PO quantities, then subtract new PO quantities
+              // This correctly handles inventory reservation changes
+              Object.entries(previousSizeMapPlain).forEach(([sz, data]) => {
+                const currentQty = newSizeMap[sz]?.qty || 0;
+                const prevQty = Number(data.qty || 0);
+                // Add back the previously reserved quantities
+                newSizeMap[sz] = {
+                  qty: currentQty + prevQty,
+                  sku: newSizeMap[sz]?.sku || "",
+                };
+              });
+
+              // Subtract new quantities from PO grid (reserve them)
               const gridData = fullGrid[qtyModalVariantId];
               if (gridData) {
                 Object.entries(gridData).forEach(([sz, data]) => {
-                  newSizeMap[sz] = { qty: data.qty, sku: data.sku };
+                  const currentQty = newSizeMap[sz]?.qty || 0;
+                  const newQty = Number(data.qty || 0);
+                  // Reserve the new PO quantities
+                  newSizeMap[sz] = {
+                    qty: Math.max(0, currentQty - newQty),
+                    // Use SKU from PO if provided, otherwise keep existing
+                    sku: data.sku || newSizeMap[sz]?.sku || "",
+                  };
                 });
               }
+
               return { ...v, sizeMap: newSizeMap };
             }
             return v;
           });
 
-          // Prepare FormData for update (similar to ProductMaster)
+          // Prepare FormData for update - send ALL variants with updated sizeMap
           const data = new FormData();
           data.append("articleName", article.articleName || article.name);
-          data.append("variants", JSON.stringify(updatedVariants.map((v: any) => ({
-            itemName: v.itemName,
-            costPrice: v.costPrice,
-            sellingPrice: v.sellingPrice,
-            mrp: v.mrp,
-            hsnCode: v.hsnCode,
-            color: v.color,
-            sizeRange: v.sizeRange,
-            sizeMap: v.sizeMap
-          }))));
+          data.append(
+            "variants",
+            JSON.stringify(
+              updatedVariants.map((v: any) => ({
+                itemName: v.itemName,
+                costPrice: v.costPrice,
+                sellingPrice: v.sellingPrice,
+                mrp: v.mrp,
+                hsnCode: v.hsnCode,
+                color: v.color,
+                sizeRange: v.sizeRange,
+                sizeMap: v.sizeMap,
+              }))
+            )
+          );
 
           // Retain existing taxonomy if available
-          if (article.categoryId?._id || article.categoryId) data.append("categoryId", article.categoryId?._id || article.categoryId);
-          if (article.brandId?._id || article.brandId) data.append("brandId", article.brandId?._id || article.brandId);
-          if (article.manufacturerCompanyId?._id || article.manufacturerCompanyId) data.append("manufacturerCompanyId", article.manufacturerCompanyId?._id || article.manufacturerCompanyId);
-          if (article.unitId?._id || article.unitId) data.append("unitId", article.unitId?._id || article.unitId);
+          if (article.categoryId?._id || article.categoryId)
+            data.append(
+              "categoryId",
+              article.categoryId?._id || article.categoryId
+            );
+          if (article.brandId?._id || article.brandId)
+            data.append("brandId", article.brandId?._id || article.brandId);
+          if (
+            article.manufacturerCompanyId?._id ||
+            article.manufacturerCompanyId
+          )
+            data.append(
+              "manufacturerCompanyId",
+              article.manufacturerCompanyId?._id ||
+                article.manufacturerCompanyId
+            );
+          if (article.unitId?._id || article.unitId)
+            data.append("unitId", article.unitId?._id || article.unitId);
 
           await masterCatalogService.updateMasterItem(qtyModalArticleId, data);
+          console.log(
+            "✅ Master Catalog updated successfully for article:",
+            qtyModalArticleId
+          );
           toast.success("Article Master updated successfully");
           if (onSyncSuccess) onSyncSuccess();
         }
       } catch (err) {
-        console.error("Failed to sync with master", err);
+        console.error("❌ Failed to sync with master:", err);
         toast.error("Warning: Failed to sync changes with Article Master");
       }
     }
 
-    setShowQtyModal(false);
+    // 3. Auto-save PO to database if editing existing PO
+    if (editingPOId) {
+      try {
+        const poData: Partial<PurchaseOrder> = {
+          vendorId: selectedVendorId,
+          vendorName: selectedVendor?.displayName || "",
+          poNumber,
+          referenceNumber,
+          date: poDate,
+          deliveryDate,
+          paymentTerms,
+          shipmentPreference,
+          notes,
+          termsAndConditions,
+          items: items.map((it) => ({
+            ...it,
+            sizeMap: it.sizeMap || {},
+          })),
+          subTotal,
+          discountPercent,
+          discountAmount,
+          totalTax,
+          total,
+          // Don't include status to preserve current status
+        };
+
+        await poService.updatePO(editingPOId, poData);
+        toast.success("Purchase Order updated successfully");
+      } catch (err) {
+        console.error("Failed to auto-save PO", err);
+        toast.error("Warning: Failed to save changes to Purchase Order");
+      }
+    }
+
+    // Close dialog after state updates
+    // Use setTimeout to ensure state updates complete before closing
+    setTimeout(() => {
+      setShowQtyModal(false);
+    }, 0);
   };
 
   const savePO = async (status: POStatus) => {
     if (!selectedVendorId) return toast.error("Please select a vendor.");
     if (items.every((it) => !it.articleId))
       return toast.error("Please add at least one item.");
+
+    // Ensure all items have their sizeMap properly included
+    const itemsWithSizeMap = items
+      .filter((it) => it.articleId)
+      .map((it) => ({
+        ...it,
+        // Ensure sizeMap is always a plain object (not Map) for JSON serialization
+        sizeMap: it.sizeMap || {},
+      }));
 
     const poData: Partial<PurchaseOrder> = {
       vendorId: selectedVendorId,
@@ -809,7 +1316,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
       shipmentPreference,
       notes,
       termsAndConditions,
-      items: items.filter((it) => it.articleId),
+      items: itemsWithSizeMap,
       subTotal,
       discountPercent,
       discountAmount,
@@ -819,21 +1326,175 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     };
 
     const savePromise = async () => {
+      // Update Master Catalog inventory before saving PO
+      if (status === "SENT") {
+        // Only reserve inventory when PO is actually sent
+        for (const item of itemsWithSizeMap) {
+          if (item.articleId && item.variantId && item.sizeMap) {
+            try {
+              const res = await masterCatalogService.getMasterItem(
+                item.articleId
+              );
+              const article = res.data || res;
+
+              if (article && article.variants) {
+                const updatedVariants = article.variants.map((v: any) => {
+                  const vId = v._id || v.id;
+                  if (
+                    vId === item.variantId ||
+                    v.id === item.variantId ||
+                    v._id === item.variantId
+                  ) {
+                    // Get existing sizeMap
+                    const existingSizeMap = v.sizeMap || {};
+                    const existingPlain: Record<
+                      string,
+                      { qty: number; sku: string }
+                    > = {};
+
+                    if (existingSizeMap instanceof Map) {
+                      existingSizeMap.forEach((value, key) => {
+                        existingPlain[String(key)] = {
+                          qty: Number(value?.qty || 0),
+                          sku: String(value?.sku || ""),
+                        };
+                      });
+                    } else if (typeof existingSizeMap === "object") {
+                      Object.entries(existingSizeMap).forEach(
+                        ([key, value]: [string, any]) => {
+                          existingPlain[key] = {
+                            qty: Number(value?.qty || 0),
+                            sku: String(value?.sku || ""),
+                          };
+                        }
+                      );
+                    }
+
+                    // For PO creation: just subtract the ordered quantities
+                    // For PO update: this will be handled by the quantity dialog updates
+                    if (!editingPOId) {
+                      // New PO: subtract ordered quantities from available inventory
+                      const newSizeMap: Record<
+                        string,
+                        { qty: number; sku: string }
+                      > = { ...existingPlain };
+
+                      Object.entries(item.sizeMap).forEach(
+                        ([size, data]: [string, any]) => {
+                          const orderedQty = Number(data?.qty || 0);
+                          if (orderedQty > 0) {
+                            const currentQty = newSizeMap[size]?.qty || 0;
+                            newSizeMap[size] = {
+                              qty: Math.max(0, currentQty - orderedQty),
+                              sku: data?.sku || newSizeMap[size]?.sku || "",
+                            };
+                          }
+                        }
+                      );
+
+                      return { ...v, sizeMap: newSizeMap };
+                    }
+                  }
+                  return v;
+                });
+
+                // Update Master Catalog if this is a new PO
+                if (!editingPOId) {
+                  const data = new FormData();
+                  data.append(
+                    "articleName",
+                    article.articleName || article.name
+                  );
+                  data.append(
+                    "variants",
+                    JSON.stringify(
+                      updatedVariants.map((v: any) => ({
+                        itemName: v.itemName,
+                        costPrice: v.costPrice,
+                        sellingPrice: v.sellingPrice,
+                        mrp: v.mrp,
+                        hsnCode: v.hsnCode,
+                        color: v.color,
+                        sizeRange: v.sizeRange,
+                        sizeMap: v.sizeMap,
+                      }))
+                    )
+                  );
+
+                  // Retain existing taxonomy
+                  if (article.categoryId?._id || article.categoryId)
+                    data.append(
+                      "categoryId",
+                      article.categoryId?._id || article.categoryId
+                    );
+                  if (article.brandId?._id || article.brandId)
+                    data.append(
+                      "brandId",
+                      article.brandId?._id || article.brandId
+                    );
+                  if (
+                    article.manufacturerCompanyId?._id ||
+                    article.manufacturerCompanyId
+                  )
+                    data.append(
+                      "manufacturerCompanyId",
+                      article.manufacturerCompanyId?._id ||
+                        article.manufacturerCompanyId
+                    );
+                  if (article.unitId?._id || article.unitId)
+                    data.append(
+                      "unitId",
+                      article.unitId?._id || article.unitId
+                    );
+
+                  await masterCatalogService.updateMasterItem(
+                    item.articleId,
+                    data
+                  );
+                }
+              }
+            } catch (err) {
+              console.error("Failed to update master catalog inventory:", err);
+              // Don't fail the PO save, but log the error
+            }
+          }
+        }
+      }
+
+      let createdOrUpdatedPO: PurchaseOrder | null = null;
+
       if (editingPOId) {
         await poService.updatePO(editingPOId, poData);
+        // Fetch the updated PO to get the complete data
+        const res = await poService.listPOs();
+        createdOrUpdatedPO = res.data.find((p: any) => p._id === editingPOId || p.id === editingPOId);
       } else {
-        await poService.createPO(poData);
+        const res = await poService.createPO(poData);
+        createdOrUpdatedPO = res.data || res;
       }
+
+      // Convert PO to Bill and add to bills service
+      if (createdOrUpdatedPO) {
+        const bill = billService.convertPOToBill(createdOrUpdatedPO);
+        billService.addBill(bill);
+        console.log("✅ Bill created from PO:", bill.id);
+      }
+
       await fetchData();
       setView("list");
       resetForm();
+      localStorage.removeItem("kore_po_draft");
     };
 
     setLoading(true);
     const promise = savePromise();
     toast.promise(promise, {
-      loading: editingPOId ? "Updating Purchase Order..." : "Creating Purchase Order...",
-      success: editingPOId ? "Purchase Order Updated Successfully!" : "Purchase Order Created Successfully!",
+      loading: editingPOId
+        ? "Updating Purchase Order..."
+        : "Creating Purchase Order...",
+      success: editingPOId
+        ? "Purchase Order Updated Successfully!"
+        : "Purchase Order Created Successfully!",
       error: (err: any) => err.message || "Failed to save Purchase Order",
     });
     promise.finally(() => setLoading(false));
@@ -957,12 +1618,20 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                         {po.vendorName}
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-900 font-bold text-right">
-                        ₹{po.total.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                        ₹
+                        {po.total.toLocaleString("en-IN", {
+                          minimumFractionDigits: 2,
+                        })}
                       </td>
-                      <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
+                      <td
+                        className="px-6 py-4 text-center"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <button
                           onClick={() => {
-                            const v = vendors.find(ven => ven.id === po.vendorId);
+                            const v = vendors.find(
+                              (ven) => ven.id === po.vendorId
+                            );
                             exportPOToPDF(po, v);
                           }}
                           className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-all inline-flex items-center gap-1 font-semibold text-xs"
@@ -1023,12 +1692,15 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
             </p>
           </div>
         </div>
-        
+
         {editingPOId ? (
           <button
             onClick={() => {
-              const currentPO = purchaseOrders.find(p => p.id === editingPOId);
-              if (currentPO) exportPOToPDF({ ...currentPO, items }, selectedVendor);
+              const currentPO = purchaseOrders.find(
+                (p) => p.id === editingPOId
+              );
+              if (currentPO)
+                exportPOToPDF({ ...currentPO, items }, selectedVendor);
             }}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 text-sm font-bold rounded-xl hover:bg-indigo-100 transition-all border border-indigo-200"
           >
@@ -1400,7 +2072,13 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                   >
                     {/* Item Details (Picker) */}
                     <td className="px-3 py-3 relative">
-                      <div ref={activeItemPickerIdx === idx ? itemPickerRef : undefined}>
+                      <div
+                        ref={
+                          activeItemPickerIdx === idx
+                            ? itemPickerRef
+                            : undefined
+                        }
+                      >
                         <button
                           type="button"
                           className={`w-full text-left px-3 py-2 border rounded-lg text-sm transition-all flex items-center justify-between ${
@@ -1416,101 +2094,104 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                           <ChevronDown size={14} className="shrink-0 ml-1" />
                         </button>
 
-                        {activeItemPickerIdx === idx && createPortal(
-                          <div
-                            ref={itemPickerRef}
-                            style={{
-                              position: "absolute",
-                              top: pickerPos.openUp
-                                ? pickerPos.top - 10
-                                : pickerPos.top + 42,
-                              left: pickerPos.left,
-                              width: pickerPos.width * 2,
-                              transform: pickerPos.openUp ? 'translateY(-100%)' : 'none',
-                              zIndex: 9999,
-                            }}
-                            className="bg-white border border-slate-200 rounded-xl shadow-2xl max-h-80 overflow-hidden"
-                          >
-                            <div className="p-2 border-b border-slate-100">
-                              <div className="relative">
-                                <Search
-                                  size={14}
-                                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
-                                />
-                                <input
-                                  type="text"
-                                  placeholder="Search items…"
-                                  className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-sm"
-                                  value={itemPickerSearch}
-                                  onChange={(e) =>
-                                    setItemPickerSearch(e.target.value)
-                                  }
-                                  autoFocus
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </div>
-                            </div>
-                            <div className="overflow-y-auto max-h-60">
-                              {Object.keys(groupedItems).length === 0 ? (
-                                <div className="p-4 text-center text-sm text-slate-400">
-                                  No items found.
+                        {activeItemPickerIdx === idx &&
+                          createPortal(
+                            <div
+                              ref={itemPickerRef}
+                              style={{
+                                position: "absolute",
+                                top: pickerPos.openUp
+                                  ? pickerPos.top - 10
+                                  : pickerPos.top + 42,
+                                left: pickerPos.left,
+                                width: pickerPos.width * 2,
+                                transform: pickerPos.openUp
+                                  ? "translateY(-100%)"
+                                  : "none",
+                                zIndex: 9999,
+                              }}
+                              className="bg-white border border-slate-200 rounded-xl shadow-2xl max-h-80 overflow-hidden"
+                            >
+                              <div className="p-2 border-b border-slate-100">
+                                <div className="relative">
+                                  <Search
+                                    size={14}
+                                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
+                                  />
+                                  <input
+                                    type="text"
+                                    placeholder="Search items…"
+                                    className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-sm"
+                                    value={itemPickerSearch}
+                                    onChange={(e) =>
+                                      setItemPickerSearch(e.target.value)
+                                    }
+                                    autoFocus
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
                                 </div>
-                              ) : (
-                                Object.entries(groupedItems).map(
-                                  ([masterName, variants]) => (
-                                    <div key={masterName}>
-                                      <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
-                                        <span className="text-[10px] font-black text-indigo-600 uppercase tracking-wider">
-                                          {masterName}
-                                        </span>
-                                      </div>
-                                      {variants.map((option) => (
-                                        <button
-                                          key={`${option.articleId}-${option.sku}`}
-                                          type="button"
-                                          className="w-full text-left px-4 py-2.5 text-sm hover:bg-indigo-50 transition-colors flex items-center gap-3 border-b border-slate-50"
-                                          onClick={() =>
-                                            selectItemForRow(item.id, option)
-                                          }
-                                        >
-                                          {option.image ? (
-                                            <img
-                                              src={option.image}
-                                              className="w-8 h-8 rounded-lg object-cover border border-slate-200 shrink-0"
-                                              alt=""
-                                            />
-                                          ) : (
-                                            <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
-                                              <Package
-                                                size={14}
-                                                className="text-slate-400"
-                                              />
-                                            </div>
-                                          )}
-                                          <div className="min-w-0">
-                                            <p className="font-semibold text-slate-800 truncate">
-                                              {option.name}
-                                            </p>
-                                            <p className="text-[10px] text-slate-400 font-mono">
-                                              {option.sku}
-                                              {option.brand
-                                                ? ` · ${option.brand}`
-                                                : ""}
-                                            </p>
-                                          </div>
-                                          <span className="ml-auto text-xs font-bold text-slate-600 shrink-0">
-                                            ₹{option.basePrice}
+                              </div>
+                              <div className="overflow-y-auto max-h-60">
+                                {Object.keys(groupedItems).length === 0 ? (
+                                  <div className="p-4 text-center text-sm text-slate-400">
+                                    No items found.
+                                  </div>
+                                ) : (
+                                  Object.entries(groupedItems).map(
+                                    ([masterName, variants]) => (
+                                      <div key={masterName}>
+                                        <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
+                                          <span className="text-[10px] font-black text-indigo-600 uppercase tracking-wider">
+                                            {masterName}
                                           </span>
-                                        </button>
-                                      ))}
-                                    </div>
+                                        </div>
+                                        {variants.map((option) => (
+                                          <button
+                                            key={`${option.articleId}-${option.sku}`}
+                                            type="button"
+                                            className="w-full text-left px-4 py-2.5 text-sm hover:bg-indigo-50 transition-colors flex items-center gap-3 border-b border-slate-50"
+                                            onClick={() =>
+                                              selectItemForRow(item.id, option)
+                                            }
+                                          >
+                                            {option.image ? (
+                                              <img
+                                                src={option.image}
+                                                className="w-8 h-8 rounded-lg object-cover border border-slate-200 shrink-0"
+                                                alt=""
+                                              />
+                                            ) : (
+                                              <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
+                                                <Package
+                                                  size={14}
+                                                  className="text-slate-400"
+                                                />
+                                              </div>
+                                            )}
+                                            <div className="min-w-0">
+                                              <p className="font-semibold text-slate-800 truncate">
+                                                {option.name}
+                                              </p>
+                                              <p className="text-[10px] text-slate-400 font-mono">
+                                                {option.sku}
+                                                {option.brand
+                                                  ? ` · ${option.brand}`
+                                                  : ""}
+                                              </p>
+                                            </div>
+                                            <span className="ml-auto text-xs font-bold text-slate-600 shrink-0">
+                                              ₹{option.basePrice}
+                                            </span>
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )
                                   )
-                                )
-                              )}
-                            </div>
-                          </div>,
-                          document.body
-                        )}
+                                )}
+                              </div>
+                            </div>,
+                            document.body
+                          )}
                       </div>
                     </td>
 
@@ -1799,7 +2480,11 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
             disabled={loading}
             className="flex items-center justify-center gap-2 px-6 py-3 border-2 border-slate-200 rounded-xl font-bold text-sm text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-all disabled:opacity-50"
           >
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            {loading ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Save size={16} />
+            )}
             Save as Draft
           </button>
           <button
@@ -1808,7 +2493,11 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
             disabled={loading}
             className="flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-md shadow-indigo-600/20 disabled:opacity-50"
           >
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            {loading ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Send size={16} />
+            )}
             Save and Send
           </button>
           <button
@@ -1822,7 +2511,13 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
       </div>
 
       <QuantityGridModal
-        key={qtyModalRowId || "empty"}
+        key={`${qtyModalRowId}-${
+          items.find((it) => it.id === qtyModalRowId)?.sizeMap
+            ? JSON.stringify(
+                items.find((it) => it.id === qtyModalRowId)?.sizeMap
+              )
+            : "empty"
+        }`}
         isOpen={showQtyModal}
         onClose={() => setShowQtyModal(false)}
         article={articles.find((a) => a.id === qtyModalArticleId)}

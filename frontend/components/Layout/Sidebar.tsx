@@ -26,12 +26,13 @@ import {
   Clock,
   Receipt,
   Shield,
+  User,
 } from "lucide-react";
 
-import { User, UserRole } from "../../types";
+import { type User as Usertype, UserRole } from "../../types";
 
 type SidebarProps = {
-  user: User;
+  user: Usertype;
   activeTab: string;
   setActiveTab: (tab: string) => void;
 
@@ -137,7 +138,11 @@ const Sidebar: React.FC<SidebarProps> = ({
           fixed top-0 left-0 z-20 h-screen bg-white border-r border-slate-200
           flex flex-col overflow-y-auto overflow-x-hidden transition-all duration-300 ease-in-out
           ${isCollapsed ? "w-20" : "w-64"}
-          ${isSidebarOpen ? "translate-x-0 pt-16 md:pt-0" : "-translate-x-full md:translate-x-0"}
+          ${
+            isSidebarOpen
+              ? "translate-x-0 pt-16 md:pt-0"
+              : "-translate-x-full md:translate-x-0"
+          }
         `}
       >
         {/* ✅ Desktop Collapse Toggle Button (Right side center) */}
@@ -156,7 +161,11 @@ const Sidebar: React.FC<SidebarProps> = ({
 
         <div className={`${isCollapsed ? "p-4" : "p-6"}`}>
           {/* Brand */}
-          <div className={`flex items-center gap-2 ${isCollapsed ? "mb-4" : "mb-6"}`}>
+          <div
+            className={`flex items-center gap-2 ${
+              isCollapsed ? "mb-4" : "mb-6"
+            }`}
+          >
             <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-100">
               <Package className="text-white" size={24} />
             </div>
@@ -179,7 +188,9 @@ const Sidebar: React.FC<SidebarProps> = ({
             />
 
             {/* ✅ Master Tab (below Dashboard) */}
-            {(user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN || user.role === UserRole.MANAGER) && (
+            {(user.role === UserRole.ADMIN ||
+              user.role === UserRole.SUPERADMIN ||
+              user.role === UserRole.MANAGER) && (
               <NavItem
                 icon={<Database size={20} />}
                 label="Master"
@@ -276,7 +287,11 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                 {/* Sales */}
                 <div className="pt-2">
-                  <GroupHeader icon={<ShoppingCart size={16} />} label="Sales" groupKey="sales" />
+                  <GroupHeader
+                    icon={<ShoppingCart size={16} />}
+                    label="Sales"
+                    groupKey="sales"
+                  />
                   {!isCollapsed && openGroups.sales && (
                     <div className="mt-1 ml-2 space-y-1 border-l border-slate-100 pl-3">
                       <NavItem
@@ -301,7 +316,11 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                 {/* Partners */}
                 <div className="pt-2">
-                  <GroupHeader icon={<Users size={16} />} label="Partners" groupKey="partners" />
+                  <GroupHeader
+                    icon={<Users size={16} />}
+                    label="Partners"
+                    groupKey="partners"
+                  />
                   {!isCollapsed && openGroups.partners && (
                     <div className="mt-1 ml-2 space-y-1 border-l border-slate-100 pl-3">
                       <NavItem
@@ -318,7 +337,11 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                 {/* Reports */}
                 <div className="pt-2">
-                  <GroupHeader icon={<BarChart3 size={16} />} label="Reports" groupKey="reports" />
+                  <GroupHeader
+                    icon={<BarChart3 size={16} />}
+                    label="Reports"
+                    groupKey="reports"
+                  />
                   {!isCollapsed && openGroups.reports && (
                     <div className="mt-1 ml-2 space-y-1 border-l border-slate-100 pl-3">
                       <NavItem
@@ -393,21 +416,31 @@ const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Footer */}
-        <div className={`mt-auto border-t border-slate-100 ${isCollapsed ? "p-4" : "p-6"}`}>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center font-bold text-indigo-600 border border-indigo-100">
+        <div
+          className={`mt-auto border-t border-slate-100 ${
+            isCollapsed ? "p-4" : "p-6"
+          }`}
+        >
+          <button
+            onClick={() => go("profile")}
+            className="flex items-center gap-3 mb-4 w-full hover:bg-slate-100 rounded-lg p-2 transition-colors"
+            title={isCollapsed ? "My Profile" : undefined}
+          >
+            <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center font-bold text-indigo-600 border border-indigo-100 shrink-0">
               {user.name.charAt(0)}
             </div>
 
             {!isCollapsed && (
               <div className="overflow-hidden">
-                <p className="text-sm font-semibold truncate text-slate-900">{user.name}</p>
+                <p className="text-sm font-semibold truncate text-slate-900">
+                  {user.name}
+                </p>
                 <p className="text-xs text-slate-500 truncate capitalize">
                   {user.role.toLowerCase()}
                 </p>
               </div>
             )}
-          </div>
+          </button>
 
           <button
             onClick={onLogout}
@@ -437,7 +470,15 @@ const NavItem: React.FC<{
   compact?: boolean;
   onClick: () => void;
   isCollapsed: boolean;
-}> = ({ icon, label, active, badge, compact = false, onClick, isCollapsed }) => (
+}> = ({
+  icon,
+  label,
+  active,
+  badge,
+  compact = false,
+  onClick,
+  isCollapsed,
+}) => (
   <button
     onClick={onClick}
     className={`w-full flex items-center justify-between gap-3 rounded-xl font-medium transition-all ${

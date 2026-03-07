@@ -21,8 +21,8 @@ const VariantSchema = new mongoose.Schema(
     hsnCode: { type: String, trim: true, default: "" },
 
     // UI: variant level pe color + sizeRange
-    color: { type: String, trim: true, default: "" },      // "Red", "Black"
-    sizeRange: { type: String, trim: true, default: "" },  // "5-7", "7-11"
+    color: { type: String, trim: true, default: "" }, // "Red", "Black"
+    sizeRange: { type: String, trim: true, default: "" }, // "5-7", "7-11"
 
     // ✅ important: sizes ka object map (size => {qty, sku})
     // example: { "5": {qty:11, sku:"runner-Red-5"}, "6": {...} }
@@ -49,19 +49,39 @@ const MasterCatalogSchema = new mongoose.Schema(
     },
 
     // taxonomy
-    categoryId: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
-    brandId: { type: mongoose.Schema.Types.ObjectId, ref: "Brand", required: true },
+    categoryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+      required: true,
+    },
+    brandId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Brand",
+      required: true,
+    },
 
     // manufacturing
-    manufacturerCompanyId: { type: mongoose.Schema.Types.ObjectId, ref: "Manufacturer", required: true },
-    unitId: { type: mongoose.Schema.Types.ObjectId, ref: "Unit", required: true },
+    manufacturerCompanyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Manufacturer",
+      required: true,
+    },
+    unitId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Unit",
+      required: true,
+    },
 
     // attributes
     productColors: [{ type: String, trim: true }], // ✅ UI: chips (Red, Black)
-    sizeRanges: [{ type: String, trim: true }],    // ✅ UI: chips (5-7, 7-11)
+    sizeRanges: [{ type: String, trim: true }], // ✅ UI: chips (5-7, 7-11)
 
     // listing status
-    stage: { type: String, enum: ["AVAILABLE", "WISHLIST"], default: "AVAILABLE" },
+    stage: {
+      type: String,
+      enum: ["AVAILABLE", "WISHLIST"],
+      default: "AVAILABLE",
+    },
     expectedAvailableDate: { type: Date }, // required if WISHLIST
 
     // media
@@ -79,6 +99,7 @@ const MasterCatalogSchema = new mongoose.Schema(
     // ---------- PART 2 (variants table) ----------
     variants: { type: [VariantSchema], default: [] },
 
+    isActive: { type: Boolean, default: true },
     isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true }

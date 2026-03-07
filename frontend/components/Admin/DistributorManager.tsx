@@ -24,17 +24,21 @@ interface DistributorManagerProps {
 type ViewState = 'LIST' | 'CREATE' | 'DETAILS';
 
 const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
-  const [view, setView] = useState<ViewState>('LIST');
+  // --- Draft Persistence ---
+  const savedDraftStr = localStorage.getItem("kore_distributor_draft");
+  const savedDraft = savedDraftStr ? JSON.parse(savedDraftStr) : null;
+
+  const [view, setView] = useState<ViewState>(savedDraft?.view || 'LIST');
   const [distributors, setDistributors] = useState<User[]>(
     MOCK_DISTRIBUTORS.filter((d) => d.role === UserRole.DISTRIBUTOR)
   );
   
-  const [selectedDistributor, setSelectedDistributor] = useState<User | null>(null);
+  const [selectedDistributor, setSelectedDistributor] = useState<User | null>(savedDraft?.selectedDistributor || null);
   
   // --- Create/Edit Form State ---
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [isCustomPayment, setIsCustomPayment] = useState(false);
-  const [formData, setFormData] = useState<Partial<User>>({
+  const [editingId, setEditingId] = useState<string | null>(savedDraft?.editingId || null);
+  const [isCustomPayment, setIsCustomPayment] = useState(savedDraft?.isCustomPayment || false);
+  const [formData, setFormData] = useState<Partial<User>>(savedDraft?.formData || {
     name: '',
     email: '',
     phone: '',
@@ -46,6 +50,16 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
     discountPercentage: 0,
     creditLimit: 0,
   });
+
+  React.useEffect(() => {
+    if (view !== 'LIST') {
+      localStorage.setItem("kore_distributor_draft", JSON.stringify({
+        view, selectedDistributor, editingId, isCustomPayment, formData
+      }));
+    } else {
+      localStorage.removeItem("kore_distributor_draft");
+    }
+  }, [view, selectedDistributor, editingId, isCustomPayment, formData]);
 
   const handleCreateDistributor = (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,6 +112,7 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       billingAddress: '', shippingAddress: '', paymentTerms: '30 days',
       discountPercentage: 0, creditLimit: 0
     });
+    localStorage.removeItem("kore_distributor_draft");
   };
 
   const handleRowClick = (dist: User) => {
@@ -119,6 +134,7 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                 billingAddress: '', shippingAddress: '', paymentTerms: '30 days',
                 discountPercentage: 0, creditLimit: 0
               });
+              localStorage.removeItem("kore_distributor_draft");
             }}
             className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors"
           >
@@ -253,6 +269,7 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                   billingAddress: '', shippingAddress: '', paymentTerms: '30 days',
                   discountPercentage: 0, creditLimit: 0
                 });
+                localStorage.removeItem("kore_distributor_draft");
             }} className="px-6 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition-colors">
               Cancel
             </button>
@@ -273,7 +290,11 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button 
-              onClick={() => { setView('LIST'); setSelectedDistributor(null); }}
+              onClick={() => { 
+                setView('LIST'); 
+                setSelectedDistributor(null); 
+                localStorage.removeItem("kore_distributor_draft");
+              }}
               className="p-2 hover:bg-white rounded-lg text-slate-500 transition-colors border border-transparent hover:border-slate-200 shadow-sm"
             >
               <ArrowLeft size={20} />

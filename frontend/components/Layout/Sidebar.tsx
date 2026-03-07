@@ -67,6 +67,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   });
 
   const go = (tab: string) => {
+    console.log("Navigating to:", tab);
     setActiveTab(tab);
     setIsSidebarOpen(false);
   };
@@ -373,7 +374,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </div>
 
                 {/* Top-level Users tab for Superadmin */}
-                {user.role === UserRole.SUPERADMIN && (
+                {(user.role === UserRole.SUPERADMIN ||
+                  user.role === UserRole.ADMIN) && (
                   <div className="pt-2">
                     <NavItem
                       icon={<Shield size={20} />}
@@ -427,16 +429,16 @@ const Sidebar: React.FC<SidebarProps> = ({
             title={isCollapsed ? "My Profile" : undefined}
           >
             <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center font-bold text-indigo-600 border border-indigo-100 shrink-0">
-              {user.name.charAt(0)}
+              {user?.name ? user.name.charAt(0) : ""}
             </div>
 
             {!isCollapsed && (
               <div className="overflow-hidden">
                 <p className="text-sm font-semibold truncate text-slate-900">
-                  {user.name}
+                  {user.name || ""}
                 </p>
                 <p className="text-xs text-slate-500 truncate capitalize">
-                  {user.role.toLowerCase()}
+                  {user.role ? user.role.toLowerCase() : ""}
                 </p>
               </div>
             )}

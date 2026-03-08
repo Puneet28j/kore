@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { User, UserRole } from "../../types";
 import {
   Users,
@@ -15,9 +15,13 @@ import {
   Percent,
   Wallet,
   Shield,
+  AlertCircle,
+  Loader,
+  Trash2,
+  Edit,
 } from "lucide-react";
-import { MOCK_DISTRIBUTORS } from "../../constants";
 import Switch from "../ui/Switch";
+import distributorService from "../../services/distributorService";
 
 interface DistributorManagerProps {
   orders: any[]; // Used just for the list
@@ -31,9 +35,11 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
   const savedDraft = savedDraftStr ? JSON.parse(savedDraftStr) : null;
 
   const [view, setView] = useState<ViewState>(savedDraft?.view || "LIST");
-  const [distributors, setDistributors] = useState<User[]>(
-    MOCK_DISTRIBUTORS.filter((d) => d.role === UserRole.DISTRIBUTOR)
-  );
+  const [distributors, setDistributors] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [creatingLoading, setCreatingLoading] = useState(false);
 
   const [selectedDistributor, setSelectedDistributor] = useState<User | null>(
     savedDraft?.selectedDistributor || null
@@ -81,38 +87,36 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
     }
   }, [view, selectedDistributor, editingId, isCustomPayment, formData]);
 
-  const handleCreateDistributor = (e: React.FormEvent) => {
+  // --- Fetch distributors on mount ---
+  React.useEffect(() => {
+    const fetchDistributors = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const response = await distributorService.listDistributors({
+          search: searchQuery || undefined,
+        });
+        setDistributors(response.items || []);
+      } catch (err: any) {
+        setError(err.message || "Failed to load distributors");
+        console.error("Error fetching distributors:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDistributors();
+  }, [searchQuery]);
+
+  const handleCreateDistributor = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (editingId) {
-      setDistributors((prev) =>
-        prev.map((d) =>
-          d.id === editingId
-            ? {
-                ...d,
-                name: formData.name || "",
-                email: formData.email || "",
-                phone: formData.phone || "",
-                companyName: formData.companyName || "",
-                gstNumber: formData.gstNumber || "",
-                billingAddress: formData.billingAddress || "",
-                shippingAddress: formData.shippingAddress || "",
-                paymentTerms: formData.paymentTerms || "30 days",
-                discountPercentage: Number(formData.discountPercentage) || 0,
-                creditLimit: Number(formData.creditLimit) || 0,
-                loginEmail: formData.loginEmail || "",
-                loginPassword: formData.loginPassword || "",
-                loginEnabled: formData.loginEnabled ?? true,
-                location: formData.billingAddress?.split(",")[0] || d.location,
-              }
-            : d
-        )
-      );
-    } else {
-      const newDistributor: User = {
-        id: `dist-${Date.now().toString().slice(-6)}`,
-        role: UserRole.DISTRIBUTOR,
-        isActive: true,
+    try {
+      setCreatingLoading(true);
+      setError(null);
+
+      // Prepare payload
+      const payload: Partial<User> = {
         name: formData.name || "",
         email: formData.email || "",
         phone: formData.phone || "",
@@ -126,43 +130,117 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
         loginEmail: formData.loginEmail || "",
         loginPassword: formData.loginPassword || "",
         loginEnabled: formData.loginEnabled ?? true,
-        location: formData.billingAddress?.split(",")[0] || "Unknown", // Quick mock location
+        isActive: true,
       };
 
-      setDistributors([newDistributor, ...distributors]);
+      if (editingId) {
+        // Update existing distributor
+        await distributorService.updateDistributor(editingId, payload);
+      } else {
+        // Create new distributor
+        await distributorService.createDistributor(payload);
+      }
+
+      // Refresh the list
+      const response = await distributorService.listDistributors();
+      setDistributors(response.items || []);
+
+      setView("LIST");
+
+      // Reset form
+      setEditingId(null);
+      setIsCustomPayment(false);
+      setFormData({
+        name: "",
+        email: "",
+        phone: "",
+        companyName: "",
+        gstNumber: "",
+        billingAddress: "",
+        shippingAddress: "",
+        paymentTerms: "30 days",
+        discountPercentage: 0,
+        creditLimit: 0,
+        loginEmail: "",
+        loginPassword: "",
+        loginEnabled: true,
+      });
+      localStorage.removeItem("kore_distributor_draft");
+    } catch (err: any) {
+      const errorMsg = err.message || "Failed to save distributor";
+      setError(errorMsg);
+      console.error("Error saving distributor:", err);
+    } finally {
+      setCreatingLoading(false);
     }
-
-    setView("LIST");
-
-    // Reset form
-    setEditingId(null);
-    setIsCustomPayment(false);
-    setFormData({
-      name: "",
-      email: "",
-      phone: "",
-      companyName: "",
-      gstNumber: "",
-      billingAddress: "",
-      shippingAddress: "",
-      paymentTerms: "30 days",
-      discountPercentage: 0,
-      creditLimit: 0,
-    });
-    localStorage.removeItem("kore_distributor_draft");
   };
 
-  const handleLoginToggle = (distributor: User, enabled: boolean) => {
-    setDistributors((prev) =>
-      prev.map((d) =>
-        d.id === distributor.id ? { ...d, loginEnabled: enabled } : d
-      )
-    );
+  const handleLoginToggle = async (distributor: User, enabled: boolean) => {
+    try {
+      setError(null);
+      await distributorService.updateDistributor(distributor.id, {
+        loginEnabled: enabled,
+      });
+
+      // Update local state
+      setDistributors((prev) =>
+        prev.map((d) =>
+          d.id === distributor.id ? { ...d, loginEnabled: enabled } : d
+        )
+      );
+    } catch (err: any) {
+      const errorMsg = err.message || "Failed to update login status";
+      setError(errorMsg);
+      console.error("Error toggling login:", err);
+    }
   };
 
   const handleRowClick = (dist: User) => {
     setSelectedDistributor(dist);
     setView("DETAILS");
+  };
+
+  const handleEditDistributor = (dist: User) => {
+    setSelectedDistributor(dist);
+    setEditingId(dist.id);
+    setFormData({
+      name: dist.name,
+      email: dist.email,
+      phone: dist.phone,
+      companyName: dist.companyName,
+      gstNumber: dist.gstNumber,
+      billingAddress: dist.billingAddress,
+      shippingAddress: dist.shippingAddress,
+      paymentTerms: dist.paymentTerms,
+      discountPercentage: dist.discountPercentage,
+      creditLimit: dist.creditLimit,
+      loginEmail: dist.loginEmail,
+      loginPassword: dist.loginPassword,
+      loginEnabled: dist.loginEnabled,
+    });
+    setView("CREATE");
+  };
+
+  const handleDeleteDistributor = async (id: string) => {
+    if (window.confirm("Are you sure you want to delete this distributor?")) {
+      try {
+        setError(null);
+        await distributorService.deleteDistributor(id);
+
+        // Refresh the list
+        const response = await distributorService.listDistributors();
+        setDistributors(response.items || []);
+
+        if (selectedDistributor?.id === id) {
+          setSelectedDistributor(null);
+          setView("LIST");
+        }
+      } catch (err: any) {
+        const errorMsg = err.message || "Failed to delete distributor";
+        setError(errorMsg);
+        console.error("Error deleting distributor:", err);
+      }
+    }
   };
 
   if (view === "CREATE") {
@@ -185,6 +263,9 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                 paymentTerms: "30 days",
                 discountPercentage: 0,
                 creditLimit: 0,
+                loginEmail: "",
+                loginPassword: "",
+                loginEnabled: true,
               });
               localStorage.removeItem("kore_distributor_draft");
             }}
@@ -203,6 +284,22 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
             </p>
           </div>
         </div>
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+            <AlertCircle size={20} className="text-red-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold text-red-900">{error}</p>
+              <button
+                type="button"
+                onClick={() => setError(null)}
+                className="text-sm text-red-600 hover:text-red-700 mt-1"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
 
         <form
           onSubmit={handleCreateDistributor}
@@ -479,9 +576,17 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
             </button>
             <button
               type="submit"
-              className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-200"
+              disabled={creatingLoading}
+              className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              {editingId ? "Update Distributor" : "Save Distributor"}
+              {creatingLoading ? (
+                <>
+                  <Loader size={16} className="animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>{editingId ? "Update Distributor" : "Save Distributor"}</>
+              )}
             </button>
           </div>
         </form>
@@ -521,34 +626,16 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
 
           <div className="flex gap-2">
             <button
-              onClick={() => {
-                setEditingId(d.id);
-
-                const isCustom = !["30 days", "45 days", "90 days"].includes(
-                  d.paymentTerms || "30 days"
-                );
-                setIsCustomPayment(isCustom);
-
-                setFormData({
-                  name: d.name || "",
-                  email: d.email || "",
-                  phone: d.phone || "",
-                  companyName: d.companyName || "",
-                  gstNumber: d.gstNumber || "",
-                  billingAddress: d.billingAddress || "",
-                  shippingAddress: d.shippingAddress || "",
-                  paymentTerms: d.paymentTerms || "30 days",
-                  discountPercentage: d.discountPercentage || 0,
-                  creditLimit: d.creditLimit || 0,
-                  loginEmail: d.loginEmail || "",
-                  loginPassword: d.loginPassword || "",
-                  loginEnabled: d.loginEnabled ?? true,
-                });
-                setView("CREATE");
-              }}
+              onClick={() => handleEditDistributor(d)}
               className="px-4 py-2 bg-white text-slate-700 border border-slate-200 rounded-xl font-bold hover:bg-slate-50 transition-colors shadow-sm text-sm"
             >
               Edit
+            </button>
+            <button
+              onClick={() => handleDeleteDistributor(d.id)}
+              className="px-4 py-2 bg-red-50 text-red-700 border border-red-200 rounded-xl font-bold hover:bg-red-100 transition-colors shadow-sm text-sm"
+            >
+              Delete
             </button>
           </div>
         </div>
@@ -713,6 +800,22 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
   // default: LIST VIEW
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle size={20} className="text-red-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold text-red-900">{error}</p>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="text-sm text-red-600 hover:text-red-700 mt-1"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="relative flex-1 max-w-md">
           <Search
@@ -722,12 +825,32 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
           <input
             type="text"
             placeholder="Search distributors..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-sm"
           />
         </div>
 
         <button
-          onClick={() => setView("CREATE")}
+          onClick={() => {
+            setEditingId(null);
+            setFormData({
+              name: "",
+              email: "",
+              phone: "",
+              companyName: "",
+              gstNumber: "",
+              billingAddress: "",
+              shippingAddress: "",
+              paymentTerms: "30 days",
+              discountPercentage: 0,
+              creditLimit: 0,
+              loginEmail: "",
+              loginPassword: "",
+              loginEnabled: true,
+            });
+            setView("CREATE");
+          }}
           className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold hover:bg-indigo-700 transition shadow-sm"
         >
           <Plus size={18} />
@@ -737,109 +860,148 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[800px]">
-            <thead className="bg-slate-50/80 border-b border-slate-200">
-              <tr>
-                <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
-                  Company & Contact
-                </th>
-                <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
-                  Location
-                </th>
-                <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
-                  Terms
-                </th>
-                <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
-                  Login
-                </th>
-                <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
-                  Total Orders
-                </th>
-                <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest text-right">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {distributors.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader size={32} className="animate-spin text-slate-400" />
+            </div>
+          ) : (
+            <table className="w-full text-left">
+              <thead className="bg-slate-50/80 border-b border-slate-200">
                 <tr>
-                  <td
-                    colSpan={6}
-                    className="px-6 py-12 text-center text-slate-500 font-medium"
-                  >
-                    No distributors found. Click "Create Distributor" to add
-                    one.
-                  </td>
+                  <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
+                    Company & Contact
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
+                    Location
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
+                    Terms
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
+                    Login
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest">
+                    Total Orders
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-slate-500 uppercase tracking-widest text-right">
+                    Actions
+                  </th>
                 </tr>
-              ) : (
-                distributors.map((dist) => {
-                  const hasOrders = orders.filter(
-                    (o) => o.distributorId === dist.id
-                  ).length;
-
-                  return (
-                    <tr
-                      key={dist.id}
-                      onClick={() => handleRowClick(dist)}
-                      className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {distributors.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-6 py-12 text-center text-slate-500 font-medium"
                     >
-                      <td className="px-6 py-4">
-                        <p className="font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">
-                          {dist.companyName || dist.name}
-                        </p>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {dist.name} • {dist.phone || dist.email}
-                        </p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <p className="text-sm text-slate-700 font-medium">
-                          {dist.location || "N/A"}
-                        </p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 font-bold text-[10px] uppercase tracking-wider border border-slate-200">
-                          {dist.paymentTerms || "30 DAYS"}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <Switch
-                          checked={dist.loginEnabled !== false}
-                          onCheckedChange={(checked) =>
-                            handleLoginToggle(dist, checked)
-                          }
-                          className="scale-90"
-                        />
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className={`w-2 h-2 rounded-full ${
-                              hasOrders > 0 ? "bg-emerald-500" : "bg-slate-300"
-                            }`}
-                          />
-                          <span
-                            className={`font-bold ${
-                              hasOrders > 0
-                                ? "text-slate-900"
-                                : "text-slate-400"
-                            }`}
-                          >
-                            {hasOrders}
+                      No distributors found. Click "Create Distributor" to add
+                      one.
+                    </td>
+                  </tr>
+                ) : (
+                  distributors.map((dist) => {
+                    const hasOrders = orders.filter(
+                      (o) => o.distributorId === dist.id
+                    ).length;
+
+                    return (
+                      <tr
+                        key={dist.id}
+                        onClick={() => handleRowClick(dist)}
+                        className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
+                      >
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">
+                            {dist.companyName || dist.name}
+                          </p>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {dist.name} • {dist.phone || dist.email}
+                          </p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="text-sm text-slate-700 font-medium">
+                            {dist.location || "N/A"}
+                          </p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 font-bold text-[10px] uppercase tracking-wider border border-slate-200">
+                            {dist.paymentTerms || "30 DAYS"}
                           </span>
-                          <span className="text-xs text-slate-500">Orders</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button className="text-slate-400 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-indigo-50 transition-colors">
-                          <ChevronRight size={18} />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Switch
+                            checked={dist.loginEnabled !== false}
+                            onCheckedChange={(checked) =>
+                              handleLoginToggle(dist, checked)
+                            }
+                            className="scale-90"
+                          />
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`w-2 h-2 rounded-full ${
+                                hasOrders > 0
+                                  ? "bg-emerald-500"
+                                  : "bg-slate-300"
+                              }`}
+                            />
+                            <span
+                              className={`font-bold ${
+                                hasOrders > 0
+                                  ? "text-slate-900"
+                                  : "text-slate-400"
+                              }`}
+                            >
+                              {hasOrders}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              Orders
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEditDistributor(dist);
+                              }}
+                              className="text-slate-400 hover:text-blue-600 p-1.5 rounded-lg hover:bg-blue-50 transition-colors"
+                              title="Edit"
+                            >
+                              <Edit size={18} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteDistributor(dist.id);
+                              }}
+                              className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                              title="Delete"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRowClick(dist);
+                              }}
+                              className="text-slate-400 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-indigo-50 transition-colors"
+                              title="View Details"
+                            >
+                              <ChevronRight size={18} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </div>

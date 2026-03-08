@@ -38,7 +38,9 @@ const parseBoolean = (value, fallback = undefined) => {
 };
 
 const normalizeEmail = (email) =>
-  String(email || "").trim().toLowerCase();
+  String(email || "")
+    .trim()
+    .toLowerCase();
 
 const sanitizePayload = (body = {}) => {
   const payload = {
@@ -67,7 +69,9 @@ const sanitizePayload = (body = {}) => {
     isActive: parseBoolean(body.isActive, undefined),
   };
 
-  Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+  Object.keys(payload).forEach(
+    (k) => payload[k] === undefined && delete payload[k]
+  );
 
   if (!payload.location && body.billingAddress) {
     payload.location = String(body.billingAddress).split(",")[0]?.trim() || "";
@@ -76,7 +80,13 @@ const sanitizePayload = (body = {}) => {
   return payload;
 };
 
-const buildUserPayload = async ({ name, email, password, distributorId, isActive }) => {
+const buildUserPayload = async ({
+  name,
+  email,
+  password,
+  distributorId,
+  isActive,
+}) => {
   const cleanEmail = normalizeEmail(email);
 
   if (!cleanEmail || !cleanEmail.includes("@")) {
@@ -169,7 +179,12 @@ exports.createDistributor = async (body) => {
   }
 };
 
-exports.listDistributors = async ({ page = 1, limit = 10, search = "", isActive } = {}) => {
+exports.listDistributors = async ({
+  page = 1,
+  limit = 10,
+  search = "",
+  isActive,
+} = {}) => {
   page = normalizePage(page);
   limit = normalizeLimit(limit);
 
@@ -216,7 +231,10 @@ exports.listDistributors = async ({ page = 1, limit = 10, search = "", isActive 
 exports.getDistributorById = async (id) => {
   ensureValidId(id, "distributor id");
 
-  const distributor = await Distributor.findOne({ _id: id, isDeleted: false }).lean();
+  const distributor = await Distributor.findOne({
+    _id: id,
+    isDeleted: false,
+  }).lean();
   if (!distributor) {
     const err = new Error("Distributor not found");
     err.status = 404;
@@ -260,7 +278,8 @@ exports.updateDistributor = async (id, body) => {
     const userPatch = {};
     if (body.name !== undefined) userPatch.name = String(body.name).trim();
     if (body.email !== undefined) userPatch.email = normalizeEmail(body.email);
-    if (typeof payload.isActive === "boolean") userPatch.isActive = payload.isActive;
+    if (typeof payload.isActive === "boolean")
+      userPatch.isActive = payload.isActive;
 
     if (Object.keys(userPatch).length) {
       if (userPatch.email) {
@@ -276,7 +295,9 @@ exports.updateDistributor = async (id, body) => {
         }
       }
 
-      await User.findByIdAndUpdate(distributor.userId, userPatch, { new: true });
+      await User.findByIdAndUpdate(distributor.userId, userPatch, {
+        new: true,
+      });
     }
   }
 

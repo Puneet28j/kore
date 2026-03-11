@@ -106,14 +106,14 @@ const Cart: React.FC<CartProps> = ({
                 >
                   <div className="relative w-24 h-24 shrink-0">
                     <img
-                      src={article.imageUrl}
+                      src={variant?.images?.[0] || article.imageUrl}
                       alt={article.name}
                       className="w-full h-full object-cover rounded-xl border border-slate-200 shadow-sm"
                     />
                   </div>
                   <div className="flex-1 text-center sm:text-left">
                     <h4 className="font-bold text-lg text-slate-900">
-                      {article.name}
+                      {article.name} <span className="text-slate-400 font-medium">({variant?.color || "N/A"})</span>
                     </h4>
                     {variant && (
                       <p className="text-xs text-slate-500 font-mono mb-2 uppercase tracking-tight">

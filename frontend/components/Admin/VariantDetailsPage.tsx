@@ -67,9 +67,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   const currentSizeMap = variant.sizeMap || variant.sizeQuantities || {};
   const currentBookingMap = variant.bookingMap || {};
 
-  const totalPairs = Object.values(currentSizeMap).reduce((s, v) => {
-    const qty = 0; // Forced to 0 as PO quantities are not GRN inventory
-    return s + qty;
+  const totalPairs = Object.values(currentSizeMap).reduce((s, data) => {
+    const qty = typeof data === "object" ? (data as any)?.qty : Number(data);
+    return s + (Number(qty) || 0);
   }, 0);
 
   const totalBooked = Object.values(currentBookingMap).reduce((s, v) => {
@@ -227,10 +227,43 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
           </div>
 
           {/* Pricing Row */}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <PriceBox label="MRP" value={mrp} accent="indigo" />
-            <PriceBox label="Selling" value={selling} accent="emerald" />
             <PriceBox label="Cost" value={cost} accent="slate" />
+          </div>
+
+          {/* Assortment Breakdown (Compact) */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+              <Layers size={12} className="text-indigo-500" />
+              Assortment Breakdown
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {sizes.map((sz) => {
+                const data = currentSizeMap[sz];
+                const qty =
+                  typeof data === "object"
+                    ? (data as any)?.qty
+                    : Number(data) || 0;
+                return (
+                  <div
+                    key={sz}
+                    className="flex flex-col items-center min-w-[48px] bg-white border border-slate-200 rounded-lg py-1.5"
+                  >
+                    <span className="text-[9px] font-black text-slate-400">
+                      {sz}
+                    </span>
+                    <span
+                      className={`text-xs font-bold ${
+                        qty > 0 ? "text-indigo-600" : "text-slate-300"
+                      }`}
+                    >
+                      {qty || 0}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -318,10 +351,13 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                 {sizes.map((sz) => {
                   const data = currentSizeMap[sz];
-                  const qty = 0; // Forced to 0 as PO quantities are not GRN inventory
+                  const qty =
+                    typeof data === "object"
+                      ? (data as any)?.qty
+                      : Number(data) || 0;
                   const sku =
                     (typeof data === "object"
-                      ? data?.sku
+                      ? (data as any)?.sku
                       : variant.sizeSkus?.[sz]) || "";
 
                   let statusColor =

@@ -461,6 +461,11 @@ const QuantityGridModal: React.FC<{
       // If user cleared all quantities, we might want to remove the row?
       // For now, let's just use 0.
     }
+    
+    if (totalQty % 24 !== 0) {
+      toast.error(`Total quantity (${totalQty}) must be a multiple of 24 for carton packing.`);
+      return;
+    }
 
     const aggregatedItem: Partial<PurchaseOrderItem> = {
       variantId: vId,
@@ -603,9 +608,12 @@ const QuantityGridModal: React.FC<{
             </button>
             <button
               onClick={handleApply}
-              className="px-8 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20"
+              className="px-8 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20 flex flex-col items-center"
             >
-              Apply Quantities
+              <span>Apply Quantities</span>
+              <span className="text-[10px] opacity-80">
+                {(Object.values(grid[variants[0]?.id || variants[0]?._id || ""] || {}).reduce((s, d) => s + (d.qty || 0), 0) / 24).toFixed(1)} Ctns
+              </span>
             </button>
           </div>
         </div>
@@ -1013,8 +1021,9 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
       });
     }
 
-    setItems((prev) =>
-      prev.map((it) => {
+    const isLastRow = items[items.length - 1]?.id === rowId;
+    setItems((prev) => {
+      const updated = prev.map((it) => {
         if (it.id !== rowId) return it;
         return computeItem({
           ...it,
@@ -1029,8 +1038,12 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
           mrp: option.mrp || 0,
           sizeMap: defaultSizeMap,
         });
-      })
-    );
+      });
+      if (isLastRow) {
+        return [...updated, emptyItem()];
+      }
+      return updated;
+    });
     setActiveItemPickerIdx(null);
     setItemPickerSearch("");
 
@@ -2056,8 +2069,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                   <th className="px-2 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider">
                     Tax Code
                   </th>
-                  <th className="px-2 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider w-[70px]">
-                    Qty
+                  <th className="px-2 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider w-[100px]">
+                    Qty (Ctn)
                   </th>
                   <th className="px-2 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider w-[70px]">
                     Tax Rate %
@@ -2271,10 +2284,9 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                             setQtyModalRowId(item.id);
                             setShowQtyModal(true);
                           }}
-                          className="w-full px-2 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition-all flex items-center justify-center gap-1 min-h-[30px]"
+                          className="w-full px-2 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-bold text-indigo-700 hover:bg-indigo-100 transition-all flex items-center justify-center min-h-[40px]"
                         >
-                          {item.quantity}
-                          <Edit2 size={10} />
+                          {item.quantity / 24}
                         </button>
                       ) : (
                         <input

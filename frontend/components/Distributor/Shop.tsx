@@ -2,12 +2,15 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   ShoppingCart,
   Plus,
+  Minus,
   Info,
   Search,
   Filter,
   ArrowRight,
+  Package,
 } from "lucide-react";
-import { Article, Inventory } from "../../types";
+import { Article, Inventory, Variant } from "../../types";
+import { toast } from "sonner";
 
 // Props for Shop component
 interface ShopProps {
@@ -30,62 +33,90 @@ interface ShopProps {
   goToCart: () => void;
 }
 
-// parse size range
-const parseSizeRange = (range: string): string[] => {
-  const match = range.match(/^(\d+)-(\d+)$/);
-  if (!match) return [range];
+// Grouping unit for the shop
+interface ColorGroup {
+  article: Article;
+  color: string;
+  variants: Variant[];
+}
 
-  const start = parseInt(match[1]);
-  const end = parseInt(match[2]);
-
-  const sizes: string[] = [];
-  for (let i = start; i <= end; i++) sizes.push(String(i));
-
-  return sizes;
+const colorToHex = (color: string): string => {
+  const map: Record<string, string> = {
+    red: "#ef4444",
+    blue: "#3b82f6",
+    green: "#22c55e",
+    black: "#0f172a",
+    white: "#f8fafc",
+    grey: "#64748b",
+    gray: "#64748b",
+    yellow: "#eab308",
+    orange: "#f97316",
+    pink: "#ec4899",
+    purple: "#a855f7",
+    indigo: "#6366f1",
+    brown: "#78350f",
+    navy: "#1e3a8a",
+    teal: "#14b8a6",
+    cyan: "#06b6d4",
+    gold: "#fbbf24",
+    silver: "#cbd5e1",
+  };
+  return map[color.toLowerCase()] || "#cbd5e1";
 };
 
 // Article card component
 const ArticleCard: React.FC<{
-  article: Article;
+  group: ColorGroup;
   inv?: Inventory;
   inCartPairs: number;
   addToCart: ShopProps["addToCart"];
-}> = ({ article, inv, inCartPairs, addToCart }) => {
-  const variants = article.variants || [];
+}> = ({ group, inv, inCartPairs, addToCart }) => {
+  const { article, color, variants } = group;
 
-  const [selectedVarId, setSelectedVarId] = useState<string | undefined>(
-    variants[0]?.id
+  // Selected size ranges (IDs)
+  const [selectedRangeIds, setSelectedRangeIds] = useState<string[]>(
+    variants.length > 0 ? [variants[0].id] : []
   );
 
-  const selectedVariant = variants.find((v) => v.id === selectedVarId);
+  // Carton multiplier
+  const [cartonCount, setCartonCount] = useState(1);
 
-  const sizes = selectedVariant
-    ? parseSizeRange(selectedVariant.sizeRange || "")
-    : [];
-
-  const [sizeQty, setSizeQty] = useState<Record<string, number>>(() =>
-    sizes.reduce((acc, sz) => ({ ...acc, [sz]: 0 }), {})
+  const selectedVariants = variants.filter((v) =>
+    selectedRangeIds.includes(v.id)
   );
 
-  useEffect(() => {
-    if (selectedVariant) {
-      const newSizes = parseSizeRange(selectedVariant.sizeRange || "");
+  // Calculate total pairs and breakdown for the selection
+  const baseBreakdown: Record<string, number> = {};
+  selectedVariants.forEach((v) => {
+    Object.entries(v.sizeQuantities || {}).forEach(([sz, qty]) => {
+      baseBreakdown[sz] = (baseBreakdown[sz] || 0) + qty;
+    });
+  });
 
-      setSizeQty((prev) => {
-        const updated: Record<string, number> = {};
-        newSizes.forEach((sz) => {
-          updated[sz] = prev[sz] || 0;
-        });
-        return updated;
-      });
-    }
-  }, [selectedVariant]);
+  const totalPairsPerCarton = Object.values(baseBreakdown).reduce(
+    (a, b) => a + b,
+    0
+  );
+  const totalPairs = totalPairsPerCarton * cartonCount;
 
-  // image list
-  const baseImages = [
-    article.imageUrl,
-    ...(article.secondaryImages || []).map((s) => s.url),
-  ];
+  const toggleRange = (id: string) => {
+    setSelectedRangeIds((prev) =>
+      prev.includes(id)
+        ? prev.length > 1
+          ? prev.filter((i) => i !== id)
+          : prev
+        : [...prev, id]
+    );
+  };
+
+  // priority for images: variant specific images > article secondary images > article primary image
+  const variantImages = variants.flatMap(v => v.images || []);
+  const baseImages = variantImages.length > 0 
+    ? variantImages 
+    : [
+        article.imageUrl,
+        ...(article.secondaryImages || []).map((s) => s.url),
+      ];
 
   const images =
     baseImages.length > 1
@@ -176,20 +207,23 @@ const ArticleCard: React.FC<{
     carouselRef.current?.releasePointerCapture(e.pointerId);
   };
 
-  const totalPairs = Object.values(sizeQty).reduce((s, v) => s + v, 0);
-  const valid = totalPairs > 0 && totalPairs % 24 === 0;
-
-  const handleSizeChange = (sz: string, value: string) => {
-    const num = Math.max(0, parseInt(value) || 0);
-    setSizeQty((prev) => ({ ...prev, [sz]: num }));
-  };
-
   const handleAdd = () => {
-    if (!valid || !selectedVariant) return;
+    if (totalPairs === 0 || selectedVariants.length === 0) return;
 
-    addToCart(article.id, selectedVariant.id, sizeQty);
+    // Combine all size quantities scaled by cartons
+    const finalSizeQty: Record<string, number> = {};
+    Object.entries(baseBreakdown).forEach(([sz, qty]) => {
+      finalSizeQty[sz] = qty * cartonCount;
+    });
 
-    setSizeQty(sizes.reduce((acc, sz) => ({ ...acc, [sz]: 0 }), {}));
+    // In this color-grouped view, we consider the "primary" variant ID as the one
+    // But since it's color grouped, maybe we just pass the first one or a combined ID?
+    // The current addToCart signature takes a single variantId. 
+    // Usually, color grouping means color + article is the key.
+    addToCart(article.id, selectedVariants[0].id, finalSizeQty);
+
+    setCartonCount(1);
+    toast.success(`${article.name} (${color}) added to cart`);
   };
 
   return (
@@ -204,7 +238,7 @@ const ArticleCard: React.FC<{
         style={{ userSelect: "none", touchAction: "pan-y" }}
       >
         <div
-          className="flex"
+          className="flex h-full"
           style={{
             transform: `translateX(-${currentImageIndex * 100}%)`,
             transition: transitionEnabled ? "transform 500ms ease" : "none",
@@ -217,9 +251,19 @@ const ArticleCard: React.FC<{
               alt={`${article.name} ${idx + 1}`}
               loading="lazy"
               decoding="async"
-              fetchPriority="low"
-              draggable={false}
-              className="w-full h-full object-cover flex-shrink-0"
+              className="w-full h-full object-cover shrink-0"
+            />
+          ))}
+        </div>
+
+        {/* Color Bar (Showing all available colors for this article) */}
+        <div className="absolute bottom-0 left-0 right-0 h-1.5 z-10 flex">
+          {Array.from(new Set((article.variants || []).map(v => v.color))).map((c, i) => (
+            <div 
+              key={i}
+              className="h-full flex-1"
+              style={{ backgroundColor: colorToHex(c) }}
+              title={`Available Color: ${c}`}
             />
           ))}
         </div>
@@ -231,89 +275,103 @@ const ArticleCard: React.FC<{
         </div>
       </div>
 
-      <div className="p-6">
+      <div className="p-5">
         <div className="mb-4">
-          <h4 className="font-bold text-lg text-slate-900 group-hover:text-indigo-600 transition-colors line-clamp-1">
-            {article.name}
+          <h4 className="font-extrabold text-slate-900 group-hover:text-indigo-600 transition-all">
+            {article.name} <span className="text-slate-400 font-medium">({color})</span>
           </h4>
           <p className="text-[10px] text-slate-400 font-mono mt-0.5 tracking-wider uppercase">
             {article.sku}
           </p>
         </div>
 
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-5">
           <div className="space-y-0.5">
-            <p className="text-2xl font-black text-slate-900">
+            <p className="text-xl font-black text-slate-900">
               ₹{article.pricePerPair.toLocaleString()}
             </p>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              Per Pair (24/Ctn)
+              MRP: ₹{article.mrp || article.pricePerPair * 2}
             </p>
           </div>
-
-          <div
-            className="bg-indigo-50 p-2 rounded-lg"
-            title="Assortment Based Booking"
-          >
-            <Info size={16} className="text-indigo-600" />
+          <div className="bg-indigo-50 p-2 rounded-xl">
+             <Package size={16} className="text-indigo-600" />
           </div>
         </div>
 
-        {variants.length > 0 && (
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Variant
-            </label>
-            <select
-              value={selectedVarId}
-              onChange={(e) => setSelectedVarId(e.target.value)}
-              className="w-full border border-slate-200 rounded-xl p-2"
-            >
-              {variants.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.color} – {v.sizeRange}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {sizes.length > 0 && (
-          <div className="mb-4 grid grid-cols-3 gap-2">
-            {sizes.map((sz) => (
-              <div key={sz} className="flex flex-col">
-                <label className="text-xs font-bold text-slate-600">{sz}</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={sizeQty[sz] || ""}
-                  onChange={(e) => handleSizeChange(sz, e.target.value)}
-                  className="mt-1 w-full border border-slate-200 rounded-xl p-1 text-center"
-                />
-              </div>
+        {/* Variant Multi-select Dropdown (Simplified as visual toggle list for now or custom select) */}
+        <div className="mb-4 space-y-2">
+          <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider ml-1">
+            Size Ranges
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {variants.map((v) => (
+              <button
+                key={v.id}
+                type="button"
+                onClick={() => toggleRange(v.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                  selectedRangeIds.includes(v.id)
+                    ? "bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-200"
+                    : "bg-slate-50 border-slate-200 text-slate-600 hover:border-indigo-300"
+                }`}
+              >
+                {v.sizeRange}
+              </button>
             ))}
           </div>
+        </div>
+
+        {/* Assortment Breakdown */}
+        {selectedVariants.length > 0 && (
+          <div className="mb-6 bg-slate-50/80 rounded-2xl p-3 border border-slate-100">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2 px-1">
+              Assortment Breakdown
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(baseBreakdown).map(([sz, qty]) => (
+                <div key={sz} className="flex flex-col items-center bg-white border border-slate-200 rounded-lg px-2 py-1 min-w-[32px]">
+                   <span className="text-[10px] font-black text-indigo-600">{sz}</span>
+                   <span className="text-[10px] font-bold text-slate-400">{qty}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 pt-2 border-t border-slate-200/50 px-1 flex justify-between items-center">
+               <span className="text-[10px] font-bold text-slate-500 uppercase">Carton Total</span>
+               <span className="text-xs font-black text-slate-900">{totalPairsPerCarton} Pairs</span>
+            </div>
+          </div>
         )}
 
-        <div className="flex items-center justify-between">
-          <button
-            disabled={!valid}
-            onClick={handleAdd}
-            className={`px-5 py-2 rounded-xl font-bold text-white transition-all ${
-              valid
-                ? "bg-indigo-600 hover:bg-indigo-700"
-                : "bg-slate-300 cursor-not-allowed"
-            }`}
-          >
-            Add to Cart
-          </button>
-
-          <div className="text-sm text-slate-600">
-            {totalPairs} pairs {valid && `(${totalPairs / 24} ctn)`}
-            {!valid && totalPairs > 0 && (
-              <span className="text-red-500 ml-2">must be multiple of 24</span>
-            )}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-col">
+             <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Cartons</span>
+             <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 shadow-inner">
+                <button 
+                  onClick={() => setCartonCount(prev => Math.max(1, prev - 1))}
+                  className="p-1.5 hover:bg-white rounded-lg text-slate-600 transition-all disabled:opacity-30"
+                  disabled={cartonCount <= 1}
+                >
+                  <Minus size={14} />
+                </button>
+                <span className="px-3 font-black text-slate-900 min-w-[32px] text-center">{cartonCount}</span>
+                <button 
+                  onClick={() => setCartonCount(prev => prev + 1)}
+                  className="p-1.5 hover:bg-white rounded-lg text-slate-600 transition-all"
+                >
+                  <Plus size={14} />
+                </button>
+             </div>
           </div>
+
+          <button
+            onClick={handleAdd}
+            disabled={totalPairs === 0}
+            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-2xl py-3.5 px-4 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+          >
+            <ShoppingCart size={16} />
+            Book {totalPairs} Pairs
+          </button>
         </div>
       </div>
     </div>
@@ -365,23 +423,39 @@ const Shop: React.FC<ShopProps> = ({
       </div>
 
       {/* Article Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        {articles.map((article) => {
-          const inv = inventory.find((i) => i.articleId === article.id);
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+        {articles.flatMap((article) => {
+          const variants = article.variants || [];
+          // Group variants by color
+          const colorGroups: Record<string, Variant[]> = {};
+          variants.forEach((v) => {
+            if (!colorGroups[v.color]) colorGroups[v.color] = [];
+            colorGroups[v.color].push(v);
+          });
 
-          const pairsInCart = cart
-            .filter((c) => c.articleId === article.id)
-            .reduce((sum, i) => sum + i.pairCount, 0);
+          return Object.entries(colorGroups).map(([color, colorVariants]) => {
+            const group: ColorGroup = {
+              article,
+              color,
+              variants: colorVariants,
+            };
 
-          return (
-            <ArticleCard
-              key={article.id}
-              article={article}
-              inv={inv}
-              inCartPairs={pairsInCart}
-              addToCart={addToCart}
-            />
-          );
+            const inv = inventory.find((i) => i.articleId === article.id);
+
+            const pairsInCart = cart
+              .filter((c) => c.articleId === article.id)
+              .reduce((sum, i) => sum + i.pairCount, 0);
+
+            return (
+              <ArticleCard
+                key={`${article.id}-${color}`}
+                group={group}
+                inv={inv}
+                inCartPairs={pairsInCart}
+                addToCart={addToCart}
+              />
+            );
+          });
         })}
       </div>
 

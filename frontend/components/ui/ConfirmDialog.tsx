@@ -3,7 +3,7 @@ import React from "react";
 export interface ConfirmDialogProps {
   open: boolean;
   title?: string;
-  description?: string;
+  description?: React.ReactNode;
   confirmText?: string;
   cancelText?: string;
   onConfirm: () => void;
@@ -28,7 +28,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       <div className="relative z-10 w-full max-w-md rounded-lg bg-white p-6 shadow-lg">
         <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
         {description && (
-          <p className="mt-2 text-sm text-slate-600">{description}</p>
+          <div className="mt-2 text-sm text-slate-600">{description}</div>
         )}
         <div className="mt-6 flex justify-end space-x-2">
           <button
@@ -54,7 +54,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 // simple, reusable confirmation hook
 export type ConfirmOptions = {
   title?: string;
-  description?: string;
+  description?: React.ReactNode;
   confirmText?: string;
   cancelText?: string;
 };

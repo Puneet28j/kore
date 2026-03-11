@@ -41,7 +41,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   onSuccess 
 }) => {
   // Form State
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const isEditingDataLoaded = useRef(false);
 
   const [formData, setFormData] = useState({
@@ -58,16 +57,15 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     unit: "Pairs",
     category: "",
     brand: "",
-    // image handling now supports multiple files
-    images: [] as File[],
-    imagePreviews: [] as string[],
   });
 
-  // Dynamic parameters (Size and Color)
   const [selectedSizes, setSelectedSizes] = useState<string[]>([]);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
   const [customColor, setCustomColor] = useState("");
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragIndex, setDragIndex] = useState<{ color: string; index: number } | null>(null);
+
+  // Per-color media state
+  const [colorMedia, setColorMedia] = useState<Record<string, { images: File[]; previews: string[] }>>({});
 
   // Size Ranges & Variants
   const [sizeRanges, setSizeRanges] = useState<string[]>([]);
@@ -125,8 +123,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           unit: item.unitId?.name || item.unitId || "Pairs",
           category: item.categoryId?.name || item.categoryId || "",
           brand: item.brandId?.name || item.brandId || "",
-          images: [],
-          imagePreviews: item.primaryImage?.url ? [item.primaryImage.url, ...(item.secondaryImages?.map((img: any) => img.url) || [])] : [],
         });
 
         if (item.productColors) setSelectedColors(item.productColors);
@@ -203,6 +199,19 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       return;
     }
 
+    // Initialize media state for new colors
+    setColorMedia((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      selectedColors.forEach((color) => {
+        if (!next[color]) {
+          next[color] = { images: [], previews: [] };
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+
     setVariants((prev) => {
       const newVariants: Variant[] = [];
       selectedColors.forEach((color) => {
@@ -241,38 +250,68 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   };
 
   const copyToAll = (
-    field: "costPrice" | "sellingPrice" | "mrp",
-    sizeRange?: string
+    field: "costPrice" | "mrp",
+    color: string
   ) => {
     if (variants.length === 0) return;
 
-    // Find the first value for this specific range
-    const targetVariants = sizeRange
-      ? variants.filter((v) => v.sizeRange === sizeRange)
-      : variants;
-
+    const targetVariants = variants.filter((v) => v.color === color);
     if (targetVariants.length === 0) return;
 
     const firstVal = targetVariants[0][field];
 
     setVariants((prev) =>
       prev.map((v) => {
-        if (sizeRange && v.sizeRange !== sizeRange) return v;
+        if (v.color !== color) return v;
         return { ...v, [field]: firstVal };
       })
     );
   };
 
+  const copySizeToAll = (color: string, size: string) => {
+    const targetVariants = variants.filter((v) => v.color === color);
+    if (targetVariants.length === 0) return;
 
-  const copyHsnToAll = (sizeRange: string) => {
-    const targetVariants = variants.filter((v) => v.sizeRange === sizeRange);
+    // Find first variant that has this size in its range
+    const firstWithSize = targetVariants.find(v => parseSizeRange(v.sizeRange).includes(size));
+    if (!firstWithSize) return;
+
+    const val = firstWithSize.sizeQuantities[size] || 0;
+
+    setVariants((prev) =>
+      prev.map((v) => {
+        if (v.color !== color || !parseSizeRange(v.sizeRange).includes(size)) return v;
+        return {
+          ...v,
+          sizeQuantities: { ...v.sizeQuantities, [size]: val }
+        };
+      })
+    );
+  };
+
+
+  const copyHsnToAll = (color: string) => {
+    const targetVariants = variants.filter((v) => v.color === color);
     if (targetVariants.length === 0) return;
     const firstVal = targetVariants[0].hsnCode || "";
 
     setVariants((prev) =>
       prev.map((v) => {
-        if (v.sizeRange !== sizeRange) return v;
+        if (v.color !== color) return v;
         return { ...v, hsnCode: firstVal };
+      })
+    );
+  };
+
+  const toggleColorImage = (color: string, imageUrl: string) => {
+    setVariants((prev) =>
+      prev.map((v) => {
+        if (v.color !== color) return v;
+        const currentImages = v.images || [];
+        const newImages = currentImages.includes(imageUrl)
+          ? currentImages.filter((img) => img !== imageUrl)
+          : [...currentImages, imageUrl];
+        return { ...v, images: newImages };
       })
     );
   };
@@ -281,11 +320,109 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     setVariants((prev) => prev.filter((v) => v.id !== id));
   };
 
+  // --- Per-Color Image Helpers ---
+  const handleColorImageChange = (color: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length) {
+      const previews = files.map((f) => URL.createObjectURL(f));
+      setColorMedia((prev) => {
+        const current = prev[color] || { images: [], previews: [] };
+        return {
+          ...prev,
+          [color]: {
+            images: [...current.images, ...files],
+            previews: [...current.previews, ...previews],
+          },
+        };
+      });
+      // Reset input
+      e.target.value = "";
+    }
+  };
+
+  const removeColorImage = (color: string, idx: number) => {
+    setColorMedia((prev) => {
+      const current = prev[color];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [color]: {
+          images: current.images.filter((_, i) => i !== idx),
+          previews: current.previews.filter((_, i) => i !== idx),
+        },
+      };
+    });
+  };
+
+  const handleColorImageDrop = (color: string, dropIdx: number) => {
+    if (!dragIndex || dragIndex.color !== color || dragIndex.index === dropIdx) {
+      setDragIndex(null);
+      return;
+    }
+
+    setColorMedia((prev) => {
+      const current = prev[color];
+      if (!current) return prev;
+      const newPreviews = [...current.previews];
+      const newImages = [...current.images];
+      
+      const [movedPreview] = newPreviews.splice(dragIndex.index, 1);
+      newPreviews.splice(dropIdx, 0, movedPreview);
+      
+      if (newImages.length > dragIndex.index) {
+        const [movedFile] = newImages.splice(dragIndex.index, 1);
+        newImages.splice(dropIdx, 0, movedFile);
+      }
+      
+      return {
+        ...prev,
+        [color]: { images: newImages, previews: newPreviews },
+      };
+    });
+    setDragIndex(null);
+  };
+
+  const setColorImageAsCover = (color: string, idx: number) => {
+    if (idx === 0) return;
+    setColorMedia((prev) => {
+      const current = prev[color];
+      if (!current) return prev;
+      const newPreviews = [...current.previews];
+      const newImages = [...current.images];
+      
+      const [movedPreview] = newPreviews.splice(idx, 1);
+      newPreviews.unshift(movedPreview);
+      
+      if (newImages.length > idx) {
+        const [movedFile] = newImages.splice(idx, 1);
+        newImages.unshift(movedFile);
+      }
+      
+      return {
+        ...prev,
+        [color]: { images: newImages, previews: newPreviews },
+      };
+    });
+  };
+
   const addSizeRange = () => {
     const trimmed = sizeRangeInput.trim();
     // Regex for start-end format (e.g., 5-7, 10-12)
     const rangeRegex = /^\d+-\d+$/;
-    if (trimmed && rangeRegex.test(trimmed) && !sizeRanges.includes(trimmed)) {
+    if (trimmed && rangeRegex.test(trimmed)) {
+      if (sizeRanges.includes(trimmed)) {
+        return toast.error("Size range already exists");
+      }
+
+      // Check for overlapping sizes
+      const newSizes = parseSizeRange(trimmed);
+      const existingSizes = new Set(getAllSizesFromRanges());
+      const overlapping = newSizes.filter(s => existingSizes.has(s));
+
+      if (overlapping.length > 0) {
+        return toast.error(`Overlapping sizes detected: ${overlapping.join(", ")}`);
+      }
+
       setSizeRanges([...sizeRanges, trimmed]);
       setSizeRangeInput("");
     }
@@ -374,108 +511,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     }
   };
 
-  // Image handler (multiple images) — appends to existing
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length) {
-      const previews = files.map((f) => URL.createObjectURL(f));
-      setFormData((prev) => ({
-        ...prev,
-        images: [...prev.images, ...files],
-        imagePreviews: [...prev.imagePreviews, ...previews],
-      }));
-      // Reset file input so re-selecting same files works
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
-  // Remove a single image by index
-  const removeImage = (idx: number) => {
-    setFormData((prev) => ({
-      ...prev,
-      images: prev.images.filter((_, i) => i !== idx),
-      imagePreviews: prev.imagePreviews.filter((_, i) => i !== idx),
-    }));
-  };
-
-  // Reorder images via drag
-  const handleImageDrop = (dropIdx: number) => {
-    if (dragIndex === null || dragIndex === dropIdx) return;
-    setFormData((prev) => {
-      const newPreviews = [...prev.imagePreviews];
-      const newImages = [...prev.images];
-      // Move preview
-      const [movedPreview] = newPreviews.splice(dragIndex, 1);
-      newPreviews.splice(dropIdx, 0, movedPreview);
-      // Move file (if exists at that index)
-      if (newImages.length > dragIndex) {
-        const [movedFile] = newImages.splice(dragIndex, 1);
-        newImages.splice(dropIdx, 0, movedFile);
-      }
-      return { ...prev, images: newImages, imagePreviews: newPreviews };
-    });
-    setDragIndex(null);
-  };
-
-  // Move image to position 0 (set as cover)
-  const setAsCover = (idx: number) => {
-    if (idx === 0) return;
-    setFormData((prev) => {
-      const newPreviews = [...prev.imagePreviews];
-      const newImages = [...prev.images];
-      const [movedPreview] = newPreviews.splice(idx, 1);
-      newPreviews.unshift(movedPreview);
-      if (newImages.length > idx) {
-        const [movedFile] = newImages.splice(idx, 1);
-        newImages.unshift(movedFile);
-      }
-      return { ...prev, images: newImages, imagePreviews: newPreviews };
-    });
-  };
-
-  // Touch drag support for mobile
-  const touchDragRef = useRef<{ startIdx: number; startY: number; startX: number } | null>(null);
-  const imageGridRef = useRef<HTMLDivElement>(null);
-
-  const handleTouchStart = (idx: number, e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    touchDragRef.current = { startIdx: idx, startY: touch.clientY, startX: touch.clientX };
-    setDragIndex(idx);
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    // Prevent scroll while dragging
-    if (touchDragRef.current) {
-      e.preventDefault();
-    }
-  };
-
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    if (!touchDragRef.current || !imageGridRef.current) {
-      setDragIndex(null);
-      touchDragRef.current = null;
-      return;
-    }
-    const touch = e.changedTouches[0];
-    const elements = imageGridRef.current.querySelectorAll('[data-img-idx]');
-    let dropIdx: number | null = null;
-    elements.forEach((el) => {
-      const rect = el.getBoundingClientRect();
-      if (
-        touch.clientX >= rect.left &&
-        touch.clientX <= rect.right &&
-        touch.clientY >= rect.top &&
-        touch.clientY <= rect.bottom
-      ) {
-        dropIdx = parseInt(el.getAttribute('data-img-idx') || '-1');
-      }
-    });
-    if (dropIdx !== null && dropIdx >= 0) {
-      handleImageDrop(dropIdx);
-    }
-    setDragIndex(null);
-    touchDragRef.current = null;
-  };
+  // Placeholder for any other taxonomy handlers
 
   const toggleSize = (size: string) => {
     setSelectedSizes((prev) =>
@@ -492,6 +528,11 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
   const removeColor = (color: string) => {
     setSelectedColors(selectedColors.filter((c) => c !== color));
+    setColorMedia((prev) => {
+      const next = { ...prev };
+      delete next[color];
+      return next;
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -515,6 +556,14 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       return toast.error("One or more taxonomy IDs (Category/Brand/Manufacturer) were not found. Please re-select them.");
     }
 
+    // Multiple of 24 validation for variants
+    for (const v of variants) {
+      const total = Object.values(v.sizeQuantities).reduce((sum, q) => sum + (q || 0), 0);
+      if (total > 0 && total % 24 !== 0) {
+        return toast.error(`Total quantity for variant "${v.itemName}" must be a multiple of 24 (Current: ${total})`);
+      }
+    }
+
     const data = new FormData();
     data.append("articleName", formData.artname);
     data.append("soleColor", formData.soleColor);
@@ -532,24 +581,25 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     data.append("productColors", JSON.stringify(selectedColors));
     data.append("sizeRanges", JSON.stringify(sizeRanges));
 
-    // Normalize variants for backend (no sizeMap — managed via PO dialog)
+    // Normalize variants for backend
     const normalizedVariants = variants.map(v => ({
       itemName: v.itemName,
       costPrice: v.costPrice,
-      sellingPrice: v.sellingPrice,
       mrp: v.mrp,
       hsnCode: v.hsnCode,
       color: v.color,
       sizeRange: v.sizeRange,
+      sizeQuantities: v.sizeQuantities,
+      imageCount: colorMedia[v.color]?.images.length || 0,
     }));
     data.append("variants", JSON.stringify(normalizedVariants));
 
-    if (formData.images.length > 0) {
-      data.append("primaryImage", formData.images[0]);
-      formData.images.slice(1).forEach(img => {
-        data.append("secondaryImages", img);
+    // Append all images per color
+    Object.entries(colorMedia).forEach(([color, media]) => {
+      media.images.forEach((file, idx) => {
+        data.append(`images_${color}`, file);
       });
-    }
+    });
 
     const savePromise = async () => {
       if (editingId) {
@@ -574,8 +624,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           unit: "Pairs",
           category: "",
           brand: "",
-          images: [],
-          imagePreviews: [],
         });
         setSelectedSizes([]);
         setSelectedColors([]);
@@ -922,122 +970,8 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
               </div>
             </div>
 
-            {/* Col 3: Media & Status (3 cols) */}
+            {/* Col 3: Status (3 cols) - Media removed as it is now per-color */}
             <div className="lg:col-span-3 flex flex-col gap-8">
-              <div className="space-y-6">
-                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 pb-2 border-b border-slate-100">
-                  <ImageIcon size={16} className="text-indigo-500" /> Primary
-                  Media
-                </h3>
-
-                <div>
-                  {formData.imagePreviews.length > 0 ? (
-                    <div ref={imageGridRef} className="grid grid-cols-3 gap-3 mb-3">
-                      {formData.imagePreviews.map((src, idx) => (
-                        <div
-                          key={idx}
-                          data-img-idx={idx}
-                          draggable
-                          onDragStart={() => setDragIndex(idx)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={() => handleImageDrop(idx)}
-                          onTouchStart={(e) => handleTouchStart(idx, e)}
-                          onTouchMove={handleTouchMove}
-                          onTouchEnd={handleTouchEnd}
-                          className={`relative group rounded-xl border-2 overflow-hidden transition-all cursor-grab active:cursor-grabbing ${
-                            dragIndex === idx
-                              ? "border-indigo-400 opacity-50 scale-95"
-                              : idx === 0
-                              ? "border-indigo-500 shadow-md shadow-indigo-500/10"
-                              : "border-slate-200 hover:border-slate-300"
-                          }`}
-                        >
-                          <img
-                            src={src}
-                            className="w-full h-28 object-cover"
-                            alt={`Preview ${idx + 1}`}
-                            draggable={false}
-                          />
-                          {/* Cover badge */}
-                          {idx === 0 && (
-                            <div className="absolute top-1.5 left-1.5 flex items-center gap-1 px-2 py-0.5 bg-indigo-600 text-white rounded-full text-[9px] font-bold shadow-lg">
-                              <Star size={9} fill="currentColor" /> Cover
-                            </div>
-                          )}
-                          {/* Set as Cover button — visible on mobile, hover on desktop */}
-                          {idx !== 0 && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setAsCover(idx);
-                              }}
-                              className="absolute top-1.5 left-1.5 flex items-center gap-1 px-2 py-1 bg-white/90 backdrop-blur-sm text-indigo-600 rounded-full text-[9px] font-bold shadow-sm hover:bg-indigo-50 transition-all sm:opacity-0 sm:group-hover:opacity-100"
-                            >
-                              <ArrowUp size={10} /> Set Cover
-                            </button>
-                          )}
-
-                          {/* Remove button — visible on mobile, hover on desktop */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeImage(idx);
-                            }}
-                            className="absolute top-1.5 right-1.5 p-1 bg-white/90 backdrop-blur-sm text-rose-500 rounded-full shadow-sm hover:bg-rose-50 transition-all sm:opacity-0 sm:group-hover:opacity-100"
-                          >
-                            <X size={12} />
-                          </button>
-                          {/* Index badge */}
-                          <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 bg-black/50 backdrop-blur-sm text-white rounded-md text-[9px] font-bold">
-                            {idx + 1}
-                          </div>
-                        </div>
-                      ))}
-                      {/* Add more tile */}
-                      <div
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex flex-col items-center justify-center h-28 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/50 transition-all group"
-                      >
-                        <div className="p-2 bg-white rounded-full shadow-sm border border-slate-100 text-slate-400 group-hover:text-indigo-500 group-hover:scale-110 transition-transform mb-1.5">
-                          <Plus size={18} />
-                        </div>
-                        <p className="text-[10px] text-slate-500 font-bold group-hover:text-indigo-600">Add More</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      onClick={() => fileInputRef.current?.click()}
-                      className="aspect-4/3 w-full rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 flex flex-col items-center justify-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/50 transition-all group"
-                    >
-                      <div className="p-4 bg-white rounded-full shadow-sm border border-slate-100 text-slate-400 group-hover:text-indigo-500 group-hover:scale-110 transition-transform mb-3">
-                        <ImageIcon size={28} />
-                      </div>
-                      <p className="text-xs text-slate-500 font-bold group-hover:text-indigo-600">
-                        Click to upload images
-                      </p>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        PNG, JPG up to 5MB · Drag to reorder
-                      </p>
-                    </div>
-                  )}
-                  {formData.imagePreviews.length > 0 && (
-                    <p className="text-[10px] text-slate-400 font-medium text-center">
-                      Drag images to reorder · First image is the cover
-                    </p>
-                  )}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={handleImageChange}
-                  />
-                </div>
-              </div>
-
               <div className="space-y-6">
                 <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 pb-2 border-b border-slate-100">
                   <Clock size={16} className="text-indigo-500" /> Listing Status
@@ -1110,7 +1044,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
             </div>
           </div>
 
-          {/* ===== VARIANTS TABLES (Grouped by Range) ===== */}
+          {/* ===== VARIANTS TABLES (Grouped by Color) ===== */}
           {variants.length > 0 && (
             <div className="mt-6 border-t border-slate-200 pt-6">
               <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 mb-6">
@@ -1122,173 +1056,287 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
               </h3>
 
               <div className="space-y-10">
-                {Array.from(new Set(variants.map((v) => v.sizeRange))).map(
-                  (range) => {
-                    const rangeVariants = variants.filter(
-                      (v) => v.sizeRange === range
+                {selectedColors.map(
+                  (color) => {
+                    const colorVariants = variants.filter(
+                      (v) => v.color === color
                     );
-                    const rangeSizes = parseSizeRange(range);
+                    if (colorVariants.length === 0) return null;
+
+                    const colorSizes = Array.from(
+                      new Set(
+                        colorVariants.flatMap((v) => parseSizeRange(v.sizeRange || ""))
+                      )
+                    ).sort((a, b) => Number(a) - Number(b));
 
                     return (
-                      <div key={range} className="space-y-4">
+                      <div key={color} className="space-y-4">
                         <div className="flex items-center gap-3">
                           <div className="h-px flex-1 bg-slate-100"></div>
                           <div className="flex items-center gap-2 px-3 py-1 bg-slate-50 border border-slate-200 rounded-full">
                             <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
                             <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">
-                              Size Range: {range}
+                              Color: {color}
                             </span>
                             <span className="text-[10px] font-medium text-slate-400">
-                              ({rangeVariants.length} items)
+                              ({colorVariants.length} items)
                             </span>
                           </div>
                           <div className="h-px flex-1 bg-slate-100"></div>
                         </div>
 
-                        <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
-                          <table className="w-full text-left">
-                            <thead>
-                              <tr className="bg-slate-50 border-b border-slate-200">
-                                <th className="px-4 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap">
-                                  Item Name
-                                </th>
-                                <th className="px-3 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap">
-                                  <div className="flex flex-col gap-0.5">
-                                    Cost Price (₹)
-                                  </div>
-                                </th>
-                                <th className="px-3 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap">
-                                  <div className="flex flex-col gap-0.5">
-                                    Selling Price (₹)
-                                  </div>
-                                </th>
-
-                                <th className="px-3 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap">
-                                  <div className="flex flex-col gap-0.5">
-                                    MRP (₹)
-                                  </div>
-                                </th>
-                                <th className="px-3 py-3 text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap">
-                                  <div className="flex flex-col items-center gap-1">
-                                    <span>HSN Code</span>
+                        {/* Per-Color Media Management */}
+                        <div className="bg-slate-50/50 p-6 rounded-2xl border border-dashed border-slate-200">
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-2">
+                              <ImageIcon size={18} className="text-indigo-500" />
+                              <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Media for {color}</h4>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const input = document.getElementById(`file-input-${color}`) as HTMLInputElement;
+                                if (input) input.click();
+                              }}
+                              className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-[10px] font-bold hover:bg-indigo-700 transition-all shadow-sm flex items-center gap-1.5"
+                            >
+                              <Plus size={12} /> Add Images
+                            </button>
+                            <input
+                              id={`file-input-${color}`}
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              className="hidden"
+                              onChange={(e) => handleColorImageChange(color, e)}
+                            />
+                          </div>
+                          
+                          {(colorMedia[color]?.previews.length || 0) > 0 ? (
+                            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                              {colorMedia[color].previews.map((src, idx) => (
+                                <div
+                                  key={idx}
+                                  draggable
+                                  onDragStart={() => setDragIndex({ color, index: idx })}
+                                  onDragOver={(e) => e.preventDefault()}
+                                  onDrop={() => handleColorImageDrop(color, idx)}
+                                  className={`relative group rounded-xl border-2 overflow-hidden transition-all cursor-grab active:cursor-grabbing ${
+                                    dragIndex?.color === color && dragIndex?.index === idx
+                                      ? "border-indigo-400 opacity-50 scale-95"
+                                      : idx === 0
+                                      ? "border-indigo-500 shadow-md shadow-indigo-500/10"
+                                      : "border-slate-200 hover:border-slate-300"
+                                  }`}
+                                >
+                                  <img
+                                    src={src}
+                                    className="w-full aspect-square object-cover"
+                                    alt={`Preview ${idx + 1}`}
+                                    draggable={false}
+                                  />
+                                  {/* Cover badge */}
+                                  {idx === 0 && (
+                                    <div className="absolute top-1 left-1 flex items-center gap-0.5 px-1.5 py-0.5 bg-indigo-600 text-white rounded-full text-[7px] font-bold shadow-lg">
+                                      <Star size={7} fill="currentColor" /> Cover
+                                    </div>
+                                  )}
+                                  
+                                  {/* Hover Actions */}
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                                    {idx !== 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setColorImageAsCover(color, idx)}
+                                        className="p-1 bg-white text-indigo-600 rounded-lg hover:bg-slate-50 transition-all"
+                                        title="Set as cover"
+                                      >
+                                        <ArrowUp size={10} />
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
-                                      onClick={() => copyHsnToAll(range)}
-                                      className="flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 rounded text-[9px] font-black text-indigo-600 transition-all border border-indigo-100 shadow-sm uppercase tracking-tighter"
-                                      title="Apply first HSN to all colors in this range"
+                                      onClick={() => removeColorImage(color, idx)}
+                                      className="p-1 bg-white text-rose-500 rounded-lg hover:bg-slate-50 transition-all"
+                                      title="Remove"
                                     >
-                                      <Copy size={8} />
-                                      Apply
+                                      <X size={10} />
+                                    </button>
+                                  </div>
+
+                                  {/* Index badge */}
+                                  <div className="absolute bottom-1 right-1 px-1 bg-black/50 backdrop-blur-sm text-white rounded-md text-[7px] font-bold">
+                                    {idx + 1}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div 
+                              onClick={() => {
+                                const input = document.getElementById(`file-input-${color}`) as HTMLInputElement;
+                                if (input) input.click();
+                              }}
+                              className="flex flex-col items-center justify-center py-8 rounded-xl border-2 border-dashed border-slate-200 cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-all group"
+                            >
+                              <div className="p-3 bg-white rounded-full shadow-sm border border-slate-100 text-slate-400 group-hover:text-indigo-500 mb-2">
+                                <ImageIcon size={20} />
+                              </div>
+                              <p className="text-[10px] text-slate-500 font-bold group-hover:text-indigo-600">Click to upload images for {color}</p>
+                              <p className="text-[8px] text-slate-400 mt-1">First image will be the cover image</p>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
+                          <table className="w-full text-left border-collapse min-w-[1000px]">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-200">
+                                <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-12 text-center">#</th>
+                                <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[200px]">Item Variation Name</th>
+                                <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32">
+                                  <div className="flex flex-col gap-1 text-indigo-600">
+                                    <span>Cost Price (₹)</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyToAll("costPrice", color)}
+                                      className="flex items-center gap-1 text-[9px] hover:text-indigo-800 transition-colors uppercase"
+                                    >
+                                      <ArrowUp size={10} className="rotate-180" /> Copy All
                                     </button>
                                   </div>
                                 </th>
-                                <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-center">
-                                  {/* Actions */}
+                                <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32">
+                                  <div className="flex flex-col gap-1 text-indigo-600">
+                                    <span>MRP (₹)</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyToAll("mrp", color)}
+                                      className="flex items-center gap-1 text-[9px] hover:text-indigo-800 transition-colors uppercase"
+                                    >
+                                      <ArrowUp size={10} className="rotate-180" /> Copy All
+                                    </button>
+                                  </div>
                                 </th>
+                                <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32 text-center">
+                                  <div className="flex flex-col gap-1 text-indigo-600">
+                                    <span>HSN</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyHsnToAll(color)}
+                                      className="flex items-center gap-1 text-[9px] hover:text-indigo-800 transition-colors uppercase justify-center"
+                                    >
+                                      <ArrowUp size={10} className="rotate-180" /> Apply
+                                    </button>
+                                  </div>
+                                </th>
+                                {colorSizes.map((size) => (
+                                  <th key={size} className="px-3 py-4 text-[11px] font-bold text-indigo-700 uppercase tracking-wider w-20 text-center border-l border-slate-100 bg-indigo-50/30">
+                                    <div className="flex flex-col gap-1">
+                                      <span>Size {size}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => copySizeToAll(color, size)}
+                                        className="flex items-center gap-1 text-[9px] text-indigo-600 hover:text-indigo-800 transition-colors uppercase justify-center"
+                                      >
+                                        <ArrowUp size={10} className="rotate-180" /> Apply
+                                      </button>
+                                    </div>
+                                  </th>
+                                ))}
+                                <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-24 text-center">Total Pairs</th>
+                                <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-16 text-center">Actions</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {rangeVariants.map((variant, idx) => (
-                                <tr
-                                  key={variant.id}
-                                  className={`border-b border-slate-100 ${
-                                    idx % 2 === 0
-                                      ? "bg-white"
-                                      : "bg-slate-50/30"
-                                  } hover:bg-indigo-50/30 transition-colors`}
-                                >
-                                  {/* Item Name */}
-                                  <td className="px-4 py-2.5">
-                                    <input
-                                      type="text"
-                                      className="w-full min-w-40 p-2 bg-transparent border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all placeholder:text-slate-300"
-                                      value={variant.itemName}
-                                      onChange={(e) =>
-                                        updateVariantField(
-                                          variant.id,
-                                          "itemName",
-                                          e.target.value
-                                        )
-                                      }
-                                    />
-                                  </td>
-
-                                  {/* Cost Price */}
-                                  <td className="px-3 py-2.5">
-                                    <input
-                                      type="number"
-                                      placeholder="0"
-                                      className="w-full min-w-22.5 p-2 bg-transparent border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all"
-                                      value={variant.costPrice || ""}
-                                      onChange={(e) =>
-                                        updateVariantField(
-                                          variant.id,
-                                          "costPrice",
-                                          Number(e.target.value)
-                                        )
-                                      }
-                                    />
-                                  </td>
-                                  {/* Selling Price */}
-                                  <td className="px-3 py-2.5">
-                                    <input
-                                      type="number"
-                                      placeholder="0"
-                                      className="w-full min-w-22.5 p-2 bg-transparent border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all"
-                                      value={variant.sellingPrice || ""}
-                                      onChange={(e) =>
-                                        updateVariantField(
-                                          variant.id,
-                                          "sellingPrice",
-                                          Number(e.target.value)
-                                        )
-                                      }
-                                    />
-                                  </td>
-
-                                  {/* MRP */}
-                                  <td className="px-3 py-2.5">
-                                    <input
-                                      type="number"
-                                      placeholder="0"
-                                      className="w-full min-w-22.5 p-2 bg-transparent border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all"
-                                      value={variant.mrp || ""}
-                                      onChange={(e) =>
-                                        updateVariantField(
-                                          variant.id,
-                                          "mrp",
-                                          Number(e.target.value)
-                                        )
-                                      }
-                                    />
-                                  </td>
-                                  <td className="px-3 py-2.5">
-                                    <input
-                                      type="text"
-                                      placeholder="e.g. 6402"
-                                      className="w-full min-w-22.5 p-2 bg-transparent border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all"
-                                      value={variant.hsnCode || ""}
-                                      onChange={(e) =>
-                                        updateVariantField(
-                                          variant.id,
-                                          "hsnCode",
-                                          e.target.value
-                                        )
-                                      }
-                                    />
-                                  </td>
-                                  {/* Actions */}
-                                  <td className="px-3 py-2.5 text-center">
-                                    <button
-                                      type="button"
-                                      onClick={() => removeVariant(variant.id)}
-                                      className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))}
+                              {colorVariants.map((v, idx) => {
+                                const sizesInRange = parseSizeRange(v.sizeRange || "");
+                                return (
+                                  <tr key={v.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors group">
+                                    <td className="px-4 py-4 text-xs font-bold text-slate-400 text-center">{idx + 1}</td>
+                                    <td className="px-4 py-4">
+                                      <div className="flex flex-col gap-1">
+                                        <input
+                                          type="text"
+                                          disabled={loading}
+                                          className="w-full text-xs font-bold text-slate-700 bg-transparent border-none outline-none focus:ring-1 focus:ring-indigo-500/50 rounded p-1"
+                                          value={v.itemName}
+                                          onChange={(e) => updateVariantField(v.id, "itemName", e.target.value)}
+                                        />
+                                        <span className="text-[10px] text-slate-400 font-medium px-1 italic">Range: {v.sizeRange}</span>
+                                      </div>
+                                    </td>
+                                    <td className="px-4 py-4">
+                                      <input
+                                        type="number"
+                                        className="w-full p-2 text-xs font-bold text-indigo-600 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                        value={v.costPrice || ""}
+                                        onChange={(e) => updateVariantField(v.id, "costPrice", Number(e.target.value))}
+                                      />
+                                    </td>
+                                    <td className="px-4 py-4">
+                                      <input
+                                        type="number"
+                                        className="w-full p-2 text-xs font-bold text-indigo-600 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                        value={v.mrp || ""}
+                                        onChange={(e) => updateVariantField(v.id, "mrp", Number(e.target.value))}
+                                      />
+                                    </td>
+                                    <td className="px-4 py-4">
+                                      <input
+                                        type="text"
+                                        className="w-full p-2 text-xs font-medium text-slate-600 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                        value={v.hsnCode}
+                                        onChange={(e) => updateVariantField(v.id, "hsnCode", e.target.value)}
+                                      />
+                                    </td>
+                                    {colorSizes.map((size) => {
+                                      const isAvailable = sizesInRange.includes(size);
+                                      return (
+                                        <td key={size} className={`px-2 py-4 border-l border-slate-100 ${!isAvailable ? 'bg-slate-50/50' : ''}`}>
+                                          {isAvailable ? (
+                                            <input
+                                              type="number"
+                                              placeholder="Qty"
+                                              className="w-full p-2 text-center text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                              value={v.sizeQuantities[size] || ""}
+                                              onChange={(e) => {
+                                                const newQtys = { ...v.sizeQuantities, [size]: Number(e.target.value) };
+                                                updateVariantField(v.id, "sizeQuantities", newQtys);
+                                              }}
+                                            />
+                                          ) : (
+                                            <div className="flex items-center justify-center">
+                                              <div className="w-1.5 h-1.5 rounded-full bg-slate-200"></div>
+                                            </div>
+                                          )}
+                                        </td>
+                                      );
+                                    })}
+                                    <td className="px-4 py-4 text-center">
+                                      {(() => {
+                                        const total = Object.values(v.sizeQuantities).reduce((sum, q) => sum + (q || 0), 0);
+                                        const isGood = total === 0 || total % 24 === 0;
+                                        return (
+                                          <div className={`text-xs font-black ${isGood ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                            {total}
+                                            {!isGood && <p className="text-[8px] font-medium leading-tight">Must be ÷24</p>}
+                                          </div>
+                                        );
+                                      })()}
+                                    </td>
+                                    <td className="px-4 py-4 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => removeVariant(v.id)}
+                                        className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                                      >
+                                        <Trash2 size={16} />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>

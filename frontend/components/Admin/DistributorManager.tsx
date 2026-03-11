@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { User, UserRole } from "../../types";
+import { User, UserRole, DistributorAddress } from "../../types";
 import {
   Users,
   Plus,
@@ -21,6 +21,7 @@ import {
   Edit,
   Eye,
   EyeOff,
+  Copy,
 } from "lucide-react";
 import Switch from "../ui/Switch";
 import ConfirmDialog, { useConfirm } from "../ui/ConfirmDialog";
@@ -32,6 +33,186 @@ interface DistributorManagerProps {
 }
 
 type ViewState = "LIST" | "CREATE" | "DETAILS";
+
+// --- Styling Constants (Shared with VendorManager) ---
+const inputClass =
+  "w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all font-medium text-slate-800 text-sm";
+const selectClass =
+  "w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all font-medium text-slate-700 text-sm cursor-pointer";
+const labelClass =
+  "block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1";
+
+// --- Indian States ---
+const indianStates = [
+  "Andhra Pradesh",
+  "Arunachal Pradesh",
+  "Assam",
+  "Bihar",
+  "Chhattisgarh",
+  "Goa",
+  "Gujarat",
+  "Haryana",
+  "Himachal Pradesh",
+  "Jharkhand",
+  "Karnataka",
+  "Kerala",
+  "Madhya Pradesh",
+  "Maharashtra",
+  "Manipur",
+  "Meghalaya",
+  "Mizoram",
+  "Nagaland",
+  "Odisha",
+  "Punjab",
+  "Rajasthan",
+  "Sikkim",
+  "Tamil Nadu",
+  "Telangana",
+  "Tripura",
+  "Uttar Pradesh",
+  "Uttarakhand",
+  "West Bengal",
+  "Delhi",
+  "Jammu & Kashmir",
+  "Ladakh",
+  "Puducherry",
+  "Chandigarh",
+  "Andaman & Nicobar",
+  "Dadra & Nagar Haveli",
+  "Lakshadweep",
+];
+
+// --- Helpers & Sub-components ---
+
+const emptyAddress = (): DistributorAddress => ({
+  attention: "",
+  country: "India",
+  address1: "",
+  address2: "",
+  city: "",
+  state: "",
+  pinCode: "",
+});
+
+const Field: React.FC<{
+  label: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ label, icon, children }) => (
+  <div className="space-y-1.5">
+    <label className="flex items-center gap-1.5 text-xs font-bold text-slate-500 uppercase tracking-widest pl-1">
+      {icon && <span className="text-slate-400">{icon}</span>}
+      {label}
+    </label>
+    {children}
+  </div>
+);
+
+const InfoRow: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  mono?: boolean;
+}> = ({ icon, label, value, mono }) => (
+  <div className="flex gap-3">
+    <div className="mt-0.5 text-slate-400">{icon}</div>
+    <div>
+      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+        {label}
+      </p>
+      <p
+        className={`text-sm text-slate-800 font-medium ${
+          mono ? "font-mono" : ""
+        }`}
+      >
+        {value}
+      </p>
+    </div>
+  </div>
+);
+
+const AddressForm: React.FC<{
+  value: DistributorAddress;
+  onChange: (field: keyof DistributorAddress, val: string) => void;
+}> = ({ value, onChange }) => {
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className={labelClass}>Attention</label>
+        <input
+          type="text"
+          className={inputClass}
+          value={value.attention || ""}
+          onChange={(e) => onChange("attention", e.target.value)}
+        />
+      </div>
+      <div>
+        <label className={labelClass}>Country / Region</label>
+        <select
+          className={selectClass}
+          value={value.country || ""}
+          onChange={(e) => onChange("country", e.target.value)}
+        >
+          <option value="">Select</option>
+          <option>India</option>
+          <option>United States</option>
+          <option>United Kingdom</option>
+          <option>Other</option>
+        </select>
+      </div>
+      <div>
+        <label className={labelClass}>Address</label>
+        <input
+          type="text"
+          placeholder="Street 1"
+          className={`${inputClass} mb-3`}
+          value={value.address1 || ""}
+          onChange={(e) => onChange("address1", e.target.value)}
+        />
+        <input
+          type="text"
+          placeholder="Street 2"
+          className={inputClass}
+          value={value.address2 || ""}
+          onChange={(e) => onChange("address2", e.target.value)}
+        />
+      </div>
+      <div>
+        <label className={labelClass}>City</label>
+        <input
+          type="text"
+          className={inputClass}
+          value={value.city || ""}
+          onChange={(e) => onChange("city", e.target.value)}
+        />
+      </div>
+      <div>
+        <label className={labelClass}>State</label>
+        <select
+          className={selectClass}
+          value={value.state || ""}
+          onChange={(e) => onChange("state", e.target.value)}
+        >
+          <option value="">Select</option>
+          {indianStates.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className={labelClass}>Pin Code</label>
+        <input
+          type="text"
+          className={inputClass}
+          value={value.pinCode || ""}
+          onChange={(e) => onChange("pinCode", e.target.value)}
+        />
+      </div>
+    </div>
+  );
+};
 
 const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
   // --- Draft Persistence ---
@@ -66,8 +247,8 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       phone: "",
       companyName: "",
       gstNumber: "",
-      billingAddress: "",
-      shippingAddress: "",
+      billingAddress: emptyAddress(),
+      shippingAddress: emptyAddress(),
       paymentTerms: "30 days",
       discountPercentage: 0,
       creditLimit: 0,
@@ -127,6 +308,36 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
     e.preventDefault();
 
     try {
+      // Check for financial changes if editing
+      if (editingId && selectedDistributor) {
+        const changes = [];
+        if (Number(formData.discountPercentage) !== (selectedDistributor.discountPercentage || 0)) {
+          changes.push(`Discount %: ${selectedDistributor.discountPercentage || 0}% → ${formData.discountPercentage}%`);
+        }
+        if (Number(formData.creditLimit) !== (selectedDistributor.creditLimit || 0)) {
+          changes.push(`Credit Limit: ₹${(selectedDistributor.creditLimit || 0).toLocaleString()} → ₹${(Number(formData.creditLimit) || 0).toLocaleString()}`);
+        }
+
+        if (changes.length > 0) {
+          const ok = await confirm({
+            title: "Confirm Financial Changes",
+            description: (
+              <div className="space-y-2">
+                <p>Are you sure you want to update the financial terms for <strong>{selectedDistributor.companyName}</strong>?</p>
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                  {changes.map((change, i) => (
+                    <p key={i} className="text-sm font-medium text-amber-800">{change}</p>
+                  ))}
+                </div>
+              </div>
+            ),
+            confirmText: "Yes, Update",
+            cancelText: "Cancel",
+          });
+          if (!ok) return;
+        }
+      }
+
       setCreatingLoading(true);
       setError(null);
 
@@ -137,8 +348,8 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
         phone: formData.phone || "",
         companyName: formData.companyName || "",
         gstNumber: formData.gstNumber || "",
-        billingAddress: formData.billingAddress || "",
-        shippingAddress: formData.shippingAddress || "",
+        billingAddress: formData.billingAddress,
+        shippingAddress: formData.shippingAddress,
         paymentTerms: formData.paymentTerms || "30 days",
         discountPercentage: Number(formData.discountPercentage) || 0,
         creditLimit: Number(formData.creditLimit) || 0,
@@ -175,8 +386,8 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
         phone: "",
         companyName: "",
         gstNumber: "",
-        billingAddress: "",
-        shippingAddress: "",
+        billingAddress: emptyAddress(),
+        shippingAddress: emptyAddress(),
         paymentTerms: "30 days",
         discountPercentage: 0,
         creditLimit: 0,
@@ -235,8 +446,14 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       phone: dist.phone,
       companyName: dist.companyName,
       gstNumber: dist.gstNumber,
-      billingAddress: dist.billingAddress,
-      shippingAddress: dist.shippingAddress,
+      billingAddress:
+        typeof dist.billingAddress === "object"
+          ? { ...emptyAddress(), ...dist.billingAddress }
+          : emptyAddress(),
+      shippingAddress:
+        typeof dist.shippingAddress === "object"
+          ? { ...emptyAddress(), ...dist.shippingAddress }
+          : emptyAddress(),
       paymentTerms: dist.paymentTerms,
       discountPercentage: dist.discountPercentage,
       creditLimit: dist.creditLimit,
@@ -247,6 +464,14 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
     });
     setShowPasswordEdit(false);
     setView("CREATE");
+  };
+
+  const copyBillingToShipping = () => {
+    setFormData((prev) => ({
+      ...prev,
+      shippingAddress: { ...(prev.billingAddress as object) } as DistributorAddress,
+    }));
+    toast.info("Billing address copied to shipping");
   };
 
   const handleDeleteDistributor = async (id: string) => {
@@ -300,8 +525,8 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                   phone: "",
                   companyName: "",
                   gstNumber: "",
-                  billingAddress: "",
-                  shippingAddress: "",
+                  billingAddress: emptyAddress(),
+                  shippingAddress: emptyAddress(),
                   paymentTerms: "30 days",
                   discountPercentage: 0,
                   creditLimit: 0,
@@ -422,35 +647,53 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                 <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4 border-b pb-2">
                   Location
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <Field label="Billing Address" icon={<MapPin size={14} />}>
-                    <textarea
-                      required
-                      rows={3}
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none"
-                      value={formData.billingAddress}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          billingAddress: e.target.value,
-                        })
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 pb-2 border-b border-slate-100">
+                      <MapPin size={14} className="text-indigo-500" /> Billing
+                      Address
+                    </h4>
+                    <AddressForm
+                      value={formData.billingAddress as DistributorAddress}
+                      onChange={(field, val) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          billingAddress: {
+                            ...(prev.billingAddress as object),
+                            [field]: val,
+                          } as unknown as DistributorAddress,
+                        }))
                       }
                     />
-                  </Field>
-                  <Field label="Shipping Address" icon={<MapPin size={14} />}>
-                    <textarea
-                      required
-                      rows={3}
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none"
-                      value={formData.shippingAddress}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          shippingAddress: e.target.value,
-                        })
+                  </div>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                      <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <MapPin size={14} className="text-emerald-500" /> Shipping
+                        Address
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={copyBillingToShipping}
+                        className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors"
+                      >
+                        <Copy size={12} />
+                        Copy billing address
+                      </button>
+                    </div>
+                    <AddressForm
+                      value={formData.shippingAddress as DistributorAddress}
+                      onChange={(field, val) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          shippingAddress: {
+                            ...(prev.shippingAddress as object),
+                            [field]: val,
+                          } as unknown as DistributorAddress,
+                        }))
                       }
                     />
-                  </Field>
+                  </div>
                 </div>
               </div>
 
@@ -601,8 +844,8 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                     phone: "",
                     companyName: "",
                     gstNumber: "",
-                    billingAddress: "",
-                    shippingAddress: "",
+                    billingAddress: emptyAddress(),
+                    shippingAddress: emptyAddress(),
                     paymentTerms: "30 days",
                     discountPercentage: 0,
                     creditLimit: 0,
@@ -801,29 +1044,73 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
             {/* Right Column: Addresses & Stats */}
             <div className="lg:col-span-2 space-y-6">
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4">
-                  Addresses
-                </h3>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
-                    <h4 className="flex items-center gap-1.5 text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 pb-2 border-b border-slate-100">
                       <MapPin size={14} className="text-indigo-500" /> Billing
                       Address
                     </h4>
-                    <p className="text-sm text-slate-800 whitespace-pre-wrap">
-                      {d.billingAddress || "No billing address provided."}
-                    </p>
+                    <div className="bg-slate-50/50 rounded-xl p-4 border border-slate-200">
+                      <div className="text-sm text-slate-800 space-y-3">
+                        {typeof d.billingAddress === "object" ? (
+                          <div className="grid grid-cols-1 gap-4">
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-0.5">Attention</p>
+                              <p className="font-semibold text-slate-900">{d.billingAddress.attention || "—"}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-0.5">Address</p>
+                              <p className="font-medium text-slate-800">
+                                {d.billingAddress.address1}
+                                {d.billingAddress.address2 && <>, {d.billingAddress.address2}</>}
+                              </p>
+                              <p className="font-medium text-slate-800">
+                                {d.billingAddress.city}, {d.billingAddress.state} - {d.billingAddress.pinCode}
+                              </p>
+                              <p className="font-medium text-slate-800">{d.billingAddress.country}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap">
+                            {d.billingAddress || "No billing address provided."}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
-                    <h4 className="flex items-center gap-1.5 text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 pb-2 border-b border-slate-100">
                       <MapPin size={14} className="text-emerald-500" /> Shipping
                       Address
                     </h4>
-                    <p className="text-sm text-slate-800 whitespace-pre-wrap">
-                      {d.shippingAddress || "No shipping address provided."}
-                    </p>
+                    <div className="bg-slate-50/50 rounded-xl p-4 border border-slate-200">
+                      <div className="text-sm text-slate-800 space-y-3">
+                        {typeof d.shippingAddress === "object" ? (
+                          <div className="grid grid-cols-1 gap-4">
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-0.5">Attention</p>
+                              <p className="font-semibold text-slate-900">{d.shippingAddress.attention || "—"}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-0.5">Address</p>
+                              <p className="font-medium text-slate-800">
+                                {d.shippingAddress.address1}
+                                {d.shippingAddress.address2 && <>, {d.shippingAddress.address2}</>}
+                              </p>
+                              <p className="font-medium text-slate-800">
+                                {d.shippingAddress.city}, {d.shippingAddress.state} - {d.shippingAddress.pinCode}
+                              </p>
+                              <p className="font-medium text-slate-800">{d.shippingAddress.country}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap">
+                            {d.shippingAddress || "No shipping address provided."}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -891,8 +1178,8 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                 phone: "",
                 companyName: "",
                 gstNumber: "",
-                billingAddress: "",
-                shippingAddress: "",
+                billingAddress: emptyAddress(),
+                shippingAddress: emptyAddress(),
                 paymentTerms: "30 days",
                 discountPercentage: 0,
                 creditLimit: 0,
@@ -1052,41 +1339,3 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
 };
 
 export default DistributorManager;
-
-// --- Sub-components ---
-const Field: React.FC<{
-  label: string;
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-}> = ({ label, icon, children }) => (
-  <div className="space-y-1.5">
-    <label className="flex items-center gap-1.5 text-xs font-bold text-slate-500 uppercase tracking-widest pl-1">
-      {icon && <span className="text-slate-400">{icon}</span>}
-      {label}
-    </label>
-    {children}
-  </div>
-);
-
-const InfoRow: React.FC<{
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  mono?: boolean;
-}> = ({ icon, label, value, mono }) => (
-  <div className="flex gap-3">
-    <div className="mt-0.5 text-slate-400">{icon}</div>
-    <div>
-      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-        {label}
-      </p>
-      <p
-        className={`text-sm text-slate-800 font-medium ${
-          mono ? "font-mono" : ""
-        }`}
-      >
-        {value}
-      </p>
-    </div>
-  </div>
-);

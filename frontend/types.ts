@@ -17,8 +17,8 @@ export interface User {
   companyName?: string;
   phone?: string;
   gstNumber?: string;
-  billingAddress?: string;
-  shippingAddress?: string;
+  billingAddress?: string | DistributorAddress;
+  shippingAddress?: string | DistributorAddress;
   paymentTerms?: string;
   discountPercentage?: number;
   creditLimit?: number;
@@ -58,6 +58,8 @@ export interface Variant {
   sizeQuantities: Record<string, number>;
   sizeMap?: Record<string, { qty: number; sku: string }>;
   bookingMap?: Record<string, number>;
+  images?: string[];
+  isActive?: boolean;
 }
 
 export interface Assortment {
@@ -161,6 +163,16 @@ export interface VendorAddress {
   pinCode: string;
   phone: string;
   fax: string;
+}
+
+export interface DistributorAddress {
+  attention: string;
+  country: string;
+  address1: string;
+  address2?: string;
+  city: string;
+  state: string;
+  pinCode: string;
 }
 
 export interface VendorContact {

@@ -195,6 +195,30 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     }
   };
 
+  const handleVariantStatusToggle = async (
+    article: Article,
+    variantId: string,
+    newStatus: boolean
+  ) => {
+    const updatedVariants = article.variants?.map((v) =>
+      v.id === variantId ? { ...v, isActive: newStatus } : v
+    );
+    const updatedArticle: Article = { ...article, variants: updatedVariants };
+
+    try {
+      await masterCatalogService.updateMasterItemFields(article.id, {
+        variants: updatedVariants,
+      });
+      // Update local state
+      updateArticle(updatedArticle);
+      toast.success(
+        `Variant ${newStatus ? "activated" : "deactivated"} successfully`
+      );
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update variant status");
+    }
+  };
+
   // ---------- Toggle Accordion ----------
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -319,6 +343,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           ? formData.expectedAvailableDate
           : "",
     };
+
+    if (!isValidMultiple) {
+      return toast.error("Total pairs must be a multiple of 24");
+    }
 
     const savePromise = async () => {
       // Simulate API delay if needed or just handle props
@@ -473,12 +501,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                 className="flex items-center gap-4 p-4 md:p-1 cursor-pointer hover:bg-slate-50/50 transition-colors"
                 onClick={() => toggleExpand(article.id)}
               >
-                {/* Image */}
-                <img
-                  src={cover}
-                  alt={article.name}
-                  className="w-14 h-14 md:w-16 md:h-16 rounded-xl object-cover border border-slate-100 shrink-0"
-                />
+                {/* Removed parent image per request */}
 
                 {/* Info Container */}
                 <div className="flex-1 min-w-0">
@@ -519,11 +542,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       value={article.brand || "Internal"}
                     />
                     <div className="flex items-center gap-2">
-                      <StatBox
-                        label="Selling"
-                        value={sellingDisplay}
-                        highlight
-                      />
                       <StatBox label="Cost" value={costDisplay} />
                       <StatBox label="MRP" value={mrpDisplay} />
                     </div>
@@ -614,6 +632,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                             <thead className="bg-slate-100/80 border-b border-slate-200">
                               <tr>
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                  Image
+                                </th>
+                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   Variant
                                 </th>
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
@@ -628,11 +649,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   MRP
                                 </th>
-                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                  Selling
-                                </th>
-                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                  Size & Booking
+                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">
+                                  Status
                                 </th>
                               </tr>
                             </thead>
@@ -648,6 +666,22 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     }
                                     className="hover:bg-white cursor-pointer transition-colors"
                                   >
+                                    <td className="px-6 py-3">
+                                      {v.images && v.images.length > 0 ? (
+                                        <img
+                                          src={v.images[0]}
+                                          alt={v.color}
+                                          className="w-10 h-10 rounded-lg object-cover border border-slate-100"
+                                        />
+                                      ) : (
+                                        <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center border border-slate-100">
+                                          <ImageIcon
+                                            size={16}
+                                            className="text-slate-400"
+                                          />
+                                        </div>
+                                      )}
+                                    </td>
                                     <td className="px-6 py-3">
                                       <p className="font-bold text-sm text-slate-800 truncate max-w-[220px]">
                                         {vName}
@@ -681,49 +715,19 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                         ₹{(v.mrp || 0).toLocaleString()}
                                       </span>
                                     </td>
-                                    <td className="px-6 py-3">
-                                      <span className="text-sm font-bold text-indigo-600">
-                                        ₹
-                                        {(v.sellingPrice || 0).toLocaleString()}
-                                      </span>
-                                    </td>
-                                    <td className="px-6 py-3 min-w-[300px]">
-                                      <div className="grid grid-cols-2 gap-2">
-                                        {/* Size Breakdown - Left */}
-                                        <div className="bg-white rounded-lg border border-slate-100 p-2">
-                                          <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
-                                            Size Stock
-                                          </div>
-                                          <SizeBreakdown
-                                            sizeRange={
-                                              v.sizeRange ||
-                                              article.sizeRange ||
-                                              ""
-                                            }
-                                            sizeMap={
-                                              v.sizeMap ||
-                                              v.sizeQuantities ||
-                                              {}
-                                            }
-                                            type="stock"
-                                          />
-                                        </div>
-
-                                        {/* Booking Breakdown - Right */}
-                                        <div className="bg-white rounded-lg border border-slate-100 p-2">
-                                          <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
-                                            Booked Qty
-                                          </div>
-                                          <SizeBreakdown
-                                            sizeRange={
-                                              v.sizeRange ||
-                                              article.sizeRange ||
-                                              ""
-                                            }
-                                            sizeMap={v.bookingMap || {}}
-                                            type="booking"
-                                          />
-                                        </div>
+                                    <td className="px-6 py-3 text-center">
+                                      <div onClick={(e) => e.stopPropagation()}>
+                                        <Switch
+                                          checked={v.isActive !== false}
+                                          onCheckedChange={(checked) =>
+                                            handleVariantStatusToggle(
+                                              article,
+                                              v.id,
+                                              checked
+                                            )
+                                          }
+                                          className="scale-75"
+                                        />
                                       </div>
                                     </td>
                                   </tr>
@@ -744,61 +748,65 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                 onClick={() => onViewVariant(article.id, v.id)}
                                 className="bg-white border border-slate-200 rounded-xl p-3 cursor-pointer hover:border-indigo-200 transition-colors"
                               >
-                                <div className="flex justify-between items-start">
-                                  <div>
-                                    <p className="font-bold text-sm text-slate-800">
-                                      {vName}
-                                    </p>
-                                    <p className="text-[10px] font-mono text-slate-400 tracking-wider mt-0.5">
-                                      {v.sku || article.sku || ""}
-                                    </p>
-                                  </div>
-                                  <span className="text-[10px] font-bold text-indigo-500 uppercase shrink-0">
-                                    View →
-                                  </span>
-                                </div>
-                                <div className="flex flex-wrap gap-2 mt-2">
-                                  <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">
-                                    <span
-                                      className="w-2.5 h-2.5 rounded-full border border-slate-300"
-                                      style={{
-                                        backgroundColor:
-                                          v.color?.toLowerCase() || "#ccc",
-                                      }}
+                                <div className="flex gap-3">
+                                  {v.images && v.images.length > 0 ? (
+                                    <img
+                                      src={v.images[0]}
+                                      alt={v.color}
+                                      className="w-16 h-16 rounded-xl object-cover border border-slate-100 shrink-0"
                                     />
-                                    {v.color || "—"}
-                                  </span>
-                                  <span className="text-xs font-bold text-indigo-600">
-                                    ₹{(v.mrp || 0).toLocaleString()}
-                                  </span>
-                                </div>
-                                <div className="mt-3 grid grid-cols-2 gap-2">
-                                  <div className="bg-slate-50 rounded-lg p-2">
-                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">
-                                      Size Stock
+                                  ) : (
+                                    <div className="w-16 h-16 rounded-xl bg-slate-100 flex items-center justify-center border border-slate-100 shrink-0">
+                                      <ImageIcon
+                                        size={20}
+                                        className="text-slate-400"
+                                      />
                                     </div>
-                                    <SizeBreakdown
-                                      sizeRange={
-                                        v.sizeRange || article.sizeRange || ""
-                                      }
-                                      sizeMap={
-                                        v.sizeMap || v.sizeQuantities || {}
-                                      }
-                                      type="stock"
-                                      compact
-                                    />
+                                  )}
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex justify-between items-start">
+                                      <div>
+                                        <p className="font-bold text-sm text-slate-800">
+                                          {vName}
+                                        </p>
+                                        <p className="text-[10px] font-mono text-slate-400 tracking-wider mt-0.5">
+                                          {v.sku || article.sku || ""}
+                                        </p>
+                                      </div>
+                                      <span className="text-[10px] font-bold text-indigo-500 uppercase shrink-0">
+                                        View →
+                                      </span>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2 mt-2">
+                                      <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">
+                                        <span
+                                          className="w-2.5 h-2.5 rounded-full border border-slate-300"
+                                          style={{
+                                            backgroundColor:
+                                              v.color?.toLowerCase() || "#ccc",
+                                          }}
+                                        />
+                                        {v.color || "—"}
+                                      </span>
+                                      <span className="text-xs font-bold text-indigo-600">
+                                        ₹{(v.mrp || 0).toLocaleString()}
+                                      </span>
+                                    </div>
                                   </div>
-                                  <div className="bg-slate-50 rounded-lg p-2">
-                                    <div className="text-[8px] font-black text-slate-400 uppercase mb-1">
-                                      Booked
-                                    </div>
-                                    <SizeBreakdown
-                                      sizeRange={
-                                        v.sizeRange || article.sizeRange || ""
+                                  <div
+                                    className="shrink-0 pt-1"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <Switch
+                                      checked={v.isActive !== false}
+                                      onCheckedChange={(checked) =>
+                                        handleVariantStatusToggle(
+                                          article,
+                                          v.id,
+                                          checked
+                                        )
                                       }
-                                      sizeMap={v.bookingMap || {}}
-                                      type="booking"
-                                      compact
+                                      className="scale-90"
                                     />
                                   </div>
                                 </div>

@@ -62,6 +62,7 @@ const normalizeVariants = (variantsRaw) => {
       mrp: Number(v.mrp || 0),
       hsnCode: v.hsnCode || "",
       sizeMap: sizeMap || {},
+      isActive: parseBoolean(v.isActive, true),
     };
   });
 };

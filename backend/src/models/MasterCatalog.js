@@ -26,6 +26,7 @@ const VariantSchema = new mongoose.Schema(
       of: SizeCellSchema,
       default: {},
     },
+    isActive: { type: Boolean, default: true },
   },
   { _id: true }
 );

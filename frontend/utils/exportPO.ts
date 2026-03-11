@@ -177,7 +177,7 @@ export const exportPOToPDF = (
           styles: { halign: "left", fontStyle: "bold", fontSize: 11 },
         },
         {
-          content: isBill ? "Bill" : "Purchase Order",
+          content:"Purchase Order",
           styles: {
             halign: "center",
             fontSize: 14,
@@ -428,7 +428,7 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
 
   rows.push([
     "Vendor Address",
-    vendorAddress || vendor?.address || "",
+    vendorAddress || "",
     "Contact Person",
     vendor?.displayName || "",
     "Phone",
@@ -542,7 +542,7 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
   // Summary Section
   rows.push(["SUMMARY"]);
   rows.push(["Sub Total (₹)", po.subTotal?.toFixed(2) || "—"]);
-  rows.push(["Discount (%)", po.discountPercent || "—"]);
+  rows.push(["Discount (%)", po.discountPercent?.toFixed(1) || "—"]);
   rows.push(["Discount Amount (₹)", po.discountAmount?.toFixed(2) || "—"]);
   rows.push(["Total Tax (₹)", po.totalTax?.toFixed(2) || "—"]);
   rows.push(["TOTAL AMOUNT (₹)", po.total?.toFixed(2) || "—"]);

@@ -751,6 +751,7 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                       type="number"
                       min="0"
                       max="100"
+                      step="any"
                       placeholder="0"
                       className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none"
                       value={formData.discountPercentage || ""}

@@ -106,7 +106,15 @@ const Cart: React.FC<CartProps> = ({
                 >
                   <div className="relative w-24 h-24 shrink-0">
                     <img
-                      src={variant?.images?.[0] || article.imageUrl}
+                      src={(() => {
+                        const colorMedia = (article as any).colorMedia || [];
+                        const variantColor = (variant?.color || "").toLowerCase().trim();
+                        const mediaMatch = colorMedia.find(
+                          (m: any) => (m.color || "").toLowerCase().trim() === variantColor
+                        );
+                        const imgData = mediaMatch?.images?.[0];
+                        return (typeof imgData === "object" ? (imgData as any)?.url : (imgData as string)) || variant?.images?.[0] || article.imageUrl || "";
+                      })()}
                       alt={article.name}
                       className="w-full h-full object-cover rounded-xl border border-slate-200 shadow-sm"
                     />

@@ -44,6 +44,7 @@ import Sidebar from "./components/Layout/Sidebar";
 import { useKoreStore } from "./store";
 import { Toaster, toast } from "sonner";
 import Bill from "./components/Admin/Bill";
+import { distributorOrderService } from "./services/distributorOrderService";
 
 const App: React.FC = () => {
   const store = useKoreStore();
@@ -199,6 +200,31 @@ const App: React.FC = () => {
   }, []);
 
   const [orders, setOrders] = useState<Order[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+
+  // Fetch orders
+  useEffect(() => {
+    if (user) {
+      const fetchOrders = async () => {
+        setLoadingOrders(true);
+        try {
+          if (user.role === UserRole.DISTRIBUTOR) {
+            const data = await distributorOrderService.getOrdersByDistributor(user.id);
+            setOrders(data);
+          } else {
+            // Admins/Managers see all orders
+            const data = await distributorOrderService.getAllOrders();
+            setOrders(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch orders", err);
+        } finally {
+          setLoadingOrders(false);
+        }
+      };
+      fetchOrders();
+    }
+  }, [user]);
 
   // Initialize inventory based on articles
   const [inventory, setInventory] = useState<Inventory[]>(() => {
@@ -411,7 +437,7 @@ const App: React.FC = () => {
     );
   };
 
-  const placeOrder = () => {
+  const placeOrder = async () => {
     if (!user || cart.length === 0) return;
 
     const newOrder: Order = {
@@ -424,6 +450,7 @@ const App: React.FC = () => {
         const article = articles.find((a) => a.id === item.articleId)!;
         return {
           articleId: item.articleId,
+          variantId: item.variantId,
           cartonCount: item.cartonCount,
           pairCount: item.pairCount,
           price: item.price,
@@ -434,32 +461,40 @@ const App: React.FC = () => {
       totalPairs: cart.reduce((sum, i) => sum + i.pairCount, 0),
     };
 
-    setOrders((prev) => [newOrder, ...prev]);
+    const placePromise = async () => {
+      const response = await distributorOrderService.placeOrder(newOrder);
+      setOrders((prev) => [response, ...prev]);
 
-    // reserve stock
-    setInventory((prev) =>
-      prev.map((inv) => {
-        const cartItem = cart.find((ci) => ci.articleId === inv.articleId);
-        if (cartItem) {
-          const newReserved = inv.reservedStock + cartItem.cartonCount;
-          return {
-            ...inv,
-            reservedStock: newReserved,
-            availableStock: inv.actualStock - newReserved,
-          };
-        }
-        return inv;
-      })
-    );
+      // reserve stock
+      setInventory((prev) =>
+        prev.map((inv) => {
+          const cartItem = cart.find((ci) => ci.articleId === inv.articleId);
+          if (cartItem) {
+            const newReserved = inv.reservedStock + cartItem.cartonCount;
+            return {
+              ...inv,
+              reservedStock: newReserved,
+              availableStock: inv.actualStock - newReserved,
+            };
+          }
+          return inv;
+        })
+      );
 
-    setCart([]);
-    setActiveTab("orders");
+      setCart([]);
+      setActiveTab("orders");
+    };
+
+    toast.promise(placePromise(), {
+      loading: "Placing your order...",
+      success: "Order placed successfully!",
+      error: "Failed to place order",
+    });
   };
 
   const updateOrderStatus = (orderId: string, status: OrderStatus) => {
     const updatePromise = async () => {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      await distributorOrderService.updateOrderStatus(orderId, status);
 
       setOrders((prev) =>
         prev.map((o) => {
@@ -664,11 +699,13 @@ const App: React.FC = () => {
               orders={orders}
               updateStatus={updateOrderStatus}
               articles={articles}
+              isLoading={loadingOrders}
             />
           ) : (
             <MyOrders
               orders={orders.filter((o) => o.distributorId === user.id)}
               articles={articles}
+              isLoading={loadingOrders}
             />
           ))}
 

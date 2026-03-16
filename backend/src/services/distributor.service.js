@@ -74,7 +74,11 @@ const sanitizePayload = (body = {}) => {
   );
 
   if (!payload.location && body.billingAddress) {
-    payload.location = String(body.billingAddress).split(",")[0]?.trim() || "";
+    if (typeof body.billingAddress === "object") {
+      payload.location = body.billingAddress.city || body.billingAddress.address1 || "";
+    } else {
+      payload.location = String(body.billingAddress).split(",")[0]?.trim() || "";
+    }
   }
 
   return payload;

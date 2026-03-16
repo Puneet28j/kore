@@ -1,5 +1,18 @@
 const mongoose = require("mongoose");
 
+const AddressSchema = new mongoose.Schema(
+  {
+    attention: { type: String, trim: true, default: "" },
+    country: { type: String, trim: true, default: "" },
+    address1: { type: String, trim: true, default: "" },
+    address2: { type: String, trim: true, default: "" },
+    city: { type: String, trim: true, default: "" },
+    state: { type: String, trim: true, default: "" },
+    pinCode: { type: String, trim: true, default: "" },
+  },
+  { _id: false }
+);
+
 const DistributorSchema = new mongoose.Schema(
   {
     name: { type: String, trim: true, required: true },
@@ -9,8 +22,8 @@ const DistributorSchema = new mongoose.Schema(
     companyName: { type: String, trim: true, required: true },
     gstNumber: { type: String, trim: true, uppercase: true, default: "" },
 
-    billingAddress: { type: String, trim: true, default: "" },
-    shippingAddress: { type: String, trim: true, default: "" },
+    billingAddress: { type: AddressSchema, default: () => ({}) },
+    shippingAddress: { type: AddressSchema, default: () => ({}) },
 
     paymentTerms: { type: String, trim: true, default: "30 days" },
     discountPercentage: { type: Number, min: 0, max: 100, default: 0 },

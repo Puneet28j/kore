@@ -69,6 +69,39 @@ const sanitizePayload = (body = {}) => {
     isActive: parseBoolean(body.isActive, undefined),
   };
 
+  // Ensure addresses are correctly formatted as objects if provided as strings
+  if (body.billingAddress) {
+    if (typeof body.billingAddress === "object") {
+      payload.billingAddress = body.billingAddress;
+    } else if (typeof body.billingAddress === "string") {
+      payload.billingAddress = {
+        attention: "",
+        country: "",
+        address1: body.billingAddress,
+        address2: "",
+        city: "",
+        state: "",
+        pinCode: "",
+      };
+    }
+  }
+
+  if (body.shippingAddress) {
+    if (typeof body.shippingAddress === "object") {
+      payload.shippingAddress = body.shippingAddress;
+    } else if (typeof body.shippingAddress === "string") {
+      payload.shippingAddress = {
+        attention: "",
+        country: "",
+        address1: body.shippingAddress,
+        address2: "",
+        city: "",
+        state: "",
+        pinCode: "",
+      };
+    }
+  }
+
   Object.keys(payload).forEach(
     (k) => payload[k] === undefined && delete payload[k]
   );
@@ -206,6 +239,10 @@ exports.listDistributors = async ({
       { companyName: { $regex: cleanSearch, $options: "i" } },
       { gstNumber: { $regex: cleanSearch, $options: "i" } },
       { location: { $regex: cleanSearch, $options: "i" } },
+      { "billingAddress.city": { $regex: cleanSearch, $options: "i" } },
+      { "billingAddress.state": { $regex: cleanSearch, $options: "i" } },
+      { "billingAddress.address1": { $regex: cleanSearch, $options: "i" } },
+      { "billingAddress.pinCode": { $regex: cleanSearch, $options: "i" } },
     ];
   }
 
@@ -367,7 +404,7 @@ exports.updateDistributor = async (id, body) => {
       }
 
       await User.findByIdAndUpdate(distributor.userId, userPatch, {
-        new: true,
+        returnDocument: 'after',
       });
     }
   }

@@ -25,11 +25,21 @@ interface AdminDashboardProps {
   orders: Order[];
   inventory: Inventory[];
   articles: Article[];
+  updateStatus?: (id: string, status: OrderStatus) => void;
+  loadingOrders?: boolean;
+  lastUpdated?: Date;
 }
 
 const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-const AdminDashboard: React.FC<AdminDashboardProps> = ({ orders, inventory, articles }) => {
+const AdminDashboard: React.FC<AdminDashboardProps> = ({ 
+  orders, 
+  inventory, 
+  articles,
+  updateStatus,
+  loadingOrders,
+  lastUpdated
+}) => {
   const [aiInsights, setAiInsights] = useState<any[]>([]);
   const [loadingInsights, setLoadingInsights] = useState(false);
 

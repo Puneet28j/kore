@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Package, 
   Truck, 
@@ -8,35 +8,63 @@ import {
   Download, 
   Search, 
   Filter,
-  ArrowUpRight,
+  X,
+  User,
   ChevronRight,
-  TrendingUp,
-  X
+  Loader2
 } from 'lucide-react';
 import { Order, OrderStatus, Article } from '../../types';
 import OrderDetail from '../Distributor/OrderDetail';
+import { distributorOrderService } from '../../services/distributorOrderService';
+import Pagination from '../ui/Pagination';
+import { toast } from 'sonner';
 
 interface OrderProcessorProps {
-  orders: Order[];
   articles: Article[];
   updateStatus: (id: string, status: OrderStatus) => void;
   isLoading?: boolean;
+  lastUpdated?: Date;
 }
 
-const OrderProcessor: React.FC<OrderProcessorProps> = ({ orders, articles, updateStatus, isLoading }) => {
+const OrderProcessor: React.FC<OrderProcessorProps> = ({ articles, updateStatus, isLoading: globalLoading, lastUpdated }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<OrderStatus | 'ALL'>('ALL');
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  
+  // Pagination & Server-side State
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [meta, setMeta] = useState<any>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [loading, setLoading] = useState(false);
 
-  // Filtering
-  const filteredOrders = useMemo(() => {
-    return orders.filter(order => {
-      const matchesSearch = order.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                           order.distributorName.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesStatus = statusFilter === 'ALL' || order.status === statusFilter;
-      return matchesSearch && matchesStatus;
-    });
-  }, [orders, searchQuery, statusFilter]);
+  const fetchOrders = useCallback(async (silent = false) => {
+    try {
+      if (!silent) setLoading(true);
+      const res = await distributorOrderService.getAllOrders({
+        page: currentPage,
+        limit: 10,
+        q: searchQuery,
+        status: statusFilter === 'ALL' ? undefined : statusFilter,
+      });
+      setOrders(res.items);
+      setMeta(res.meta);
+    } catch (err) {
+      console.error("Failed to fetch orders", err);
+      toast.error("Failed to load orders");
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [currentPage, searchQuery, statusFilter]);
+
+  // Refetch when dependencies change
+  useEffect(() => {
+    fetchOrders();
+  }, [fetchOrders]);
+
+  // Also refetch when global lastUpdated changes (socket update)
+  useEffect(() => {
+    if (lastUpdated) fetchOrders(true); // Silent update for socket events
+  }, [lastUpdated]);
 
   const selectedOrder = useMemo(() => 
     orders.find(o => o.id === selectedOrderId), 
@@ -53,58 +81,59 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({ orders, articles, updat
     );
   }
 
-  if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mb-4"></div>
-        <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">Loading orders...</p>
-      </div>
-    );
-  }
+  const isAnyLoading = loading || globalLoading;
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      {/* Header & Export */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="space-y-4 animate-in fade-in duration-500 pb-10">
+      {/* Header - Compact */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-black text-slate-900">Purchase Orders</h2>
-          <p className="text-slate-500 font-medium">Manage and process distributor orders</p>
+          <h2 className="text-xl font-bold text-slate-900 tracking-tight">Purchase Orders</h2>
+          <p className="text-slate-400 text-xs font-medium">Manage distributor sales flow</p>
         </div>
-        <button className="flex items-center gap-2 px-6 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-sm">
-          <Download size={18} /> Export Reports
-        </button>
+        <div className="flex items-center gap-3">
+          {lastUpdated && (
+            <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg">
+              <div className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${isAnyLoading ? 'animate-pulse' : ''}`} />
+              <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">
+                Last Synced: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            </div>
+          )}
+          <button className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs text-slate-700 hover:bg-slate-50 transition-all shadow-sm">
+            <Download size={14} /> Export
+          </button>
+        </div>
       </div>
 
-      {/* Filters Section */}
-      <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="relative w-full md:w-96">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+      {/* Filters - Compact */}
+      <div className="bg-white px-4 py-3 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-3 items-center justify-between">
+        <div className="relative w-full md:w-72">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
           <input 
             type="text" 
-            placeholder="Search Order ID or Distributor..." 
+            placeholder="Search #OR-00002 or distributor..." 
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-12 pr-4 py-3 rounded-2xl bg-slate-50 border-none focus:ring-2 focus:ring-indigo-500 transition-all font-medium text-slate-900"
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setCurrentPage(1); // Reset to first page on search
+            }}
+            className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-slate-50 border-none focus:ring-1 focus:ring-indigo-500 transition-all font-medium text-xs text-slate-900"
           />
-          {searchQuery && (
-            <button 
-              onClick={() => setSearchQuery('')}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              <X size={16} />
-            </button>
-          )}
         </div>
 
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 md:pb-0 w-full md:w-auto scrollbar-hide">
-          <Filter className="text-slate-400 mr-2 shrink-0" size={18} />
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 w-full md:w-auto scrollbar-hide">
+          <Filter className="text-slate-300 mr-1 shrink-0" size={14} />
           {(['ALL', ...Object.values(OrderStatus)] as const).map((status) => (
             <button
               key={status}
-              onClick={() => setStatusFilter(status)}
-              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider whitespace-nowrap transition-all border ${
+              onClick={() => {
+                setStatusFilter(status);
+                setCurrentPage(1);
+              }}
+              className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider whitespace-nowrap transition-all border ${
                 statusFilter === status 
-                ? 'bg-slate-900 text-white border-slate-900 shadow-lg' 
+                ? 'bg-slate-900 text-white border-slate-900 shadow-sm' 
                 : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
               }`}
             >
@@ -114,112 +143,174 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({ orders, articles, updat
         </div>
       </div>
 
-      {/* Orders Grid/List */}
-      <div className="grid grid-cols-1 gap-4">
-        {filteredOrders.map(order => (
-          <div 
-            key={order.id} 
-            className="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-slate-200/50 hover:border-indigo-100 transition-all group overflow-hidden"
-          >
-            <div className="p-6 md:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="flex gap-6 items-center flex-1">
-                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 transition-transform group-hover:scale-110 duration-500 bg-slate-100 text-slate-500`}>
-                  <Package size={28} />
-                </div>
-                <div className="flex-1">
-                  <div className="flex flex-wrap items-center gap-3 mb-2">
-                    <h4 className="font-black text-xl text-slate-900">#{order.id}</h4>
-                    <StatusBadge status={order.status} />
-                    <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded-lg font-black uppercase tracking-widest ml-auto md:ml-0">
-                      {order.distributorName}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm font-bold text-slate-400 uppercase tracking-widest">
-                    <span className="flex items-center gap-2 font-medium shrink-0"><Clock size={16} /> {order.date}</span>
-                    <span className="flex items-center gap-2 font-medium shrink-0"><Package size={16} /> {order.totalCartons} Cartons</span>
-                    <span className="text-indigo-600 font-black">₹{order.totalAmount.toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 border-t md:border-t-0 pt-6 md:pt-0">
-                {/* Actions */}
-                <div className="flex gap-2 mr-4">
-                  {order.status === OrderStatus.BOOKED && (
-                    <button 
-                      onClick={() => updateStatus(order.id, OrderStatus.READY_FOR_DISPATCH)}
-                      className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold text-xs hover:bg-indigo-600 hover:text-white transition-all shadow-sm"
-                    >
-                      Process Order
-                    </button>
-                  )}
-                  {order.status === OrderStatus.READY_FOR_DISPATCH && (
-                    <button 
-                      onClick={() => updateStatus(order.id, OrderStatus.DISPATCHED)}
-                      className="px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl font-bold text-xs hover:bg-emerald-600 hover:text-white transition-all shadow-sm"
-                    >
-                      Dispatch Now
-                    </button>
-                  )}
-                </div>
-                
-                <button 
-                  onClick={() => setSelectedOrderId(order.id)}
-                  className="p-4 rounded-2xl bg-slate-50 text-slate-400 hover:bg-indigo-600 hover:text-white transition-all shadow-sm"
-                  title="View Details"
-                >
-                  <Eye size={20} />
-                </button>
-              </div>
-            </div>
-            
-            {/* Peek at items */}
-            <div className="bg-slate-50/30 border-t border-slate-100 px-8 py-4 flex flex-wrap gap-3">
-              {order.items.slice(0, 3).map((item, idx) => {
-                const article = articles.find(a => a.id === item.articleId);
-                return (
-                  <div key={idx} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200 text-[10px] font-bold text-slate-600 shadow-sm">
-                    <span className="text-indigo-600">{item.cartonCount}×</span>
-                    <span className="line-clamp-1 max-w-[150px]">{article?.name || item.articleId}</span>
-                  </div>
-                );
-              })}
-              {order.items.length > 3 && (
-                <div className="flex items-center px-3 py-1.5 text-xs font-black text-indigo-600 italic">
-                  +{order.items.length - 3} more
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-        
-        {filteredOrders.length === 0 && (
-          <div className="bg-white rounded-3xl p-20 border border-dashed border-slate-200 text-center">
-            <Package className="text-slate-200 mx-auto mb-4" size={48} />
-            <h3 className="font-black text-slate-900 border-none">No Matching Orders</h3>
-            <p className="text-slate-500">Try adjusting your filters or search terms.</p>
+      {/* List - Compact */}
+      <div className="relative min-h-[200px]">
+        {loading && !orders.length && (
+          <div className="absolute inset-0 bg-white/50 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-2xl">
+            <Loader2 className="animate-spin text-indigo-600" size={32} />
           </div>
         )}
+
+        <div className="grid grid-cols-1 gap-2">
+          {orders.map(order => (
+            <div 
+              key={order.id} 
+              onClick={() => setSelectedOrderId(order.id)}
+              className="bg-white rounded-xl border border-slate-100 shadow-sm hover:border-indigo-100 transition-all group overflow-hidden cursor-pointer"
+            >
+              <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex gap-4 items-center flex-1">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-slate-50 text-slate-400`}>
+                    <Package size={20} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <h4 className="font-bold text-sm text-slate-900 tracking-tight">#{order.orderNumber || order.id.slice(-6).toUpperCase()}</h4>
+                      <StatusBadge status={order.status} />
+                    </div>
+                    
+                    {/* Interactive Progress Timeline */}
+                    <div className="mb-2 hidden md:block" onClick={(e) => e.stopPropagation()}>
+                      <OrderProgress 
+                        status={order.status} 
+                        onUpdate={(newStatus) => updateStatus(order.id, newStatus)}
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                      <span className="flex items-center gap-1.5"><User size={12} className="text-slate-300" /> {order.distributorName}</span>
+                      <span className="flex items-center gap-1.5"><Clock size={12} /> {order.date}</span>
+                      <span className="text-indigo-600 font-black">₹{order.totalAmount.toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between sm:justify-end gap-3 border-t sm:border-t-0 pt-3 sm:pt-0" onClick={(e) => e.stopPropagation()}>
+                  <div className="md:hidden">
+                    <StatusBadge status={order.status} />
+                  </div>
+                  
+                  <div className="flex gap-2">
+                    {order.status === OrderStatus.BOOKED && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); updateStatus(order.id, OrderStatus.PENDING); }}
+                        className="px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg font-bold text-[10px] uppercase hover:bg-indigo-600 hover:text-white transition-all tracking-wider"
+                      >
+                        Process
+                      </button>
+                    )}
+                    {order.status === OrderStatus.PENDING && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); updateStatus(order.id, OrderStatus.READY_FOR_DISPATCH); }}
+                        className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg font-bold text-[10px] uppercase hover:bg-blue-600 hover:text-white transition-all tracking-wider"
+                      >
+                        Mark Ready
+                      </button>
+                    )}
+                    {order.status === OrderStatus.READY_FOR_DISPATCH && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); updateStatus(order.id, OrderStatus.DISPATCHED); }}
+                        className="px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg font-bold text-[10px] uppercase hover:bg-emerald-600 hover:text-white transition-all tracking-wider"
+                      >
+                        Dispatch
+                      </button>
+                    )}
+                    {order.status === OrderStatus.DISPATCHED && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); updateStatus(order.id, OrderStatus.DELIVERED); }}
+                        className="px-3 py-1.5 bg-slate-900 text-white rounded-lg font-bold text-[10px] uppercase hover:bg-slate-800 transition-all tracking-wider flex items-center gap-1.5"
+                      >
+                        <CheckCircle2 size={12} /> Deliver
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+          
+          {orders.length === 0 && !loading && (
+            <div className="bg-white rounded-2xl p-12 border border-dashed border-slate-200 text-center">
+              <Package className="text-slate-200 mx-auto mb-3" size={32} />
+              <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">No matching orders</p>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Pagination */}
+      {meta && meta.totalPages > 1 && (
+        <Pagination
+          currentPage={currentPage}
+          totalPages={meta.totalPages}
+          onPageChange={setCurrentPage}
+          totalItems={meta.total}
+          itemsPerPage={meta.limit}
+        />
+      )}
     </div>
   );
 };
 
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   const config = {
-    [OrderStatus.BOOKED]: { color: 'bg-indigo-50 text-indigo-600', icon: <Clock size={12} /> },
-    [OrderStatus.PENDING]: { color: 'bg-amber-50 text-amber-600', icon: <Clock size={12} /> },
-    [OrderStatus.READY_FOR_DISPATCH]: { color: 'bg-blue-50 text-blue-600', icon: <Package size={12} /> },
-    [OrderStatus.DISPATCHED]: { color: 'bg-emerald-50 text-emerald-600', icon: <Truck size={12} /> },
-    [OrderStatus.DELIVERED]: { color: 'bg-slate-100 text-slate-600', icon: <CheckCircle2 size={12} /> },
+    [OrderStatus.BOOKED]: { color: 'bg-indigo-50 text-indigo-500 border-indigo-100' },
+    [OrderStatus.PENDING]: { color: 'bg-amber-50 text-amber-500 border-amber-100' },
+    [OrderStatus.READY_FOR_DISPATCH]: { color: 'bg-blue-50 text-blue-500 border-blue-100' },
+    [OrderStatus.DISPATCHED]: { color: 'bg-emerald-50 text-emerald-500 border-emerald-100' },
+    [OrderStatus.DELIVERED]: { color: 'bg-slate-50 text-slate-500 border-slate-100' },
   };
 
-  const { color, icon } = config[status];
+  const { color } = config[status];
   return (
-    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border border-current opacity-80 ${color}`}>
-      {icon}
+    <span className={`inline-flex px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider border ${color}`}>
       {status.replace(/_/g, ' ')}
     </span>
+  );
+};
+
+const OrderProgress: React.FC<{ 
+  status: OrderStatus;
+  onUpdate?: (status: OrderStatus) => void;
+}> = ({ status, onUpdate }) => {
+  const stages = [
+    OrderStatus.BOOKED,
+    OrderStatus.PENDING,
+    OrderStatus.READY_FOR_DISPATCH,
+    OrderStatus.DISPATCHED,
+    OrderStatus.DELIVERED
+  ];
+  
+  const currentIndex = stages.indexOf(status);
+  
+  return (
+    <div className="flex items-center gap-1.5 w-full max-w-[320px]">
+      {stages.map((s, idx) => {
+        const isCompleted = idx <= currentIndex;
+        const isActive = idx === currentIndex;
+        const isNext = idx === currentIndex + 1;
+        
+        return (
+          <React.Fragment key={s}>
+            <button
+              onClick={() => onUpdate && onUpdate(s)}
+              disabled={!onUpdate || idx <= currentIndex}
+              className={`h-1.5 rounded-full flex-1 transition-all duration-300 relative group/step ${
+                isCompleted ? 'bg-indigo-600' : 'bg-slate-100 hover:bg-slate-200'
+              } ${isActive ? 'ring-2 ring-indigo-500/20' : ''} ${isNext ? 'ring-1 ring-indigo-200 ring-offset-1' : ''}`}
+            >
+              {/* Tooltip */}
+              <span className="absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[8px] font-black uppercase px-2 py-1 rounded opacity-0 group-hover/step:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
+                {s.replace(/_/g, ' ')}
+              </span>
+            </button>
+            {idx < stages.length - 1 && (
+              <div className={`w-0.5 h-0.5 rounded-full ${idx < currentIndex ? 'bg-indigo-600' : 'bg-slate-200'}`} />
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
   );
 };
 

@@ -215,19 +215,23 @@ const AddressForm: React.FC<{
 };
 
 const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
-  // --- Draft Persistence ---
   const savedDraftStr = localStorage.getItem("kore_distributor_draft");
   const savedDraft = savedDraftStr ? JSON.parse(savedDraftStr) : null;
 
-  const [view, setView] = useState<ViewState>(savedDraft?.view || "LIST");
+  // Instead of always restoring the view, if the saved view is DETAILS, we default back to LIST.
+  // We only want to restore CREATE view (form drafts).
+  const initialView = savedDraft?.view === "CREATE" ? "CREATE" : "LIST";
+
+  const [view, setView] = useState<ViewState>(initialView);
   const [distributors, setDistributors] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [creatingLoading, setCreatingLoading] = useState(false);
 
+  // If restoring CREATE view, we can restore the selected distributor. Otherwise, clear it.
   const [selectedDistributor, setSelectedDistributor] = useState<User | null>(
-    savedDraft?.selectedDistributor || null
+    initialView === "CREATE" ? (savedDraft?.selectedDistributor || null) : null
   );
 
   // confirmation helper

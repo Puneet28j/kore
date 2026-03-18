@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { io } from "socket.io-client";
 import {
   ShoppingBag,
   Package,
@@ -26,6 +27,7 @@ import BookingInventory from "./components/Admin/BookingInventory";
 import OrderProcessor from "./components/Admin/OrderProcessor";
 import CatalogueManager from "./components/Admin/CatalogueManager";
 import Shop from "./components/Distributor/Shop";
+import Wishlist from "./components/Distributor/Wishlist";
 import MyOrders from "./components/Distributor/MyOrders";
 import Cart from "./components/Distributor/Cart";
 import Auth from "./components/Auth";
@@ -201,29 +203,59 @@ const App: React.FC = () => {
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
-  // Fetch orders
+  // Fetch orders with socket.io for real-time updates
   useEffect(() => {
-    if (user) {
-      const fetchOrders = async () => {
-        setLoadingOrders(true);
-        try {
-          if (user.role === UserRole.DISTRIBUTOR) {
-            const data = await distributorOrderService.getOrdersByDistributor(user.id);
-            setOrders(data);
-          } else {
-            // Admins/Managers see all orders
-            const data = await distributorOrderService.getAllOrders();
-            setOrders(data);
-          }
-        } catch (err) {
-          console.error("Failed to fetch orders", err);
-        } finally {
-          setLoadingOrders(false);
+    if (!user) return;
+
+    const fetchOrders = async (silent = false) => {
+      if (!silent) setLoadingOrders(true);
+      try {
+        let items: Order[] = [];
+        if (user.role === UserRole.DISTRIBUTOR) {
+          const res = await distributorOrderService.getOrdersByDistributor(user.id, { limit: 1000 });
+          items = res.items;
+        } else {
+          const res = await distributorOrderService.getAllOrders({ limit: 1000 });
+          items = res.items;
         }
-      };
-      fetchOrders();
-    }
+        setOrders(items);
+        setLastUpdated(new Date());
+      } catch (err) {
+        console.error("Failed to fetch orders", err);
+      } finally {
+        if (!silent) setLoadingOrders(false);
+      }
+    };
+
+    // Initial fetch
+    fetchOrders();
+
+    // Socket.io connection
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5005/api";
+    const socketBase = API_BASE_URL.replace("/api", "");
+    const socket = io(socketBase);
+
+    socket.on("connect", () => {
+      console.log("🔌 Connected to socket server");
+    });
+
+    socket.on("orderUpdated", (data) => {
+      console.log("📦 Order update received:", data);
+      
+      // If the distributor only sees their own orders, check the ID
+      if (user.role === UserRole.DISTRIBUTOR && data.distributorId !== user.id) {
+        return;
+      }
+
+      // Re-fetch to ensure data consistency and UI sync
+      fetchOrders(true);
+    });
+
+    return () => {
+      socket.disconnect();
+    };
   }, [user]);
 
   // Initialize inventory based on articles
@@ -440,30 +472,29 @@ const App: React.FC = () => {
   const placeOrder = async () => {
     if (!user || cart.length === 0) return;
 
-    const newOrder: Order = {
-      id: `ORD-${Date.now().toString().slice(-6)}`,
+    const payload: Partial<Order> = {
       distributorId: user.id,
       distributorName: user.name,
       date: new Date().toISOString().split("T")[0],
       status: OrderStatus.BOOKED,
-      items: cart.map((item) => {
-        const article = articles.find((a) => a.id === item.articleId)!;
-        return {
-          articleId: item.articleId,
-          variantId: item.variantId,
-          cartonCount: item.cartonCount,
-          pairCount: item.pairCount,
-          price: item.price,
-        };
-      }),
+      items: cart.map((item) => ({
+        articleId: item.articleId,
+        variantId: item.variantId,
+        sizeQuantities: item.sizeQuantities,
+        cartonCount: item.cartonCount,
+        pairCount: item.pairCount,
+        price: item.price,
+      })),
       totalAmount: cartTotal,
       totalCartons: cart.reduce((sum, i) => sum + i.cartonCount, 0),
       totalPairs: cart.reduce((sum, i) => sum + i.pairCount, 0),
     };
 
     const placePromise = async () => {
-      const response = await distributorOrderService.placeOrder(newOrder);
-      setOrders((prev) => [response, ...prev]);
+      const response = await distributorOrderService.placeOrder(payload);
+      // Map _id to id if necessary
+      const newOrder = { ...response, id: (response as any)._id || response.id };
+      setOrders((prev) => [newOrder, ...prev]);
 
       // reserve stock
       setInventory((prev) =>
@@ -494,11 +525,11 @@ const App: React.FC = () => {
 
   const updateOrderStatus = (orderId: string, status: OrderStatus) => {
     const updatePromise = async () => {
-      await distributorOrderService.updateOrderStatus(orderId, status);
+      const updatedOrder = await distributorOrderService.updateOrderStatus(orderId, status);
 
       setOrders((prev) =>
         prev.map((o) => {
-          if (o.id === orderId) {
+          if (o.id === orderId || (o as any)._id === orderId) {
             // dispatch: deduct actual + release reserved (only once)
             if (
               status === OrderStatus.DISPATCHED &&
@@ -523,7 +554,7 @@ const App: React.FC = () => {
                 })
               );
             }
-            return { ...o, status };
+            return updatedOrder || { ...o, status };
           }
           return o;
         })
@@ -588,6 +619,9 @@ const App: React.FC = () => {
               orders={orders}
               inventory={inventory}
               articles={articles}
+              updateStatus={updateOrderStatus}
+              loadingOrders={loadingOrders}
+              lastUpdated={lastUpdated}
             />
           ) : (
             <DistributorDashboard
@@ -696,16 +730,17 @@ const App: React.FC = () => {
         {activeTab === "orders" &&
           (user.role !== UserRole.DISTRIBUTOR ? (
             <OrderProcessor
-              orders={orders}
               updateStatus={updateOrderStatus}
               articles={articles}
               isLoading={loadingOrders}
+              lastUpdated={lastUpdated}
             />
           ) : (
             <MyOrders
-              orders={orders.filter((o) => o.distributorId === user.id)}
+              userId={user.id}
               articles={articles}
               isLoading={loadingOrders}
+              lastUpdated={lastUpdated}
             />
           ))}
 
@@ -718,6 +753,10 @@ const App: React.FC = () => {
             removeFromCart={removeFromCart}
             goToCart={() => setActiveTab("cart")}
           />
+        )}
+
+        {activeTab === "wishlist" && user.role === UserRole.DISTRIBUTOR && (
+          <Wishlist articles={articles} />
         )}
 
         {activeTab === "cart" && user.role === UserRole.DISTRIBUTOR && (

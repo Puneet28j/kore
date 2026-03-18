@@ -1,40 +1,17 @@
+
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import {
-  ShoppingCart,
-  Plus,
-  Minus,
+import { 
+  Package, 
+  Clock, 
   Info,
+  Star,
   Search,
-  Filter,
-  ArrowRight,
-  Package,
+  Filter
 } from "lucide-react";
 import { Article, Inventory, Variant } from "../../types";
-import { toast } from "sonner";
 import { getImageUrl } from "../../utils/imageUtils";
 
-// Props for Shop component
-interface ShopProps {
-  articles: Article[];
-  inventory: Inventory[];
-  cart: {
-    articleId: string;
-    variantId?: string;
-    sizeQuantities?: Record<string, number>;
-    cartonCount: number;
-    pairCount: number;
-    price: number;
-  }[];
-  addToCart: (
-    articleId: string,
-    variantId: string | undefined,
-    sizeQuantities: Record<string, number>
-  ) => void;
-  removeFromCart: (articleId: string, variantId?: string) => void;
-  goToCart: () => void;
-}
-
-// Grouping unit for the shop
+// Grouping unit for the wishlist
 interface ColorGroup {
   article: Article;
   color: string;
@@ -65,13 +42,7 @@ const colorToHex = (color: string): string => {
   return map[color.toLowerCase()] || "#cbd5e1";
 };
 
-// Article card component
-const ArticleCard: React.FC<{
-  group: ColorGroup;
-  inv?: Inventory;
-  inCartPairs: number;
-  addToCart: ShopProps["addToCart"];
-}> = ({ group, inv, inCartPairs, addToCart }) => {
+const WishlistCard: React.FC<{ group: ColorGroup }> = ({ group }) => {
   const { article, color, variants } = group;
 
   // Selected variant ID (single selection)
@@ -79,19 +50,13 @@ const ArticleCard: React.FC<{
     variants.length > 0 ? variants[0].id : ""
   );
 
-  // Carton multiplier
-  const [cartonCount, setCartonCount] = useState(1);
-
   const selectedVariant = variants.find((v) => v.id === selectedVariantId);
-
-  // Calculate total pairs and breakdown for the selection
   const baseBreakdown = selectedVariant?.sizeQuantities || {};
 
   const totalPairsPerCarton = Object.values(baseBreakdown).reduce(
     (a, b) => a + (Number(b) || 0),
     0
   );
-  const totalPairs = totalPairsPerCarton * cartonCount;
 
   // priority for images: colorMedia (match by color) > variant specific images > article primary/secondary images
   const images = useMemo(() => {
@@ -167,15 +132,12 @@ const ArticleCard: React.FC<{
   }, [transitionEnabled]);
 
   const carouselRef = useRef<HTMLDivElement>(null);
-
-  // pointer-based swipe detection covers both touch and mouse input
   const [pointerStart, setPointerStart] = useState<number | null>(null);
 
   const goNext = () => setCurrentImageIndex((prev) => prev + 1);
   const goPrev = () => setCurrentImageIndex((prev) => prev - 1);
 
   const handlePointerDown = (e: React.PointerEvent) => {
-    // start tracking the horizontal position
     setPointerStart(e.clientX);
     carouselRef.current?.setPointerCapture(e.pointerId);
   };
@@ -195,39 +157,20 @@ const ArticleCard: React.FC<{
 
   const handlePointerUp = (e: React.PointerEvent) => {
     if (pointerStart === null) return;
-
     const distance = pointerStart - e.clientX;
     if (distance > 50) goNext();
     if (distance < -50) goPrev();
-
     setPointerStart(null);
     carouselRef.current?.releasePointerCapture(e.pointerId);
   };
 
-  // optional: detect cancel events to clear state
   const handlePointerCancel = (e: React.PointerEvent) => {
     setPointerStart(null);
     carouselRef.current?.releasePointerCapture(e.pointerId);
   };
 
-  const handleAdd = () => {
-    if (!selectedVariant || totalPairs === 0) return;
-
-    // Combine all size quantities scaled by cartons
-    const finalSizeQty: Record<string, number> = {};
-    Object.entries(baseBreakdown).forEach(([sz, qty]) => {
-      finalSizeQty[sz] = (Number(qty) || 0) * cartonCount;
-    });
-
-    // The current addToCart signature takes a single variantId. 
-    addToCart(article.id, selectedVariant.id, finalSizeQty);
-
-    setCartonCount(1);
-    toast.success(`${article.name} (${color}) added to cart`);
-  };
-
   return (
-    <div className="bg-white rounded-3xl overflow-hidden border border-slate-200 shadow-sm group hover:shadow-xl hover:border-indigo-200 transition-all duration-300">
+    <div className="bg-white rounded-3xl overflow-hidden border border-slate-200 shadow-sm group hover:shadow-xl hover:border-amber-200 transition-all duration-300">
       <div
         ref={carouselRef}
         className="relative aspect-square overflow-hidden"
@@ -250,13 +193,12 @@ const ArticleCard: React.FC<{
               src={img}
               alt={`${article.name} ${idx + 1}`}
               loading="lazy"
-              decoding="async"
               className="w-full h-full object-cover shrink-0"
             />
           ))}
         </div>
 
-        {/* Color Bar (Showing all available colors for this article) */}
+        {/* Color Bar */}
         <div className="absolute bottom-0 left-0 right-0 h-1.5 z-10 flex">
           {Array.from(new Set((article.variants || []).map(v => v.color))).map((c, i) => (
             <div 
@@ -269,7 +211,11 @@ const ArticleCard: React.FC<{
         </div>
 
         <div className="absolute top-4 left-4 flex flex-col gap-2">
-          <div className="bg-white/95 backdrop-blur shadow-sm px-3 py-1.5 rounded-full text-[10px] font-black text-indigo-600 uppercase tracking-widest border border-indigo-50">
+          <div className="bg-white/95 backdrop-blur shadow-sm px-3 py-1.5 rounded-full text-[10px] font-black text-amber-600 uppercase tracking-widest border border-amber-50 flex items-center gap-1.5">
+            <Star size={10} fill="currentColor" />
+            Wishlist
+          </div>
+          <div className="bg-white/95 backdrop-blur shadow-sm px-3 py-1.5 rounded-full text-[10px] font-black text-slate-600 uppercase tracking-widest border border-slate-100 italic">
             {article.category}
           </div>
         </div>
@@ -277,7 +223,7 @@ const ArticleCard: React.FC<{
 
       <div className="p-5">
         <div className="mb-4">
-          <h4 className="font-extrabold text-slate-900 group-hover:text-indigo-600 transition-all">
+          <h4 className="font-extrabold text-slate-900 group-hover:text-amber-600 transition-all">
             {article.name} <span className="text-slate-400 font-medium">({color})</span>
           </h4>
           <p className="text-[10px] text-slate-400 font-mono mt-0.5 tracking-wider uppercase">
@@ -291,22 +237,22 @@ const ArticleCard: React.FC<{
               ₹{article.pricePerPair.toLocaleString()}
             </p>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              MRP: ₹{article.mrp || article.pricePerPair * 2}
+              Expected MRP: ₹{article.mrp || article.pricePerPair * 2}
             </p>
           </div>
-          <div className="bg-indigo-50 p-2 rounded-xl">
-             <Package size={16} className="text-indigo-600" />
+          <div className="bg-amber-50 p-2 rounded-xl">
+             <Clock size={16} className="text-amber-600" />
           </div>
         </div>
 
         <div className="mb-4 space-y-2">
           <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider ml-1">
-            Size Range
+            Expected Size Range
           </label>
           <select
             value={selectedVariantId}
             onChange={(e) => setSelectedVariantId(e.target.value)}
-            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all font-bold text-slate-700 text-xs cursor-pointer shadow-sm"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all font-bold text-slate-700 text-xs cursor-pointer shadow-sm"
           >
             {variants.map((v) => (
               <option key={v.id} value={v.id}>
@@ -320,164 +266,118 @@ const ArticleCard: React.FC<{
         {selectedVariant && (
           <div className="mb-6 bg-slate-50/80 rounded-2xl p-3 border border-slate-100">
             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2 px-1">
-              Assortment Breakdown
+              Expected Assortment
             </p>
             <div className="flex flex-wrap gap-2">
               {Object.entries(baseBreakdown).map(([sz, qty]) => (
                 <div key={sz} className="flex flex-col items-center bg-white border border-slate-200 rounded-lg px-2 py-1 min-w-[32px]">
-                   <span className="text-[10px] font-black text-indigo-600">{sz}</span>
+                   <span className="text-[10px] font-black text-amber-600">{sz}</span>
                    <span className="text-[10px] font-bold text-slate-400">{qty}</span>
                 </div>
               ))}
             </div>
-            <div className="mt-2 pt-2 border-t border-slate-200/50 px-1 flex justify-between items-center">
-               <span className="text-[10px] font-bold text-slate-500 uppercase">Carton Total</span>
-               <span className="text-xs font-black text-slate-900">{totalPairsPerCarton} Pairs</span>
-            </div>
           </div>
         )}
 
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex flex-col">
-             <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Cartons</span>
-             <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 shadow-inner">
-                <button 
-                  onClick={() => setCartonCount(prev => Math.max(1, prev - 1))}
-                  className="p-1.5 hover:bg-white rounded-lg text-slate-600 transition-all disabled:opacity-30"
-                  disabled={cartonCount <= 1}
-                >
-                  <Minus size={14} />
-                </button>
-                <span className="px-3 font-black text-slate-900 min-w-[32px] text-center">{cartonCount}</span>
-                <button 
-                  onClick={() => setCartonCount(prev => prev + 1)}
-                  className="p-1.5 hover:bg-white rounded-lg text-slate-600 transition-all"
-                >
-                  <Plus size={14} />
-                </button>
-             </div>
+        <div className="pt-4 border-t border-slate-100">
+          <div className="bg-amber-50/50 rounded-2xl p-4 border border-amber-100 flex items-center gap-3">
+            <Clock size={16} className="text-amber-600 shrink-0" />
+            <div>
+              <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest leading-none mb-1">
+                Available Till
+              </p>
+              <p className="text-sm font-black text-slate-900 tracking-tight">
+                {article.expectedDate ? new Date(article.expectedDate).toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'long',
+                  year: 'numeric'
+                }) : "Coming Soon"}
+              </p>
+            </div>
           </div>
-
-          <button
-            onClick={handleAdd}
-            disabled={totalPairs === 0}
-            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-2xl py-3.5 px-4 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
-          >
-            <ShoppingCart size={16} />
-            Book {totalPairs} Pairs
-          </button>
         </div>
       </div>
     </div>
   );
 };
 
-const Shop: React.FC<ShopProps> = ({
-  articles,
-  inventory,
-  cart,
-  addToCart,
-  removeFromCart,
-  goToCart,
-}) => {
-  const cartItemsCount = cart.reduce((sum, item) => sum + item.pairCount, 0);
+const Wishlist: React.FC<{ articles: Article[] }> = ({ articles }) => {
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const colorGroups = useMemo(() => {
+    const wishlistArticles = articles.filter(a => a.status === "WISHLIST");
+    
+    return wishlistArticles.flatMap((article) => {
+      const variants = article.variants || [];
+      const groups: Record<string, Variant[]> = {};
+      variants.forEach((v) => {
+        if (!groups[v.color]) groups[v.color] = [];
+        groups[v.color].push(v);
+      });
+
+      return Object.entries(groups).map(([color, colorVariants]) => ({
+        article,
+        color,
+        variants: colorVariants,
+      }));
+    }).filter(group => 
+      group.article.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      group.article.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      group.color.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [articles, searchQuery]);
+
+  if (colorGroups.length === 0 && searchQuery === "") {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 px-4 bg-white rounded-3xl border border-slate-200 shadow-sm">
+        <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center mb-6">
+          <Star size={40} className="text-slate-200" />
+        </div>
+        <h3 className="text-xl font-bold text-slate-900 mb-2">
+          Your wishlist is empty
+        </h3>
+        <p className="text-slate-500 max-w-xs text-center text-sm">
+          Upcoming articles will appear here. Stay tuned for new launches!
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-8 pb-20">
-      {/* Search and Filters Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
+    <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+      <div className="bg-white p-4 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
+        <div className="flex items-center gap-4 flex-1">
+          <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center shrink-0">
+            <Star className="text-amber-600" size={20} />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-slate-900 leading-tight">Wishlist</h2>
+            <p className="text-slate-500 text-xs">Upcoming articles & pre-launch preview.</p>
+          </div>
+        </div>
+
         <div className="relative w-full md:max-w-md">
-          <Search
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
-            size={18}
-          />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
           <input
             type="text"
-            placeholder="Search by article name or SKU..."
-            className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
+            placeholder="Search wishlist..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all text-sm font-medium"
           />
         </div>
-
-        <div className="flex gap-2 w-full md:w-auto">
-          <button className="flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-3 border border-slate-200 rounded-xl font-bold text-slate-700 hover:bg-slate-50 transition-all">
-            <Filter size={18} />
-            Filter
-          </button>
-
-          {cartItemsCount > 0 && (
-            <button
-              onClick={goToCart}
-              className="flex-1 md:flex-none bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all"
-            >
-              <ShoppingCart size={18} />
-              Checkout ({cartItemsCount})
-            </button>
-          )}
-        </div>
       </div>
 
-      {/* Article Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-        {articles
-          .filter((a) => a.status !== "WISHLIST")
-          .flatMap((article) => {
-            const variants = article.variants || [];
-            // Group variants by color
-            const colorGroups: Record<string, Variant[]> = {};
-            variants.forEach((v) => {
-              if (!colorGroups[v.color]) colorGroups[v.color] = [];
-              colorGroups[v.color].push(v);
-            });
-
-            return Object.entries(colorGroups).map(([color, colorVariants]) => {
-              const group: ColorGroup = {
-                article,
-                color,
-                variants: colorVariants,
-              };
-
-              const inv = inventory.find((i) => i.articleId === article.id);
-
-              const pairsInCart = cart
-                .filter((c) => c.articleId === article.id)
-                .reduce((sum, i) => sum + i.pairCount, 0);
-
-              return (
-                <ArticleCard
-                  key={`${article.id}-${color}`}
-                  group={group}
-                  inv={inv}
-                  inCartPairs={pairsInCart}
-                  addToCart={addToCart}
-                />
-              );
-            });
-          })}
+        {colorGroups.map((group) => (
+          <WishlistCard 
+            key={`${group.article.id}-${group.color}`} 
+            group={group} 
+          />
+        ))}
       </div>
-
-      {/* Persistent Cart Bar (Mobile) */}
-      {cartItemsCount > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md z-30 sm:hidden">
-          <button
-            onClick={goToCart}
-            className="w-full bg-indigo-600 text-white p-5 rounded-2xl shadow-2xl flex items-center justify-between font-bold"
-          >
-            <div className="flex items-center gap-3">
-              <ShoppingCart size={24} />
-              <span>View Booking Cart</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="bg-white text-indigo-600 px-3 py-1 rounded-lg text-sm">
-                {cartItemsCount}
-              </span>
-              <ArrowRight size={20} />
-            </div>
-          </button>
-        </div>
-      )}
     </div>
   );
 };
 
-export default Shop;
+export default Wishlist;

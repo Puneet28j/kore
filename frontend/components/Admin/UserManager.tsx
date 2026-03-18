@@ -29,9 +29,8 @@ const UserManager: React.FC = () => {
     ? JSON.parse(savedUserDraftStr)
     : null;
 
-  const [showModal, setShowModal] = useState(
-    savedUserDraft?.showModal || false
-  );
+  // Do not restore modal state to prevent sticky modals when changing tabs
+  const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(
     savedUserDraft?.editingUser || null
   );

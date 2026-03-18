@@ -665,9 +665,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
   const savedDraft = savedDraftStr ? JSON.parse(savedDraftStr) : null;
 
   // ── UI State ──
-  const [view, setView] = useState<"list" | "form">(
-    savedDraft ? "form" : "list"
-  );
+  // Do not restore "form" view by default so navigating to this tab always shows the list
+  const [view, setView] = useState<"list" | "form">("list");
   const [searchTerm, setSearchTerm] = useState("");
   const [editingPOId, setEditingPOId] = useState<string | null>(
     savedDraft?.editingPOId || null

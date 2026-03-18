@@ -127,6 +127,7 @@ export interface OrderItem {
 
 export interface Order {
   id: string;
+  orderNumber?: string;
   distributorId: string;
   distributorName: string;
   date: string;

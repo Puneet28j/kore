@@ -179,7 +179,7 @@ exports.updateUser = async (actorUserId, targetUserId, { name, email, role, isAc
   }
 
   const updated = await User.findByIdAndUpdate(targetUserId, update, {
-    new: true,
+    returnDocument: 'after',
     runValidators: true,
   });
 
@@ -261,7 +261,7 @@ exports.updateMe = async (userId, { name, email }) => {
   }
 
   const user = await User.findByIdAndUpdate(userId, update, {
-    new: true,
+    returnDocument: 'after',
     runValidators: true,
   });
 

@@ -27,6 +27,7 @@ import {
   Receipt,
   Shield,
   User,
+  Star,
 } from "lucide-react";
 
 import { type User as Usertype, UserRole } from "../../types";
@@ -390,6 +391,13 @@ const Sidebar: React.FC<SidebarProps> = ({
             ) : (
               /* Distributor menus */
               <>
+                <NavItem
+                  icon={<Star size={20} />}
+                  label="Wishlist"
+                  active={activeTab === "wishlist"}
+                  onClick={() => go("wishlist")}
+                  isCollapsed={isCollapsed}
+                />
                 <NavItem
                   icon={<BookOpen size={20} />}
                   label="Catalogue"

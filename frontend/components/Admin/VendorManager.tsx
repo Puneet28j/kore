@@ -132,7 +132,8 @@ const VendorManager: React.FC = () => {
   const savedDraft = savedDraftStr ? JSON.parse(savedDraftStr) : null;
 
   // ── UI state ──
-  const [view, setView] = useState<"list" | "form">(savedDraft?.view || "list");
+  // Do not restore the 'view' state from draft to prevent staying in the form/details when switching tabs
+  const [view, setView] = useState<"list" | "form">("list");
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(
     savedDraft?.editingVendor || null
   );

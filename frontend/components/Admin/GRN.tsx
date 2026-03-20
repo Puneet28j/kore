@@ -51,13 +51,8 @@ type GRNHistoryItem = {
 };
 
 // Track scan state per size across all items
-type ScanState = Record<
-  string, // itemName
-  Record<
-    string, // size
-    boolean[] // array of booleans per box (scanned or not)
-  >
->;
+type CartonScan = Record<string, number>; // size -> scanned count
+type ScanState = Record<string, CartonScan[]>; // itemName -> array of cartons
 
 /* ═══════════════════ Helpers ═══════════════════ */
 
@@ -104,7 +99,7 @@ const GRN: React.FC = () => {
 
   /* ── Step 3: Item receiving ── */
   const [selectedItemName, setSelectedItemName] = useState("");
-  const [selectedSize, setSelectedSize] = useState("");
+  const [currentCartonIdx, setCurrentCartonIdx] = useState(0);
   const [scanState, setScanState] = useState<ScanState>({});
   const [scanInput, setScanInput] = useState("");
   const scanInputRef = useRef<HTMLInputElement>(null);
@@ -155,12 +150,11 @@ const GRN: React.FC = () => {
         if (data) {
           const state: ScanState = {};
           data.items.forEach((item) => {
-            state[item.itemName] = {};
-            Object.entries(item.sizeMap).forEach(([size, sizeData]) => {
-              state[item.itemName][size] = Array(sizeData.qty).fill(false);
-            });
+            // Create an array of cartons, each with an empty scan count map
+            state[item.itemName] = Array.from({ length: item.cartonCount || 1 }, () => ({}));
           });
           setScanState(state);
+          setCurrentCartonIdx(0);
         }
       })
       .catch(() => {
@@ -183,52 +177,83 @@ const GRN: React.FC = () => {
     );
   }, [selectedItem]);
 
-  const sizeData = useMemo(() => {
-    if (!selectedItem || !selectedSize) return null;
-    return selectedItem.sizeMap[selectedSize] || null;
-  }, [selectedItem, selectedSize]);
+  const currentCartonScan = useMemo(() => {
+    if (!selectedItem || !scanState[selectedItemName]) return null;
+    return scanState[selectedItemName][currentCartonIdx] || null;
+  }, [selectedItem, selectedItemName, scanState, currentCartonIdx]);
 
   const boxes = useMemo(() => {
-    if (!selectedItem || !selectedSize || !scanState[selectedItemName])
-      return [];
-    return scanState[selectedItemName][selectedSize] || [];
-  }, [selectedItem, selectedSize, scanState, selectedItemName]);
+    if (!selectedItem || !currentCartonScan) return [];
+    // Create a virtual array of 24 slots for the current carton
+    // We fill them based on the scanned counts in currentCartonScan
+    const slots: { size: string; isScanned: boolean; sku: string }[] = [];
+    
+    // Sort sizes to be consistent
+    const sortedSizes = Object.keys(selectedItem.sizeMap).sort((a,b) => Number(a) - Number(b));
+    
+    sortedSizes.forEach(sz => {
+      const needed = selectedItem.sizeMap[sz].qty;
+      const scanned = currentCartonScan[sz] || 0;
+      const sku = selectedItem.sizeMap[sz].sku;
+      
+      for(let i=0; i<needed; i++) {
+        slots.push({
+          size: sz,
+          isScanned: i < scanned,
+          sku: sku
+        });
+      }
+    });
 
-  // Count scanned boxes for current size
-  const scannedCount = boxes.filter(Boolean).length;
-  const totalBoxes = boxes.length;
+    return slots;
+  }, [selectedItem, currentCartonScan]);
 
-  // Overall progress
+  // Count scanned boxes for current carton
+  const scannedCount = boxes.filter(b => b.isScanned).length;
+  const totalBoxes = boxes.length; // Should be 24
+
+  // Overall progress (total pairs across all cartons of all items)
   const overallProgress = useMemo(() => {
-    let totalBoxesAll = 0;
+    let totalPairsAll = 0;
     let scannedAll = 0;
-    Object.values(scanState).forEach((sizes) => {
-      Object.values(sizes).forEach((boxArr) => {
-        totalBoxesAll += boxArr.length;
-        scannedAll += boxArr.filter(Boolean).length;
+
+    poDetail?.items.forEach((item) => {
+      const perCartonTotal = Object.values(item.sizeMap).reduce((s, d) => s + (d.qty || 0), 0);
+      totalPairsAll += perCartonTotal * (item.cartonCount || 1);
+      
+      const itemScans = scanState[item.itemName] || [];
+      itemScans.forEach((carton) => {
+        scannedAll += Object.values(carton).reduce((s, q) => s + q, 0);
       });
     });
-    return { total: totalBoxesAll, scanned: scannedAll };
-  }, [scanState]);
+
+    return { total: totalPairsAll, scanned: scannedAll };
+  }, [poDetail, scanState]);
 
   // Item-level progress
   const getItemProgress = (itemName: string) => {
-    const sizes = scanState[itemName];
-    if (!sizes) return { total: 0, scanned: 0 };
-    let total = 0,
-      scanned = 0;
-    Object.values(sizes).forEach((arr) => {
-      total += arr.length;
-      scanned += arr.filter(Boolean).length;
+    const item = poDetail?.items.find(i => i.itemName === itemName);
+    const cartons = scanState[itemName];
+    if (!item || !cartons) return { total: 0, scanned: 0 };
+    
+    const perCartonTotal = Object.values(item.sizeMap).reduce((s, d) => s + (d.qty || 0), 0);
+    const total = perCartonTotal * (item.cartonCount || 1);
+    let scanned = 0;
+    cartons.forEach((c) => {
+      scanned += Object.values(c).reduce((s, q) => s + q, 0);
     });
     return { total, scanned };
   };
 
-  // Size-level progress for an item
-  const getSizeProgress = (itemName: string, size: string) => {
-    const arr = scanState[itemName]?.[size];
-    if (!arr) return { total: 0, scanned: 0 };
-    return { total: arr.length, scanned: arr.filter(Boolean).length };
+  // Carton-level progress
+  const getCartonProgress = (itemName: string, cartonIdx: number) => {
+    const item = poDetail?.items.find(i => i.itemName === itemName);
+    const carton = scanState[itemName]?.[cartonIdx];
+    if (!item || !carton) return { total: 0, scanned: 0 };
+    
+    const total = Object.values(item.sizeMap).reduce((s, d) => s + (d.qty || 0), 0);
+    const scanned = Object.values(carton).reduce((s, q) => s + q, 0);
+    return { total: Math.max(total, 24), scanned }; // Enforce 24 total for UI consistency
   };
 
   /* ── Scan handler ── */
@@ -236,56 +261,74 @@ const GRN: React.FC = () => {
     const code = scanInput.trim();
     if (!code) return;
 
-    if (!selectedItem || !selectedSize || !sizeData) {
-      toast.error("Please select an item and size first.");
+    if (!selectedItem) {
+      toast.error("Please select an item first.");
       setScanInput("");
       return;
     }
 
-    // Check if scanned SKU matches the expected SKU for this size
-    if (code !== sizeData.sku) {
-      toast.error(`Invalid SKU. Expected: ${sizeData.sku}`);
+    // Find which size this SKU belongs to
+    const foundSizeEntry = Object.entries(selectedItem.sizeMap).find(
+      ([sz, data]) => data.sku === code
+    );
+    
+    if (!foundSizeEntry) {
+      toast.error(`Invalid SKU: ${code}. Does not match any size for this item.`);
       setScanInput("");
       return;
     }
 
-    // Find first unscanned box
-    const currentBoxes = scanState[selectedItemName]?.[selectedSize] || [];
-    const firstEmpty = currentBoxes.findIndex((b) => !b);
-    if (firstEmpty === -1) {
-      toast.error("All boxes for this size are already scanned.");
+    const [size, sizeData] = foundSizeEntry;
+    
+    // Check if this size is already full in the CURRENT carton
+    const currentScannedForSize = currentCartonScan?.[size] || 0;
+    if (currentScannedForSize >= sizeData.qty) {
+      toast.error(`Size ${size} is already full (Limit: ${sizeData.qty}) for Carton ${currentCartonIdx + 1}.`);
       setScanInput("");
       return;
     }
 
-    // Mark box as scanned
+    // Mark as scanned in state
     setScanState((prev) => {
       const updated = { ...prev };
-      updated[selectedItemName] = { ...updated[selectedItemName] };
-      updated[selectedItemName][selectedSize] = [
-        ...updated[selectedItemName][selectedSize],
-      ];
-      updated[selectedItemName][selectedSize][firstEmpty] = true;
+      const itemCartons = [...(updated[selectedItemName] || [])];
+      const carton = { ...itemCartons[currentCartonIdx] };
+      
+      carton[size] = (carton[size] || 0) + 1;
+      itemCartons[currentCartonIdx] = carton;
+      updated[selectedItemName] = itemCartons;
       return updated;
     });
 
-    toast.success(`Box ${firstEmpty + 1} scanned successfully`);
+    toast.success(`Size ${size} scanned for Carton ${currentCartonIdx + 1}`);
     setScanInput("");
     scanInputRef.current?.focus();
+
+    // Check if carton is now full
+    const newCartonTotal = Object.values({...currentCartonScan, [size]: (currentCartonScan?.[size] || 0) + 1})
+      .reduce((s, q) => s + q, 0);
+    
+    if (newCartonTotal >= 24) {
+      if (currentCartonIdx < (selectedItem.cartonCount || 1) - 1) {
+        toast.info(`Carton ${currentCartonIdx + 1} complete! Moving to next carton.`);
+        setCurrentCartonIdx(prev => prev + 1);
+      } else {
+        toast.success("All cartons for this item are complete!");
+      }
+    }
   };
 
-  /* ── Reset size scans ── */
-  const resetSizeScans = () => {
-    if (!selectedItemName || !selectedSize) return;
+  /* ── Reset carton scans ── */
+  const resetCartonScans = () => {
+    if (!selectedItemName) return;
     setScanState((prev) => {
       const updated = { ...prev };
-      updated[selectedItemName] = { ...updated[selectedItemName] };
-      updated[selectedItemName][selectedSize] = updated[selectedItemName][
-        selectedSize
-      ].map(() => false);
+      const itemCartons = [...(updated[selectedItemName] || [])];
+      itemCartons[currentCartonIdx] = {};
+      updated[selectedItemName] = itemCartons;
       return updated;
     });
-    toast.success("Size scans reset");
+    toast.success(`Carton ${currentCartonIdx + 1} scans reset`);
   };
 
   /* ── Form update ── */
@@ -298,7 +341,7 @@ const GRN: React.FC = () => {
     setSelectedPOId("");
     setPoDetail(null);
     setSelectedItemName("");
-    setSelectedSize("");
+    setCurrentCartonIdx(0);
     setScanState({});
     setScanInput("");
     setForm({
@@ -314,7 +357,24 @@ const GRN: React.FC = () => {
   };
 
   /* ── Submit ── */
-  const canSubmit = !!poDetail && overallProgress.scanned > 0;
+  /* ── Submit validation ── */
+  const canSubmit = useMemo(() => {
+    if (!poDetail) return false;
+    if (overallProgress.scanned === 0) return false;
+    
+    // Strict rule: Every carton MUST be fully scanned (24 pairs) if it has at least 1 pair scanned
+    for(const item of poDetail.items) {
+      const cartons = scanState[item.itemName];
+      if(!cartons) continue;
+      
+      for(let i=0; i<cartons.length; i++) {
+        const prog = getCartonProgress(item.itemName, i);
+        if(prog.scanned > 0 && prog.scanned < 24) return false; // Partial carton
+      }
+    }
+    
+    return true;
+  }, [poDetail, overallProgress, scanState]);
 
   const submitGRN = async () => {
     if (!canSubmit || !poDetail) return;
@@ -358,9 +418,6 @@ const GRN: React.FC = () => {
   /* ── Item dropdown options ── */
   const itemOptions = (poDetail?.items || []).map((i) => i.itemName);
 
-  /* ── Size dropdown options ── */
-  const sizeOptions = sizes.map((s) => `Size ${s}`);
-  const selectedSizeLabel = selectedSize ? `Size ${selectedSize}` : "";
 
   /* ═══════════════════ RENDER ═══════════════════ */
 
@@ -457,7 +514,7 @@ const GRN: React.FC = () => {
                     if (ref) {
                       setSelectedPOId(ref.id);
                       setSelectedItemName("");
-                      setSelectedSize("");
+                      setCurrentCartonIdx(0);
                     }
                   }}
                   placeholder="Search and select PO..."
@@ -609,7 +666,7 @@ const GRN: React.FC = () => {
                     <SectionCard
                       icon={<ScanLine size={18} className="text-slate-900" />}
                       title="3. Select Item & Scan"
-                      className="z-[50]" // ensure stacking over below cards if dropdown opens
+                      className="z-50" // ensure stacking over below cards if dropdown opens
                     >
                       <div className="space-y-5">
                         {/* Item dropdown */}
@@ -619,34 +676,66 @@ const GRN: React.FC = () => {
                           value={selectedItemName}
                           onChange={(val) => {
                             setSelectedItemName(val);
-                            setSelectedSize("");
                             setScanInput("");
                           }}
                           placeholder="Select item to receive..."
                         />
 
-                        {/* Size dropdown */}
+                        {/* Carton Navigator */}
                         {selectedItem && (
-                          <div className="relative z-[49]">
-                            <SearchableSelect
-                              label="Size"
-                              options={sizeOptions}
-                              value={selectedSizeLabel}
-                              onChange={(val) => {
-                                const sz = val.replace("Size ", "");
-                                setSelectedSize(sz);
-                                setScanInput("");
-                                setTimeout(
-                                  () => scanInputRef.current?.focus(),
-                                  150
-                                );
-                              }}
-                              placeholder="Select size..."
-                            />
+                          <div className="space-y-3">
+                            <label className="text-xs font-black uppercase tracking-widest text-slate-400">
+                              Carton Selection
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setCurrentCartonIdx(prev => Math.max(0, prev - 1))}
+                                disabled={currentCartonIdx === 0}
+                                className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                              >
+                                <ChevronRight className="rotate-180" size={20} />
+                              </button>
+                              
+                              <div className="flex-1 flex overflow-x-auto gap-2 no-scrollbar py-1">
+                                {Array.from({ length: selectedItem.cartonCount || 1 }).map((_, idx) => {
+                                  const prog = getCartonProgress(selectedItemName, idx);
+                                  const isDone = prog.scanned === prog.total && prog.total > 0;
+                                  return (
+                                    <button
+                                      key={idx}
+                                      type="button"
+                                      onClick={() => setCurrentCartonIdx(idx)}
+                                      className={`shrink-0 w-12 h-12 rounded-xl border-2 flex items-center justify-center font-bold text-sm transition-all ${
+                                        currentCartonIdx === idx
+                                          ? "border-emerald-500 bg-emerald-50 text-emerald-700 shadow-sm"
+                                          : isDone
+                                          ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+                                          : "border-slate-200 bg-white text-slate-400"
+                                      }`}
+                                    >
+                                      {idx + 1}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => setCurrentCartonIdx(prev => Math.min((selectedItem.cartonCount || 1) - 1, prev + 1))}
+                                disabled={currentCartonIdx === (selectedItem.cartonCount || 1) - 1}
+                                className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                              >
+                                <ChevronRight size={20} />
+                              </button>
+                            </div>
+                            <p className="text-center text-[10px] font-bold text-slate-400">
+                              Carton {currentCartonIdx + 1} of {selectedItem.cartonCount || 1}
+                            </p>
                           </div>
                         )}
 
-                        {/* Item & size progress cards */}
+                        {/* Item and Current Carton Progress */}
                         {selectedItem && (
                           <div className="grid grid-cols-2 gap-3 mt-4">
                             {(() => {
@@ -663,37 +752,44 @@ const GRN: React.FC = () => {
                                 />
                               );
                             })()}
-                            {selectedSize &&
-                              (() => {
-                                const sp = getSizeProgress(
-                                  selectedItemName,
-                                  selectedSize
-                                );
-                                return (
-                                  <MiniStatCard
-                                    label={`Size ${selectedSize}`}
-                                    value={`${sp.scanned}/${sp.total}`}
-                                    tone={
-                                      sp.scanned === sp.total && sp.total > 0
-                                        ? "emerald"
-                                        : "indigo"
-                                    }
-                                  />
-                                );
-                              })()}
+                            {(() => {
+                              const cp = getCartonProgress(selectedItemName, currentCartonIdx);
+                              return (
+                                <MiniStatCard
+                                  label={`Carton ${currentCartonIdx+1} Progress`}
+                                  value={`${cp.scanned}/${cp.total}`}
+                                  tone={
+                                    cp.scanned === cp.total && cp.total > 0
+                                      ? "emerald"
+                                      : "indigo"
+                                  }
+                                />
+                              );
+                            })()}
                           </div>
                         )}
 
                         {/* Scanner input */}
-                        {selectedSize && sizeData && (
+                        {selectedItem && (
                           <div className="space-y-3 pt-4 border-t border-slate-100">
-                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                              <p className="text-xs font-black uppercase tracking-widest text-emerald-700 mb-1">
-                                Expected SKU
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                              <p className="text-xs font-black uppercase tracking-widest text-slate-400">
+                                Current Carton Contents
                               </p>
-                              <p className="font-mono text-lg font-black text-emerald-900">
-                                {sizeData.sku}
-                              </p>
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                                {Object.entries(selectedItem.sizeMap).map(([sz, data]) => {
+                                  const scanned = currentCartonScan?.[sz] || 0;
+                                  const total = data.qty;
+                                  return (
+                                    <div key={sz} className="flex justify-between text-xs">
+                                      <span className="text-slate-500">Size {sz}:</span>
+                                      <span className={`font-bold ${scanned === total ? "text-emerald-600" : "text-slate-900"}`}>
+                                        {scanned} / {total}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </div>
 
                             <div className="relative">
@@ -734,7 +830,7 @@ const GRN: React.FC = () => {
                               </button>
                               <button
                                 type="button"
-                                onClick={resetSizeScans}
+                                onClick={resetCartonScans}
                                 disabled={scannedCount === 0}
                                 className={`inline-flex items-center gap-2 rounded-2xl px-4 py-3 font-bold transition ${
                                   scannedCount > 0
@@ -755,20 +851,17 @@ const GRN: React.FC = () => {
                   {/* ── Right: Box Grid & Summary ── */}
                   <div className="xl:col-span-7 space-y-5">
                     {/* Box Grid */}
-                    {selectedSize && sizeData && (
+                    {selectedItem && (
                       <SectionCard
                         icon={<Boxes size={18} className="text-indigo-600" />}
-                        title={`Boxes — ${selectedItemName} • Size ${selectedSize}`}
+                        title={`Carton View — ${selectedItemName} (Carton ${currentCartonIdx + 1})`}
                       >
                         <div className="mb-3 flex items-center justify-between">
                           <p className="text-sm text-slate-600">
                             <span className="font-bold">{scannedCount}</span> of{" "}
-                            <span className="font-bold">{totalBoxes}</span> boxes
+                            <span className="font-bold">24</span> pairs in this carton
                             scanned
                           </p>
-                          <span className="text-xs font-bold text-slate-500">
-                            SKU: {sizeData.sku}
-                          </span>
                         </div>
 
                         {/* Progress bar */}
@@ -787,60 +880,43 @@ const GRN: React.FC = () => {
 
                         {/* Box cards */}
                         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-3 2xl:grid-cols-4">
-                          {boxes.map((isScanned, idx) => (
+                          {boxes.map((box, idx) => (
                             <div
-                              key={idx}
+                              key={`${box.size}-${idx}`}
                               className={`flex flex-col items-center justify-center rounded-2xl border p-4 transition-all duration-300 ${
-                                isScanned
+                                box.isScanned
                                   ? "border-emerald-300 bg-emerald-50 shadow-sm shadow-emerald-100"
                                   : "border-slate-200 bg-white"
                               }`}
                             >
                               <div
                                 className={`mb-2 flex h-10 w-10 items-center justify-center rounded-full ${
-                                  isScanned
+                                  box.isScanned
                                     ? "bg-emerald-500 text-white"
                                     : "bg-slate-100 text-slate-400"
                                 }`}
                               >
-                                {isScanned ? (
+                                {box.isScanned ? (
                                   <CheckCircle2 size={20} />
                                 ) : (
                                   <span className="text-sm font-bold">
-                                    {idx + 1}
+                                    {box.size}
                                   </span>
                                 )}
                               </div>
                               <p className="text-xs font-bold text-slate-900">
-                                Box {idx + 1}
+                                Size {box.size}
                               </p>
-                              <p className="mt-0.5 text-[10px] font-mono text-slate-500">
-                                {sizeData.sku}
+                              <p className="mt-0.5 text-[10px] font-mono text-slate-500 truncate w-full text-center">
+                                {box.sku}
                               </p>
-                              {isScanned && (
+                              {box.isScanned && (
                                 <span className="mt-1 text-[10px] font-black text-emerald-600">
                                   SCANNED
                                 </span>
                               )}
                             </div>
                           ))}
-                        </div>
-
-                        {totalBoxes === 0 && (
-                          <div className="py-8 text-center text-sm text-slate-400">
-                            No boxes found for this size.
-                          </div>
-                        )}
-                      </SectionCard>
-                    )}
-
-                    {!selectedSize && selectedItem && (
-                      <SectionCard
-                        icon={<Boxes size={18} className="text-slate-400" />}
-                        title="Box Grid"
-                      >
-                        <div className="py-12 text-center text-sm text-slate-400">
-                          Select a size to view boxes.
                         </div>
                       </SectionCard>
                     )}
@@ -881,7 +957,7 @@ const GRN: React.FC = () => {
                               type="button"
                               onClick={() => {
                                 setSelectedItemName(item.itemName);
-                                setSelectedSize("");
+                                setCurrentCartonIdx(0);
                               }}
                               className={`w-full rounded-2xl border p-4 text-left transition ${
                                 isActive
@@ -951,13 +1027,19 @@ const GRN: React.FC = () => {
                         >
                           Scan at least one box to enable submission.
                         </BannerMessage>
+                      ) : !canSubmit ? (
+                        <BannerMessage
+                          icon={<XCircle size={16} />}
+                          tone="rose"
+                        >
+                          Cannot submit: One or more cartons are partially scanned. Each carton must have exactly 24 pairs.
+                        </BannerMessage>
                       ) : (
                         <BannerMessage
                           icon={<CheckCircle2 size={16} />}
                           tone="emerald"
                         >
-                          Ready to submit — {overallProgress.scanned} boxes
-                          scanned.
+                          Ready to submit — {overallProgress.scanned} pairs (fully packed cartons) scanned.
                         </BannerMessage>
                       )}
 

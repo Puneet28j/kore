@@ -77,6 +77,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
   const currentSizeMap = variant.sizeMap || variant.sizeQuantities || {};
   const currentBookingMap = variant.bookingMap || {};
+  const currentPOMap = variant.poMap || {};
 
   // Force totalPairs to 0 as current sizeMap values reflect assortment templates, not actual stock
   const totalPairs = 0;
@@ -87,6 +88,10 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   }, 0);
 
   const totalBooked = Object.values(currentBookingMap).reduce((s: number, v) => {
+    return s + (Number(v) || 0);
+  }, 0);
+
+  const totalPO = Object.values(currentPOMap).reduce((s: number, v) => {
     return s + (Number(v) || 0);
   }, 0);
 
@@ -350,11 +355,20 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                   </span>
                 </span>
               </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
+                <span className="text-xs font-medium text-slate-600">
+                  PO:{" "}
+                  <span className="font-bold text-orange-600">
+                    {totalPO} pairs
+                  </span>
+                </span>
+              </div>
             </div>
           </div>
 
-          {/* Two-column grid for size and booking */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Three-column grid for size, booking and PO */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Left Column - Size Stock Breakdown */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
@@ -362,11 +376,11 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                   <Package size={14} /> Size Stock
                 </h4>
                 <span className="text-[10px] font-bold text-slate-400">
-                  with SKU
+                  pairs
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {sizes.map((sz) => {
                   const data = currentSizeMap[sz];
                   const qty = 0; // Forced to 0 for master catalog display
@@ -404,14 +418,14 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-black text-emerald-600 uppercase tracking-wider flex items-center gap-1.5">
-                  <ShoppingBag size={14} /> Booked Quantity
+                  <ShoppingBag size={14} /> Booked Qty
                 </h4>
                 <span className="text-[10px] font-bold text-slate-400">
                   per size
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {sizes.map((sz) => {
                   const bookedQty = currentBookingMap[sz] || 0;
                   const statusColor = bookedQty === 0 ? "slate" : "emerald";
@@ -437,6 +451,51 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                           }`}
                         >
                           {bookedQty}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Third Column - PO Breakdown */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black text-orange-600 uppercase tracking-wider flex items-center gap-1.5">
+                  <ShoppingBag size={14} /> PO Quantity
+                </h4>
+                <span className="text-[10px] font-bold text-slate-400">
+                  per size
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {sizes.map((sz) => {
+                  const poQty = currentPOMap[sz] || 0;
+                  const statusColor = poQty === 0 ? "slate" : "orange";
+
+                  return (
+                    <div
+                      key={sz}
+                      className={`p-3 rounded-xl border transition-all hover:shadow-md ${
+                        statusColor === "orange"
+                          ? "bg-orange-50/60 border-orange-200"
+                          : "bg-slate-50/60 border-slate-200"
+                      }`}
+                    >
+                      <div className="flex flex-col items-start justify-between">
+                        <span className="text-xs font-bold text-slate-500">
+                          Size {sz}
+                        </span>
+                        <div
+                          className={`text-xl font-black leading-none ${
+                            poQty > 0
+                              ? "text-orange-600"
+                              : "text-slate-300"
+                          }`}
+                        >
+                          {poQty}
                         </div>
                       </div>
                     </div>

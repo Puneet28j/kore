@@ -140,7 +140,8 @@ const QuantityGridModal: React.FC<{
   existingItems: PurchaseOrderItem[];
   onSave: (
     aggregatedItem: Partial<PurchaseOrderItem>,
-    fullGrid: Record<string, Record<string, { qty: number; sku: string }>>
+    fullGrid: Record<string, Record<string, { qty: number; sku: string }>>,
+    cartonQty: number
   ) => void;
 }> = ({
   isOpen,
@@ -324,6 +325,7 @@ const QuantityGridModal: React.FC<{
 
   // Initialize grid state - will be reset by useEffect when dialog opens
   const [grid, setGrid] = useState(initialGrid);
+  const [cartonQty, setCartonQty] = useState(1);
   const prevIsOpenRef = useRef(false);
 
   // Helper function to build grid from current state
@@ -410,9 +412,16 @@ const QuantityGridModal: React.FC<{
     // This ensures we always have the latest data from existingItems
     if (isOpen && rowId) {
       // Always rebuild grid from latest existingItems
-      // This is critical to show updated quantities when dialog reopens
       const updated = buildGridFromItems();
       setGrid(updated);
+
+      // Sync cartonQty from existing row
+      const existingRow = existingItems.find((it) => it.id === rowId);
+      if (existingRow) {
+        setCartonQty(existingRow.cartonCount || Math.max(1, Math.floor((existingRow.quantity || 0) / 24)));
+      } else {
+        setCartonQty(1);
+      }
 
       prevIsOpenRef.current = isOpen;
     } else {
@@ -462,8 +471,8 @@ const QuantityGridModal: React.FC<{
       // For now, let's just use 0.
     }
     
-    if (totalQty % 24 !== 0) {
-      toast.error(`Total quantity (${totalQty}) must be a multiple of 24 for carton packing.`);
+    if (totalQty !== 24) {
+      toast.error(`Total quantity (${totalQty}) must be exactly 24 for one carton.`);
       return;
     }
 
@@ -490,7 +499,7 @@ const QuantityGridModal: React.FC<{
       sizeMap: sizeData, // Store the breakdown in the PO item
     };
 
-    onSave(aggregatedItem, grid);
+    onSave(aggregatedItem, grid, cartonQty);
   };
 
   return createPortal(
@@ -612,15 +621,39 @@ const QuantityGridModal: React.FC<{
             >
               Cancel
             </button>
-            <button
-              onClick={handleApply}
-              className="px-8 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20 flex flex-col items-center"
-            >
-              <span>Apply Quantities</span>
-              <span className="text-[10px] opacity-80">
-                {(Object.values(grid[variants[0]?.id || variants[0]?._id || ""] || {}).reduce((s, d) => s + (d.qty || 0), 0) / 24).toFixed(1)} Ctns
-              </span>
-            </button>
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex items-center bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setCartonQty(Math.max(1, cartonQty - 1))}
+                  className="px-3 py-1.5 hover:bg-slate-50 text-slate-500 transition-colors border-r border-slate-100"
+                >
+                  -
+                </button>
+                <div className="px-4 py-1.5 flex flex-col items-center min-w-[80px]">
+                  <span className="text-sm font-bold text-slate-900 leading-none">
+                    {cartonQty}
+                  </span>
+                  <span className="text-[9px] font-medium text-slate-400 uppercase tracking-tighter">
+                    Carton{cartonQty > 1 ? "s" : ""}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCartonQty(cartonQty + 1)}
+                  className="px-3 py-1.5 hover:bg-slate-50 text-slate-500 transition-colors border-l border-slate-100"
+                >
+                  +
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={handleApply}
+                className="px-8 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20 flex flex-col items-center min-w-[180px]"
+              >
+                Apply Quantities
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1066,7 +1099,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
 
   const handleSaveQtyGrid = async (
     aggregatedItem: Partial<PurchaseOrderItem>,
-    fullGrid: Record<string, Record<string, { qty: number; sku: string }>>
+    fullGrid: Record<string, Record<string, { qty: number; sku: string }>>,
+    cartonQty: number = 1
   ) => {
     // Capture previous state BEFORE updating (for master catalog sync)
     const existingPOItem = items.find((it) => it.id === qtyModalRowId);
@@ -1098,38 +1132,34 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     setItems((prev) => {
       const exists = prev.find((it) => it.id === qtyModalRowId);
 
+      const updateRow = (it: PurchaseOrderItem) => {
+        const updatedSizeMap = aggregatedItem.sizeMap || {};
+        const updatedItem = {
+          ...it,
+          ...aggregatedItem,
+          cartonCount: cartonQty,
+          // Total pairs is now 24 * number of cartons
+          quantity: 24 * cartonQty,
+          taxRate: it.taxRate || 18,
+          taxType: it.taxType || "GST",
+          sizeMap: updatedSizeMap,
+        };
+        return computeItem(updatedItem);
+      };
+
       if (!exists) {
         // If somehow the row is gone, add it as a new item
-        const newItem: PurchaseOrderItem = {
+        const newItem = updateRow({
           ...emptyItem(),
           ...aggregatedItem,
           id: qtyModalRowId || `poi-${Date.now()}`,
-          taxRate: 18,
-          taxType: "GST",
-          // Ensure sizeMap is set and quantity will be recalculated from it
-          sizeMap: aggregatedItem.sizeMap || {},
-        };
-        return [...prev, computeItem(newItem)];
+        } as PurchaseOrderItem);
+        return [...prev, newItem];
       }
 
       return prev.map((it) => {
         if (it.id !== qtyModalRowId) return it;
-        // Merge the existing item with the aggregated item, ensuring sizeMap is preserved
-        // CRITICAL: aggregatedItem.sizeMap contains the updated grid data - always use it
-        // Even if all quantities are 0, we should preserve the sizeMap structure
-        const updatedSizeMap = aggregatedItem.sizeMap || {};
-
-        const updatedItem = {
-          ...it,
-          ...aggregatedItem,
-          taxRate: it.taxRate || 18,
-          taxType: it.taxType || "GST",
-          // CRITICAL: Always use aggregatedItem.sizeMap from the grid
-          // This contains the exact quantities the user entered in the dialog
-          sizeMap: updatedSizeMap,
-        };
-        // computeItem will recalculate quantity from sizeMap
-        return computeItem(updatedItem);
+        return updateRow(it);
       });
     });
 
@@ -1208,10 +1238,10 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
               if (gridData) {
                 Object.entries(gridData).forEach(([sz, data]) => {
                   const currentQty = newSizeMap[sz]?.qty || 0;
-                  const newQty = Number(data.qty || 0);
-                  // Reserve the new PO quantities
+                  const newQtyPerCarton = Number(data.qty || 0);
+                  // Reserve the new PO quantities (multiplied by carton count)
                   newSizeMap[sz] = {
-                    qty: Math.max(0, currentQty - newQty),
+                    qty: Math.max(0, currentQty - (newQtyPerCarton * cartonQty)),
                     // Use SKU from PO if provided, otherwise keep existing
                     sku: data.sku || newSizeMap[sz]?.sku || "",
                   };
@@ -2299,7 +2329,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                           }}
                           className="w-full px-2 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-bold text-indigo-700 hover:bg-indigo-100 transition-all flex items-center justify-center min-h-[40px]"
                         >
-                          {item.quantity / 24}
+                          {item.cartonCount || Math.floor((item.quantity || 0) / 24) || 0}
                         </button>
                       ) : (
                         <input

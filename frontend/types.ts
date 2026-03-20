@@ -58,6 +58,7 @@ export interface Variant {
   sizeQuantities: Record<string, number>;
   sizeMap?: Record<string, { qty: number; sku: string }>;
   bookingMap?: Record<string, number>;
+  poMap?: Record<string, number>;
   images?: string[];
   isActive?: boolean;
 }
@@ -245,6 +246,7 @@ export interface PurchaseOrderItem {
   taxPerItem: number;
   unitTotal: number;
   sizeMap?: Record<string, { qty: number; sku: string }>;
+  cartonCount?: number;
 }
 
 export type POStatus = "DRAFT" | "SENT";

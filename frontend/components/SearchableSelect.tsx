@@ -44,9 +44,9 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
   }, []);
 
   const handleSelect = (opt: string) => {
-    onChange(opt);
     setIsOpen(false);
     setSearchTerm("");
+    onChange(opt);
   };
 
   const handleAddNew = async (e?: React.MouseEvent | React.KeyboardEvent) => {
@@ -100,7 +100,10 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
                 <div
                   key={opt}
                   className="flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 cursor-pointer group"
-                  onClick={() => handleSelect(opt)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSelect(opt);
+                  }}
                 >
                   <span className={`text-sm ${value === opt ? 'text-indigo-600 font-bold' : 'text-slate-700'}`}>
                     {opt}

@@ -6,8 +6,12 @@ import {
   Info,
   Star,
   Search,
-  Filter
+  Filter,
+  ShoppingCart,
+  Minus,
+  Plus
 } from "lucide-react";
+import { toast } from "sonner";
 import { Article, Inventory, Variant } from "../../types";
 import { getImageUrl } from "../../utils/imageUtils";
 
@@ -42,7 +46,14 @@ const colorToHex = (color: string): string => {
   return map[color.toLowerCase()] || "#cbd5e1";
 };
 
-const WishlistCard: React.FC<{ group: ColorGroup }> = ({ group }) => {
+const WishlistCard: React.FC<{ 
+  group: ColorGroup;
+  addToCart: (
+    articleId: string,
+    variantId: string | undefined,
+    sizeQuantities: Record<string, number>
+  ) => void;
+}> = ({ group, addToCart }) => {
   const { article, color, variants } = group;
 
   // Selected variant ID (single selection)
@@ -57,6 +68,24 @@ const WishlistCard: React.FC<{ group: ColorGroup }> = ({ group }) => {
     (a, b) => a + (Number(b) || 0),
     0
   );
+
+  const [cartonCount, setCartonCount] = useState(1);
+
+  const handleAddToCart = () => {
+    if (!selectedVariantId) {
+      toast.error("Please select a variant");
+      return;
+    }
+
+    const sizeQuantities: Record<string, number> = {};
+    Object.entries(baseBreakdown).forEach(([size, pairs]) => {
+      sizeQuantities[size] = Number(pairs) * cartonCount;
+    });
+
+    addToCart(article.id, selectedVariantId, sizeQuantities);
+    toast.success(`${article.name} added to cart!`);
+    setCartonCount(1);
+  };
 
   // priority for images: colorMedia (match by color) > variant specific images > article primary/secondary images
   const images = useMemo(() => {
@@ -91,8 +120,12 @@ const WishlistCard: React.FC<{ group: ColorGroup }> = ({ group }) => {
     return gallery;
   }, [article, color, variants]);
 
-  const [currentImageIndex, setCurrentImageIndex] = useState(1);
+  const [currentImageIndex, setCurrentImageIndex] = useState(images.length > 1 ? 1 : 0);
   const [transitionEnabled, setTransitionEnabled] = useState(true);
+
+  useEffect(() => {
+    setCurrentImageIndex(images.length > 1 ? 1 : 0);
+  }, [images.length]);
 
   useEffect(() => {
     if (images.length <= 1) return;
@@ -279,12 +312,45 @@ const WishlistCard: React.FC<{ group: ColorGroup }> = ({ group }) => {
           </div>
         )}
 
-        <div className="pt-4 border-t border-slate-100">
+        <div className="pt-4 border-t border-slate-100 space-y-4">
+          <div className="flex items-stretch gap-3">
+            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-2xl p-1 shadow-inner group/carton">
+               <button 
+                 onClick={() => setCartonCount(prev => Math.max(1, prev - 1))}
+                 className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-amber-600 transition-all disabled:opacity-20"
+                 disabled={cartonCount <= 1}
+               >
+                 <Minus size={14} />
+               </button>
+               
+               <div className="flex flex-col items-center justify-center min-w-[56px] px-1">
+                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter mb-0.5 leading-none">Cartons</span>
+                  <span className="text-sm font-black text-slate-900 leading-none">{cartonCount}</span>
+               </div>
+
+               <button 
+                 onClick={() => setCartonCount(prev => prev + 1)}
+                 className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-amber-600 transition-all"
+               >
+                 <Plus size={14} />
+               </button>
+            </div>
+
+            <button
+              onClick={handleAddToCart}
+              disabled={cartonCount <= 0}
+              className="flex-1 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-2xl px-6 font-black text-sm transition-all shadow-lg shadow-amber-100 flex items-center justify-center gap-2 group/btn active:scale-95"
+            >
+              <ShoppingCart size={16} className="group-hover/btn:scale-110 transition-transform" />
+              <span>Pre-Order</span>
+            </button>
+          </div>
+
           <div className="bg-amber-50/50 rounded-2xl p-4 border border-amber-100 flex items-center gap-3">
             <Clock size={16} className="text-amber-600 shrink-0" />
             <div>
               <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest leading-none mb-1">
-                Available Till
+                Available From
               </p>
               <p className="text-sm font-black text-slate-900 tracking-tight">
                 {article.expectedDate ? new Date(article.expectedDate).toLocaleDateString('en-IN', {
@@ -301,7 +367,16 @@ const WishlistCard: React.FC<{ group: ColorGroup }> = ({ group }) => {
   );
 };
 
-const Wishlist: React.FC<{ articles: Article[] }> = ({ articles }) => {
+interface WishlistProps {
+  articles: Article[];
+  addToCart: (
+    articleId: string,
+    variantId: string | undefined,
+    sizeQuantities: Record<string, number>
+  ) => void;
+}
+
+const Wishlist: React.FC<WishlistProps> = ({ articles, addToCart }) => {
   const [searchQuery, setSearchQuery] = useState("");
 
   const colorGroups = useMemo(() => {
@@ -373,6 +448,7 @@ const Wishlist: React.FC<{ articles: Article[] }> = ({ articles }) => {
           <WishlistCard 
             key={`${group.article.id}-${group.color}`} 
             group={group} 
+            addToCart={addToCart}
           />
         ))}
       </div>

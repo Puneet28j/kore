@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { Plus, Search, Filter, ArrowUpDown, ChevronDown, CheckCircle } from 'lucide-react';
 import { Inventory, Article } from '../../types';
+import { getImageUrl } from '../../utils/imageUtils';
 
 interface InventoryManagerProps {
   inventory: Inventory[];
@@ -54,7 +55,7 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ inventory, articles
               <div key={inv.articleId} className="p-4 space-y-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex gap-4">
-                    <img src={article.imageUrl} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100 shrink-0" />
+                    <img src={getImageUrl(article.imageUrl)} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100 shrink-0" />
                     <div className="min-w-0">
                       <p className="font-bold text-slate-900 truncate">{article.name}</p>
                       <p className="text-xs text-slate-500 font-mono tracking-tight">{article.sku}</p>
@@ -120,7 +121,7 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ inventory, articles
                   <tr key={inv.articleId} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-4">
-                        <img src={article.imageUrl} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-100" />
+                        <img src={getImageUrl(article.imageUrl)} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-100" />
                         <div>
                           <p className="font-bold text-slate-900">{article.name}</p>
                           <p className="text-xs text-slate-500 font-mono">{article.sku}</p>

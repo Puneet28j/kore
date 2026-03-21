@@ -381,6 +381,13 @@ exports.update = async (id, body) => {
     throw err;
   }
 
+  // ✅ PREVENT UPDATES IF PO IS ALREADY APPROVED
+  if (doc.billStatus === "APPROVED") {
+    const err = new Error("Approved Purchase Orders cannot be modified");
+    err.statusCode = 403;
+    throw err;
+  }
+
   const patch = {
     vendorId: body.vendorId,
     vendorName: body.vendorName,
@@ -421,8 +428,20 @@ exports.update = async (id, body) => {
 
   if (patch.date !== undefined) doc.date = patch.date;
   if (patch.deliveryDate !== undefined) doc.deliveryDate = patch.deliveryDate;
-  if (patch.status !== undefined)
-    doc.status = patch.status === "SENT" ? "SENT" : "DRAFT";
+  if (patch.status !== undefined) {
+    const newStatus = patch.status === "SENT" ? "SENT" : "DRAFT";
+    
+    // ✅ Revision logic: if re-sending a rejected PO
+    if (doc.status === "SENT" && doc.billStatus === "REJECTED" && newStatus === "SENT") {
+      doc.isRevised = true;
+      doc.revisionCount = (doc.revisionCount || 0) + 1;
+      doc.billStatus = "PENDING";
+      doc.billRemark = "";
+      doc.billRejectedAt = null;
+    }
+    
+    doc.status = newStatus;
+  }
 
   if (body.items !== undefined) {
     const rawItems = Array.isArray(body.items) ? body.items : [];

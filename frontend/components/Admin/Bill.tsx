@@ -300,9 +300,16 @@ const Bill: React.FC = () => {
                       })}
                     </td>
                     <td className="px-6 py-4">
-                      <span className="font-bold text-slate-900 text-sm group-hover:text-emerald-600 transition-colors">
-                        {bill.poNumber}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        <span className="font-bold text-slate-900 text-sm group-hover:text-emerald-600 transition-colors">
+                          {bill.poNumber}
+                        </span>
+                        {bill.isRevised && (
+                          <span className="inline-flex items-center w-fit px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-700 border border-indigo-200 uppercase tracking-tight">
+                            Revised {bill.revisionCount ? `(v${bill.revisionCount})` : ""}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-700 font-medium">
                       {bill.vendorName}

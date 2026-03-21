@@ -14,6 +14,7 @@ import { exportPOToPDF, exportOrderToExcel } from "../../utils/exportPO";
 import { type Bill } from "../../services/billService";
 import { billService } from "../../services/billService";
 import { vendorService } from "../../services/vendorService";
+import { getImageUrl } from "../../utils/imageUtils";
 
 const labelClass =
   "block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2";
@@ -101,9 +102,16 @@ const BillDetails: React.FC<BillDetailsProps> = ({
             <FileText size={22} />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-              Bill - {po.poNumber}
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-bold text-slate-900 tracking-tight">
+                Bill - {po.poNumber}
+              </h2>
+              {po.isRevised && (
+                <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-indigo-600 text-white shadow-sm uppercase">
+                  Revised {po.revisionCount ? `v${po.revisionCount}` : ""}
+                </span>
+              )}
+            </div>
             <p className="text-slate-500 text-xs font-medium">
               Review and approve or reject this bill
             </p>
@@ -283,7 +291,7 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                     <td className="px-2 py-3">
                       {item.image ? (
                         <img
-                          src={item.image}
+                          src={getImageUrl(item.image)}
                           alt={item.itemName}
                           className="w-10 h-10 rounded-lg object-cover border border-slate-200"
                         />

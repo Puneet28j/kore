@@ -1,0 +1,12 @@
+--- Article: Runner ---
+Primary Image URL: uploads/catalog/1773472413314-coverImage-1771039808659-6427453.jpg
+Color Media[0] Image URL: uploads/catalog/1773472413314-coverImage-1771039808659-6427453.jpg
+--- Article: Armour ---
+Primary Image URL: uploads/catalog/1773818060472-new2.jpg
+Color Media[0] Image URL: uploads/catalog/1773818060472-new2.jpg
+--- Article: New ---
+Primary Image URL: uploads/catalog/1774090054128-new3.jpg
+Color Media[0] Image URL: uploads/catalog/1774090054128-new3.jpg
+--- Article: New2 ---
+Primary Image URL: uploads/catalog/1774093595239-new1.jpg
+Color Media[0] Image URL: uploads/catalog/1774093595239-new1.jpg

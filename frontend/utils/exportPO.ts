@@ -246,6 +246,7 @@ export const exportPOToPDF = (
       }
     }
 
+    const cartonCount = item.cartonCount || 1;
     const sizeEntries = Object.entries(sizeMap);
     const validSizes = sizeEntries.filter(
       ([_, data]: [string, any]) => data && data.qty > 0
@@ -254,13 +255,16 @@ export const exportPOToPDF = (
     if (validSizes.length > 0) {
       // Create a row for each size in the sizeMap with qty > 0
       validSizes.forEach(([size, data]: [string, any]) => {
-        const totalWoGst = data.qty * item.basePrice;
+        const totalQtyForItem = data.qty * cartonCount;
+        const totalWoGst = totalQtyForItem * item.basePrice;
         const totalValue = totalWoGst + (totalWoGst * item.taxRate) / 100;
 
         // styleName should be master name + size
         const rowStyleName = `${masterName}-${size}`;
         // SKU as urban-red-4 (styleBase + size)
         const rowSku = data.sku || `${styleBase}-${size}`;
+
+        const qtyFormula = `${data.qty} x ${cartonCount} = ${totalQtyForItem}`;
 
         itemRows.push([
           "", // EAN (empty per user request)
@@ -271,7 +275,7 @@ export const exportPOToPDF = (
           color, // MARKETED COLOR
           gender, // GENDER
           item.mrp.toFixed(1), // MRP
-          data.qty.toFixed(1), // PO QTY
+          qtyFormula, // PO QTY (Now Formula)
           item.basePrice.toFixed(1), // UNIT PRICE
           totalWoGst.toFixed(2), // TOTAL W/O GST
           item.taxRate.toFixed(1), // GST (%)
@@ -280,7 +284,10 @@ export const exportPOToPDF = (
       });
     } else {
       // Fallback: original row if no sizes found
-      const totalWoGst = item.quantity * item.basePrice;
+      const totalQtyForItem = item.quantity * cartonCount;
+      const totalWoGst = totalQtyForItem * item.basePrice;
+      const qtyFormula = `${item.quantity} x ${cartonCount} = ${totalQtyForItem}`;
+
       itemRows.push([
         "", // EAN
         item.itemTaxCode || "",
@@ -290,11 +297,11 @@ export const exportPOToPDF = (
         color,
         gender,
         item.mrp.toFixed(1),
-        item.quantity.toFixed(1),
+        qtyFormula,
         item.basePrice.toFixed(1),
         totalWoGst.toFixed(2),
         item.taxRate.toFixed(1),
-        item.unitTotal.toFixed(2),
+        (totalWoGst + (totalWoGst * item.taxRate) / 100).toFixed(2),
       ]);
     }
   });
@@ -326,13 +333,13 @@ export const exportPOToPDF = (
     columnStyles: {
       0: { cellWidth: 25 }, // EAN (narrower since empty)
       1: { cellWidth: 35 }, // HSN
-      2: { cellWidth: 70.28, halign: "left" }, // STYLE NAME (adjusted to align total width to 515.28)
+      2: { cellWidth: 45.28, halign: "left" }, // STYLE NAME (reduced to give room to formula)
       3: { cellWidth: 55 }, // STYLE NO
       4: { cellWidth: 55 }, // SKU
       5: { cellWidth: 40 }, // COLOR
       6: { cellWidth: 25 }, // GENDER
       7: { cellWidth: 30 }, // MRP
-      8: { cellWidth: 30, fontStyle: "bold" }, // PO QTY
+      8: { cellWidth: 55, fontStyle: "bold" }, // PO QTY (Formula) (expanded from 30)
       9: { cellWidth: 35 }, // UNIT PRICE
       10: { cellWidth: 40 }, // TOTAL W/O GST
       11: { cellWidth: 25 }, // GST %
@@ -348,7 +355,7 @@ export const exportPOToPDF = (
         "MARKETED\nCOLOR",
         "GENDER",
         "MRP",
-        "PO QTY",
+        "PO QTY\n(Asst x Ctn)",
         "UNIT\nPRICE",
         "TOTAL\nW/O GST",
         "GST (%)",
@@ -461,7 +468,7 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
     "MARKETED COLOR",
     "GENDER",
     "MRP (₹)",
-    "PO QTY",
+    "PO QTY (Asst x Ctn)",
     "UNIT PRICE (₹)",
     "TOTAL W/O GST (₹)",
     "GST (%)",
@@ -488,6 +495,7 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
       }
     }
 
+    const cartonCount = item.cartonCount || 1;
     const sizeEntries = Object.entries(sizeMap);
     const validSizes = sizeEntries.filter(
       ([_, data]: [string, any]) => data && data.qty > 0
@@ -495,8 +503,10 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
 
     if (validSizes.length > 0) {
       validSizes.forEach(([size, data]: [string, any]) => {
-        const totalWoGst = data.qty * item.basePrice;
+        const totalQtyForItem = data.qty * cartonCount;
+        const totalWoGst = totalQtyForItem * item.basePrice;
         const totalValue = totalWoGst + (totalWoGst * item.taxRate) / 100;
+        const qtyFormula = `${data.qty} x ${cartonCount} = ${totalQtyForItem}`;
         const rowStyleName = `${masterName}-${size}`;
         const rowSku = data.sku || `${styleBase}-${size}`;
 
@@ -509,7 +519,7 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
           sanitize(color),
           sanitize(gender),
           item.mrp.toFixed(2),
-          data.qty.toFixed(1),
+          qtyFormula,
           item.basePrice.toFixed(2),
           totalWoGst.toFixed(2),
           item.taxRate.toFixed(1),
@@ -517,7 +527,10 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
         ]);
       });
     } else {
-      const totalWoGst = item.quantity * item.basePrice;
+      const totalQtyForItem = item.quantity * cartonCount;
+      const totalWoGst = totalQtyForItem * item.basePrice;
+      const qtyFormula = `${item.quantity} x ${cartonCount} = ${totalQtyForItem}`;
+
       rows.push([
         "", // EAN
         sanitize(item.itemTaxCode || ""),
@@ -527,11 +540,11 @@ export const exportOrderToExcel = (po: PurchaseOrder, vendor?: Vendor) => {
         sanitize(color),
         sanitize(gender),
         item.mrp.toFixed(2),
-        item.quantity.toFixed(1),
+        qtyFormula,
         item.basePrice.toFixed(2),
         totalWoGst.toFixed(2),
         item.taxRate.toFixed(1),
-        item.unitTotal.toFixed(2),
+        (totalWoGst + (totalWoGst * item.taxRate) / 100).toFixed(2),
       ]);
     }
   });

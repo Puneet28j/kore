@@ -22,6 +22,7 @@ import {
 import { Article, AssortmentType } from "../../types";
 import Switch from "../ui/Switch";
 import { masterCatalogService } from "../../services/masterCatalogService";
+import { getImageUrl } from "../../utils/imageUtils";
 
 type CatalogStatus = "AVAILABLE" | "WISHLIST";
 
@@ -45,9 +46,10 @@ interface CatalogueManagerProps {
   onViewVariant: (articleId: string, variantId: string) => void;
   expandedIds: Set<string>;
   setExpandedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
+  onSuccess?: () => void;
 }
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL.replace("/api", "");
+// BASE_URL removed in favor of getImageUrl utility
 
 const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   articles,
@@ -58,6 +60,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   onViewVariant,
   expandedIds,
   setExpandedIds,
+  onSuccess,
 }) => {
   const [activeTab, setActiveTab] = useState<CatalogStatus>("AVAILABLE");
   const [searchTerm, setSearchTerm] = useState("");
@@ -164,7 +167,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     };
 
     const promise = async () => {
-      // Simulate/Trigger update
+      // PERSIST TO BACKEND
+      await masterCatalogService.updateMasterItemFields(article.id, {
+        stage: "AVAILABLE",
+        expectedAvailableDate: "",
+      });
+      // Update local state
       await updateArticle(updated);
     };
 
@@ -349,13 +357,31 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     }
 
     const savePromise = async () => {
-      // Simulate API delay if needed or just handle props
-      if (editingArticle) {
-        await updateArticle(payload);
-      } else {
-        await addArticle(payload);
+      setLoading(true);
+      try {
+        if (editingArticle) {
+          // Direct backend persistence for quick-edit
+          await masterCatalogService.updateMasterItemFields(editingArticle.id, {
+            articleName: payload.name,
+            gender: payload.category,
+            mrp: payload.mrp,
+            sizeRanges: [payload.sizeRange],
+            stage: payload.status,
+            expectedAvailableDate: payload.expectedAvailableDate || null,
+          });
+          updateArticle(payload);
+        } else {
+          // For now follow existing pattern, though creation is usually via ProductMaster
+          addArticle(payload);
+        }
+        setIsModalOpen(false);
+        onSuccess?.();
+      } catch (err: any) {
+        console.error("Save failure:", err);
+        throw new Error(err.message || "Failed to persist changes");
+      } finally {
+        setLoading(false);
       }
-      setIsModalOpen(false);
     };
 
     setLoading(true);
@@ -373,7 +399,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   // ---------- Render helpers ----------
   const imgSrc = (url: string | undefined) => {
     if (!url) return "https://picsum.photos/seed/kore/200/200";
-    return url.startsWith("http") ? url : `${BASE_URL}${url}`;
+    return getImageUrl(url);
   };
 
   return (

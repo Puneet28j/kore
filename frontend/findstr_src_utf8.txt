@@ -1,0 +1,17 @@
+﻿d:\Projects\kore\frontend\components\Admin\BillDetails.tsx:                          src={getImageUrl(item.image)}
+d:\Projects\kore\frontend\components\Admin\CatalogueManager.tsx:                                            src={imgSrc(vImg)}
+d:\Projects\kore\frontend\components\Admin\CatalogueManager.tsx:                                          src={imgSrc(vImg)}
+d:\Projects\kore\frontend\components\Admin\CatalogueManager.tsx:                              src={src}
+d:\Projects\kore\frontend\components\Admin\InventoryManager.tsx:                    <img src={article.imageUrl} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100 shrink-0" />
+d:\Projects\kore\frontend\components\Admin\InventoryManager.tsx:                        <img src={article.imageUrl} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-100" />
+d:\Projects\kore\frontend\components\Admin\MasterInventory.tsx:                    <img src={article.imageUrl} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100" />
+d:\Projects\kore\frontend\components\Admin\MasterInventory.tsx:                          <img src={article.imageUrl} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-100" />
+d:\Projects\kore\frontend\components\Admin\POPage.tsx:                                                src={option.image}
+d:\Projects\kore\frontend\components\Admin\POPage.tsx:                          src={getImageUrl(item.image)}
+d:\Projects\kore\frontend\components\Admin\ProductMaster.tsx:                                    src={src}
+d:\Projects\kore\frontend\components\Admin\VariantDetailsPage.tsx:                  src={imgSrc(allImages[activeImage])}
+d:\Projects\kore\frontend\components\Admin\VariantDetailsPage.tsx:                      src={imgSrc(img)}
+d:\Projects\kore\frontend\components\Distributor\Cart.tsx:                      src={(() => {
+d:\Projects\kore\frontend\components\Distributor\OrderDetail.tsx:                        src={variant?.images?.[0] || article?.imageUrl || ''} 
+d:\Projects\kore\frontend\components\Distributor\Shop.tsx:              src={img}
+d:\Projects\kore\frontend\components\Distributor\Wishlist.tsx:              src={img}

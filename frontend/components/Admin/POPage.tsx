@@ -32,6 +32,7 @@ import {
   PurchaseOrderItem,
   POStatus,
 } from "../../types";
+import { getImageUrl } from "../../utils/imageUtils";
 import { poService } from "../../services/poService";
 import { vendorService } from "../../services/vendorService";
 import { masterCatalogService } from "../../services/masterCatalogService";
@@ -741,6 +742,12 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     savedDraft?.discountPercent || 0
   );
 
+  const isApprovedPO = useMemo(() => {
+    if (!editingPOId) return false;
+    const po = purchaseOrders.find((p) => p.id === editingPOId);
+    return po?.billStatus === "APPROVED";
+  }, [editingPOId, purchaseOrders]);
+
   // Save draft whenever it changes
   useEffect(() => {
     if (view === "form") {
@@ -1056,12 +1063,12 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
       (v) => v.id === option.variantId || v._id === option.variantId
     );
 
-    // Construct default sizeMap from master catalog quantities
+    // Construct default sizeMap but set quantities to 0 for a new PO item
     const defaultSizeMap: Record<string, { qty: number; sku: string }> = {};
     if (targetVariant && targetVariant.sizeQuantities) {
       Object.entries(targetVariant.sizeQuantities).forEach(([sz, qty]) => {
         defaultSizeMap[sz] = {
-          qty: Number(qty) || 0,
+          qty: 0, // NEW PO item starts with 0
           sku: targetVariant.sizeSkus?.[sz] || "",
         };
       });
@@ -1102,31 +1109,6 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     fullGrid: Record<string, Record<string, { qty: number; sku: string }>>,
     cartonQty: number = 1
   ) => {
-    // Capture previous state BEFORE updating (for master catalog sync)
-    const existingPOItem = items.find((it) => it.id === qtyModalRowId);
-    const previousSizeMap = existingPOItem?.sizeMap || {};
-
-    // Convert previousSizeMap to plain object for comparison
-    const previousSizeMapPlain: Record<string, { qty: number; sku: string }> =
-      {};
-    if (previousSizeMap instanceof Map) {
-      previousSizeMap.forEach((value, key) => {
-        previousSizeMapPlain[String(key)] = {
-          qty: Number(value?.qty || 0),
-          sku: String(value?.sku || ""),
-        };
-      });
-    } else if (
-      typeof previousSizeMap === "object" &&
-      previousSizeMap !== null
-    ) {
-      Object.entries(previousSizeMap).forEach(([key, value]: [string, any]) => {
-        previousSizeMapPlain[key] = {
-          qty: Number(value?.qty || 0),
-          sku: String(value?.sku || ""),
-        };
-      });
-    }
 
     // 1. Update PO State (Use row ID for reliable matching)
     setItems((prev) => {
@@ -1165,14 +1147,6 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
 
     // 2. Sync with Real Master (Article)
     if (qtyModalArticleId && qtyModalVariantId) {
-      console.log(
-        "🔄 Updating Master Catalog for article:",
-        qtyModalArticleId,
-        "variant:",
-        qtyModalVariantId
-      );
-      console.log("Previous sizeMap:", previousSizeMapPlain);
-      console.log("New grid data:", fullGrid[qtyModalVariantId]);
       try {
         const res = await masterCatalogService.getMasterItem(qtyModalArticleId);
         const article = res.data || res;
@@ -1190,8 +1164,6 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
             ) {
               // Start with existing sizeMap from master catalog
               const existingSizeMap = v.sizeMap || {};
-              const newSizeMap: Record<string, { qty: number; sku: string }> =
-                {};
 
               // Convert Mongoose Map to plain object if needed
               const existingPlain: Record<
@@ -1216,39 +1188,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                 );
               }
 
-              // Start with master catalog's current quantities
-              Object.keys(existingPlain).forEach((sz) => {
-                newSizeMap[sz] = { ...existingPlain[sz] };
-              });
-
-              // Adjust inventory: Add back old PO quantities, then subtract new PO quantities
-              // This correctly handles inventory reservation changes
-              Object.entries(previousSizeMapPlain).forEach(([sz, data]) => {
-                const currentQty = newSizeMap[sz]?.qty || 0;
-                const prevQty = Number(data.qty || 0);
-                // Add back the previously reserved quantities
-                newSizeMap[sz] = {
-                  qty: currentQty + prevQty,
-                  sku: newSizeMap[sz]?.sku || "",
-                };
-              });
-
-              // Subtract new quantities from PO grid (reserve them)
-              const gridData = fullGrid[qtyModalVariantId];
-              if (gridData) {
-                Object.entries(gridData).forEach(([sz, data]) => {
-                  const currentQty = newSizeMap[sz]?.qty || 0;
-                  const newQtyPerCarton = Number(data.qty || 0);
-                  // Reserve the new PO quantities (multiplied by carton count)
-                  newSizeMap[sz] = {
-                    qty: Math.max(0, currentQty - (newQtyPerCarton * cartonQty)),
-                    // Use SKU from PO if provided, otherwise keep existing
-                    sku: data.sku || newSizeMap[sz]?.sku || "",
-                  };
-                });
-              }
-
-              return { ...v, sizeMap: newSizeMap };
+              // Simply preserve existing sizeMap without any PO adjustments
+              return { ...v, sizeMap: existingPlain };
             }
             return v;
           });
@@ -1260,6 +1201,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
             "variants",
             JSON.stringify(
               updatedVariants.map((v: any) => ({
+                id: v.id || v._id,
                 itemName: v.itemName,
                 costPrice: v.costPrice,
                 sellingPrice: v.sellingPrice,
@@ -1352,6 +1294,14 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     if (items.every((it) => !it.articleId))
       return toast.error("Please add at least one item.");
 
+    // ✅ FINAL SAFETY CHECK: Prevent saving if already approved
+    if (editingPOId) {
+      const currentPO = purchaseOrders.find((p) => p.id === editingPOId);
+      if (currentPO?.billStatus === "APPROVED") {
+        return toast.error("This Purchase Order is approved and cannot be modified.");
+      }
+    }
+
     // Ensure all items have their sizeMap properly included
     const itemsWithSizeMap = items
       .filter((it) => it.articleId)
@@ -1426,30 +1376,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                       );
                     }
 
-                    // For PO creation: just subtract the ordered quantities
-                    // For PO update: this will be handled by the quantity dialog updates
-                    if (!editingPOId) {
-                      // New PO: subtract ordered quantities from available inventory
-                      const newSizeMap: Record<
-                        string,
-                        { qty: number; sku: string }
-                      > = { ...existingPlain };
-
-                      Object.entries(item.sizeMap).forEach(
-                        ([size, data]: [string, any]) => {
-                          const orderedQty = Number(data?.qty || 0);
-                          if (orderedQty > 0) {
-                            const currentQty = newSizeMap[size]?.qty || 0;
-                            newSizeMap[size] = {
-                              qty: Math.max(0, currentQty - orderedQty),
-                              sku: data?.sku || newSizeMap[size]?.sku || "",
-                            };
-                          }
-                        }
-                      );
-
-                      return { ...v, sizeMap: newSizeMap };
-                    }
+                    // Simply preserve existing sizeMap without any PO adjustments
+                    return { ...v, sizeMap: existingPlain };
                   }
                   return v;
                 });
@@ -1465,6 +1393,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     "variants",
                     JSON.stringify(
                       updatedVariants.map((v: any) => ({
+                        id: v.id || v._id,
                         itemName: v.itemName,
                         costPrice: v.costPrice,
                         sellingPrice: v.sellingPrice,
@@ -1648,8 +1577,14 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-center">
                       Action
                     </th>
-                    <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-right">
-                      Status
+                    <th className="px-4 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-right">
+                      PO Status
+                    </th>
+                    <th className="px-4 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider text-center">
+                      Bill Status
+                    </th>
+                    <th className="px-6 py-3.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider">
+                      Approval Remark
                     </th>
                   </tr>
                 </thead>
@@ -1668,9 +1603,16 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                         })}
                       </td>
                       <td className="px-6 py-4">
-                        <span className="font-bold text-slate-900 text-sm group-hover:text-indigo-600 transition-colors">
-                          {po.poNumber}
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-bold text-slate-900 text-sm group-hover:text-indigo-600 transition-colors">
+                            {po.poNumber}
+                          </span>
+                          {po.isRevised && (
+                            <span className="inline-flex items-center w-fit px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-700 border border-indigo-200 uppercase tracking-tight">
+                              Revised {po.revisionCount ? `(v${po.revisionCount})` : ""}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-700 font-medium">
                         {po.vendorName}
@@ -1699,21 +1641,41 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                           PDF
                         </button>
                       </td>
-                      <td className="px-6 py-4 text-right">
+                      <td className="px-4 py-4 text-right">
                         <span
-                          className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full ${
+                          className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
                             po.status === "SENT"
                               ? "text-emerald-700 bg-emerald-50"
                               : "text-amber-700 bg-amber-50"
                           }`}
                         >
                           {po.status === "SENT" ? (
-                            <CheckCircle2 size={12} />
+                            <CheckCircle2 size={10} />
                           ) : (
-                            <Clock size={12} />
+                            <Clock size={10} />
                           )}
                           {po.status}
                         </span>
+                      </td>
+                      <td className="px-4 py-4 text-center">
+                        {po.status === "SENT" ? (
+                          <span
+                            className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              po.billStatus === "APPROVED"
+                                ? "text-emerald-700 bg-emerald-50 border border-emerald-100"
+                                : po.billStatus === "REJECTED"
+                                ? "text-red-700 bg-red-50 border border-red-100"
+                                : "text-amber-700 bg-amber-50 border border-amber-100"
+                            }`}
+                          >
+                            {po.billStatus || "PENDING"}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-[10px]">—</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-slate-500 max-w-[200px] truncate" title={po.billRemark}>
+                        {po.billRemark || <span className="text-slate-300 italic">No remark</span>}
                       </td>
                     </tr>
                   ))}
@@ -1815,8 +1777,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
               </label>
               <div className="relative" ref={vendorDropdownRef}>
                 <div
-                  className={`${inputClass} cursor-pointer flex items-center justify-between`}
-                  onClick={() => setShowVendorDropdown(!showVendorDropdown)}
+                  className={`${inputClass} ${isApprovedPO ? 'bg-slate-100 cursor-not-allowed opacity-75' : 'cursor-pointer'} flex items-center justify-between`}
+                  onClick={() => !isApprovedPO && setShowVendorDropdown(!showVendorDropdown)}
                 >
                   <span
                     className={
@@ -2003,6 +1965,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     type="text"
                     className={inputClass}
                     value={poNumber}
+                    disabled={isApprovedPO}
                     onChange={(e) => setPONumber(e.target.value)}
                   />
                 </div>
@@ -2013,6 +1976,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     className={inputClass}
                     placeholder="Optional"
                     value={referenceNumber}
+                    disabled={isApprovedPO}
                     onChange={(e) => setReferenceNumber(e.target.value)}
                   />
                 </div>
@@ -2029,6 +1993,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                       type="date"
                       className={`${inputClass} pl-9`}
                       value={poDate}
+                      disabled={isApprovedPO}
                       onChange={(e) => setPODate(e.target.value)}
                     />
                   </div>
@@ -2044,6 +2009,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                       type="date"
                       className={`${inputClass} pl-9`}
                       value={deliveryDate}
+                      disabled={isApprovedPO}
                       onChange={(e) => setDeliveryDate(e.target.value)}
                     />
                   </div>
@@ -2055,6 +2021,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                   <select
                     className={selectClass}
                     value={paymentTerms}
+                    disabled={isApprovedPO}
                     onChange={(e) => setPaymentTerms(e.target.value)}
                   >
                     <option>Due on Receipt</option>
@@ -2073,6 +2040,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     className={inputClass}
                     placeholder="e.g. Road Transport"
                     value={shipmentPreference}
+                    disabled={isApprovedPO}
                     onChange={(e) => setShipmentPreference(e.target.value)}
                   />
                 </div>
@@ -2157,8 +2125,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                             item.articleId
                               ? "border-slate-200 bg-white text-slate-800 font-medium"
                               : "border-dashed border-slate-300 bg-slate-50 text-slate-400"
-                          }`}
-                          onClick={(e) => toggleItemPicker(idx, e)}
+                          } ${isApprovedPO ? 'cursor-not-allowed opacity-75' : ''}`}
+                          onClick={(e) => !isApprovedPO && toggleItemPicker(idx, e)}
                         >
                           <span className="truncate">
                             {item.itemName || "Click to select item..."}
@@ -2228,7 +2196,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                                           >
                                             {option.image ? (
                                               <img
-                                                src={option.image}
+                                                src={getImageUrl(option.image)}
                                                 className="w-8 h-8 rounded-lg object-cover border border-slate-200 shrink-0"
                                                 alt=""
                                               />
@@ -2271,7 +2239,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     <td className="px-2 py-3">
                       {item.image ? (
                         <img
-                          src={item.image}
+                          src={getImageUrl(item.image)}
                           className="w-9 h-9 rounded-lg object-cover border border-slate-200"
                           alt=""
                         />
@@ -2309,6 +2277,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                         type="text"
                         className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-mono"
                         value={item.itemTaxCode}
+                        disabled={isApprovedPO}
                         onChange={(e) =>
                           updateItem(item.id, "itemTaxCode", e.target.value)
                         }
@@ -2322,12 +2291,13 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                         <button
                           type="button"
                           onClick={() => {
+                            if (isApprovedPO) return;
                             setQtyModalArticleId(item.articleId);
                             setQtyModalVariantId(item.variantId || null);
                             setQtyModalRowId(item.id);
                             setShowQtyModal(true);
                           }}
-                          className="w-full px-2 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-bold text-indigo-700 hover:bg-indigo-100 transition-all flex items-center justify-center min-h-[40px]"
+                          className={`w-full px-2 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-bold text-indigo-700 hover:bg-indigo-100 transition-all flex items-center justify-center min-h-[40px] ${isApprovedPO ? 'cursor-not-allowed opacity-75' : ''}`}
                         >
                           {item.cartonCount || Math.floor((item.quantity || 0) / 24) || 0}
                         </button>
@@ -2350,6 +2320,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                         step={0.5}
                         className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs text-center"
                         value={item.taxRate || ""}
+                        disabled={isApprovedPO}
                         onChange={(e) =>
                           updateItem(
                             item.id,
@@ -2399,6 +2370,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                         min={0}
                         className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-right"
                         value={item.mrp || ""}
+                        disabled={isApprovedPO}
                         onChange={(e) =>
                           updateItem(
                             item.id,
@@ -2416,6 +2388,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                         min={0}
                         className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-right text-indigo-700"
                         value={item.basePrice || ""}
+                        disabled={isApprovedPO}
                         onChange={(e) =>
                           updateItem(
                             item.id,
@@ -2445,8 +2418,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                       {items.length > 1 && (
                         <button
                           type="button"
-                          onClick={() => removeRow(item.id)}
-                          className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                          onClick={() => !isApprovedPO && removeRow(item.id)}
+                          className={`p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${isApprovedPO ? 'hidden' : ''}`}
                         >
                           <Trash2 size={14} />
                         </button>
@@ -2461,7 +2434,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
           <button
             type="button"
             onClick={addNewRow}
-            className="mt-3 flex items-center gap-2 text-sm font-bold text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 px-4 py-2 rounded-lg transition-all"
+            disabled={isApprovedPO}
+            className={`mt-3 flex items-center gap-2 text-sm font-bold text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 px-4 py-2 rounded-lg transition-all ${isApprovedPO ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <Plus size={16} />
             Add New Row
@@ -2476,20 +2450,22 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
               <div>
                 <label className={labelClass}>Notes</label>
                 <textarea
-                  className={`${inputClass} resize-none`}
+                  className={`${inputClass} resize-none ${isApprovedPO ? 'bg-slate-100 opacity-75' : ''}`}
                   rows={3}
                   placeholder="Will be displayed on purchase order"
                   value={notes}
+                  disabled={isApprovedPO}
                   onChange={(e) => setNotes(e.target.value)}
                 />
               </div>
               <div>
                 <label className={labelClass}>Terms & Conditions</label>
                 <textarea
-                  className={`${inputClass} resize-none`}
+                  className={`${inputClass} resize-none ${isApprovedPO ? 'bg-slate-100 opacity-75' : ''}`}
                   rows={3}
                   placeholder="Enter the terms and conditions for this purchase order"
                   value={termsAndConditions}
+                  disabled={isApprovedPO}
                   onChange={(e) => setTermsAndConditions(e.target.value)}
                 />
               </div>
@@ -2513,6 +2489,7 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
                     max={100}
                     className="w-16 px-2 py-1.5 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs text-center font-bold"
                     value={discountPercent || ""}
+                    disabled={isApprovedPO}
                     onChange={(e) =>
                       setDiscountPercent(parseFloat(e.target.value) || 0)
                     }

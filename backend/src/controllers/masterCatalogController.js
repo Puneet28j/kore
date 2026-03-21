@@ -80,3 +80,12 @@ exports.deleteMasterCatalog = async (req, res) => {
     return sendError(res, err);
   }
 };
+
+exports.getVariantStock = async (req, res) => {
+  try {
+    const data = await masterCatalogService.getVariantStock(req.params.variantId);
+    return res.json({ data });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};

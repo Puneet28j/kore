@@ -39,8 +39,8 @@ const normalizePage = (page) => {
 };
 
 const makeFileUrl = (req, filePath) => {
-  const base = `${req.protocol}://${req.get("host")}`;
-  return `${base}/${filePath.replace(/\\/g, "/")}`;
+  // Return relative path for dynamic hosting
+  return filePath.replace(/\\/g, "/");
 };
 
 // ✅ frontend dynamic field names: images_Red, images_Black ...
@@ -116,6 +116,7 @@ const normalizeVariants = (variantsRaw) => {
     }
 
     return {
+      _id: v._id || v.id || undefined,
       itemName: v.itemName,
       color: v.color || "",
       sizeRange: v.sizeRange || "",
@@ -306,7 +307,60 @@ exports.update = async (req, id) => {
 
   if (body.variants !== undefined) {
     const variantsRaw = parseMaybeJson(body.variants, []);
-    doc.variants = normalizeVariants(variantsRaw);
+    const normalized = normalizeVariants(variantsRaw);
+    
+    // Convert current variants to a map for ID-based lookup
+    const existingById = new Map(doc.variants.map(v => [v._id.toString(), v]));
+    
+    // Create a secondary map for name+color based lookup as fallback
+    const existingByNameColor = new Map(
+      doc.variants.map(v => [`${v.itemName.trim().toLowerCase()}|${(v.color || "").trim().toLowerCase()}`, v])
+    );
+
+    const newVariants = [];
+    
+    normalized.forEach(v => {
+      let matched = null;
+
+      // 1. Primary Match: By ID
+      if (v._id && existingById.has(v._id.toString())) {
+        matched = existingById.get(v._id.toString());
+      } 
+      // 2. Secondary Match: By Name + Color (Fallback if ID is missing or mismatched)
+      else {
+        const key = `${v.itemName.trim().toLowerCase()}|${(v.color || "").trim().toLowerCase()}`;
+        if (existingByNameColor.has(key)) {
+          matched = existingByNameColor.get(key);
+        }
+      }
+
+      if (matched) {
+        // Update existing variant fields
+        matched.itemName = v.itemName;
+        matched.color = v.color;
+        matched.sizeRange = v.sizeRange;
+        matched.costPrice = v.costPrice;
+        matched.sellingPrice = v.sellingPrice;
+        matched.mrp = v.mrp;
+        matched.hsnCode = v.hsnCode;
+        matched.sizeMap = v.sizeMap;
+        matched.isActive = v.isActive;
+        
+        // Remove from both maps to prevent double matching or accidental deletion
+        existingById.delete(matched._id.toString());
+        existingByNameColor.delete(`${matched.itemName.trim().toLowerCase()}|${(matched.color || "").trim().toLowerCase()}`);
+        
+        newVariants.push(matched);
+      } else {
+        // 3. No match: Treat as new variant
+        const vCopy = { ...v };
+        delete vCopy._id; // Let Mongoose generate a new unique ID
+        newVariants.push(vCopy);
+      }
+    });
+
+    // Replace the variants array with the updated list (preserving matched ones and adding new ones)
+    doc.variants = newVariants;
   }
 
   // ✅ dynamic color images replace logic
@@ -374,4 +428,105 @@ exports.softDelete = async (id) => {
   doc.isDeleted = true;
   await doc.save();
   return true;
+};
+
+exports.getVariantStock = async (variantId) => {
+  const PurchaseOrder = require("../models/PurchaseOrder");
+  const GRNDraft = require("../models/grn.model");
+  const MasterCatalog = require("../models/MasterCatalog");
+
+  // 1. Find the parent catalog and the variant to get the SKUs
+  const catalog = await MasterCatalog.findOne({ "variants._id": variantId });
+  if (!catalog) {
+    const err = new Error("Variant not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  const variant = catalog.variants.id(variantId);
+  if (!variant) {
+    const err = new Error("Variant not found in catalog");
+    err.statusCode = 404;
+    throw err;
+  }
+  
+  const sizeMap = variant.sizeMap || new Map();
+  const sizes = Array.from(sizeMap.keys());
+  const skus = sizes.map(sz => sizeMap.get(sz)?.sku).filter(Boolean);
+
+  console.log(`[getVariantStock] variantId: ${variantId}, name: ${variant.itemName}, sizes: ${sizes}`);
+
+  // 2. Calculate PO Quantity (Sum of cartonCount * sizeMap[size].qty)
+  // Match by both ID and Name to handle inconsistent storage
+  const pos = await PurchaseOrder.find({
+    $or: [
+      { "items.variantId": variantId.toString() },
+      { "items.itemName": variant.itemName }
+    ],
+    status: "SENT",
+    billStatus: "APPROVED",
+    isDeleted: false
+  }).lean();
+
+  console.log(`[getVariantStock] found ${pos.length} sent POs`);
+
+  const poMap = {};
+  sizes.forEach(sz => poMap[sz] = 0);
+
+  pos.forEach(po => {
+    (po.items || []).forEach(item => {
+      // Loose match: ID or Name
+      if (String(item.variantId) === String(variantId) || item.itemName === variant.itemName) {
+        sizes.forEach(sz => {
+          const qtyPerCarton = item.sizeMap?.[sz]?.qty || 0;
+          const cartonCount = item.cartonCount || 0;
+          poMap[sz] += (cartonCount * qtyPerCarton);
+        });
+      }
+    });
+  });
+
+  // 3. Calculate Live Stock (Count occurrences in submitted GRNs referencing these POs or matching SKUs)
+  const poNumbers = pos.map(p => p.poNumber).filter(Boolean);
+  
+  const grns = await GRNDraft.find({
+    status: "SUBMITTED",
+    $or: [
+      { referenceNumber: { $in: poNumbers } },
+      { "cartons.pairBarcodes": { $in: skus } }
+    ]
+  }).lean();
+
+  console.log(`[getVariantStock] found ${grns.length} submitted GRNs`);
+
+  const liveStockMap = {};
+  sizes.forEach(sz => liveStockMap[sz] = 0);
+
+  const skuToSize = {};
+  sizes.forEach(sz => {
+    const entry = sizeMap.get(sz);
+    if (entry && entry.sku) skuToSize[entry.sku] = sz;
+  });
+
+  grns.forEach(grn => {
+    (grn.cartons || []).forEach(carton => {
+      (carton.pairBarcodes || []).forEach(barcode => {
+        // Try SKU match
+        let sz = skuToSize[barcode];
+        
+        // Fallback: If barcode is "ItemName-Size"
+        if (!sz && barcode.startsWith(variant.itemName + "-")) {
+          const parts = barcode.split("-");
+          sz = parts[parts.length - 1];
+        }
+        
+        if (sz && liveStockMap[sz] !== undefined) {
+          liveStockMap[sz] += 1;
+        }
+      });
+    });
+  });
+
+  console.log(`[getVariantStock] final -> poMap:`, poMap, `liveStockMap:`, liveStockMap);
+
+  return { poMap, liveStockMap };
 };

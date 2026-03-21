@@ -169,6 +169,7 @@ const App: React.FC = () => {
           sku: topSku,
           name: item.articleName,
           category: item.gender,
+          assortmentId: item.assortmentId || "",
           productCategory: item.categoryId?.name,
           brand: item.brandId?.name,
           pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
@@ -281,7 +282,14 @@ const App: React.FC = () => {
     price: number;
   };
 
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    const saved = localStorage.getItem("kore_cart");
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("kore_cart", JSON.stringify(cart));
+  }, [cart]);
 
   // PERSISTENCE
   useEffect(() => {
@@ -472,12 +480,27 @@ const App: React.FC = () => {
   const placeOrder = async () => {
     if (!user || cart.length === 0) return;
 
+    const availableItems = cart.filter(i => {
+      const art = articles.find(a => a.id === i.articleId);
+      return art?.status === "AVAILABLE";
+    });
+
+    const wishlistItems = cart.filter(i => {
+      const art = articles.find(a => a.id === i.articleId);
+      return art?.status !== "AVAILABLE";
+    });
+
+    if (availableItems.length === 0) {
+      toast.error("No items ready for booking. Wishlist items will be available on their expected dates.");
+      return;
+    }
+
     const payload: Partial<Order> = {
       distributorId: user.id,
       distributorName: user.name,
       date: new Date().toISOString().split("T")[0],
       status: OrderStatus.BOOKED,
-      items: cart.map((item) => ({
+      items: availableItems.map((item) => ({
         articleId: item.articleId,
         variantId: item.variantId,
         sizeQuantities: item.sizeQuantities,
@@ -485,9 +508,9 @@ const App: React.FC = () => {
         pairCount: item.pairCount,
         price: item.price,
       })),
-      totalAmount: cartTotal,
-      totalCartons: cart.reduce((sum, i) => sum + i.cartonCount, 0),
-      totalPairs: cart.reduce((sum, i) => sum + i.pairCount, 0),
+      totalAmount: availableItems.reduce((sum, i) => sum + i.price, 0),
+      totalCartons: availableItems.reduce((sum, i) => sum + i.cartonCount, 0),
+      totalPairs: availableItems.reduce((sum, i) => sum + i.pairCount, 0),
     };
 
     const placePromise = async () => {
@@ -499,7 +522,7 @@ const App: React.FC = () => {
       // reserve stock
       setInventory((prev) =>
         prev.map((inv) => {
-          const cartItem = cart.find((ci) => ci.articleId === inv.articleId);
+          const cartItem = availableItems.find((ci) => ci.articleId === inv.articleId);
           if (cartItem) {
             const newReserved = inv.reservedStock + cartItem.cartonCount;
             return {
@@ -512,7 +535,7 @@ const App: React.FC = () => {
         })
       );
 
-      setCart([]);
+      setCart(wishlistItems);
       setActiveTab("orders");
     };
 
@@ -638,6 +661,7 @@ const App: React.FC = () => {
             user.role === UserRole.MANAGER) && (
             <ProductMaster
               addArticle={addArticle}
+              updateArticle={updateArticle}
               editingId={editingArticleId}
               onSuccess={fetchArticles}
               onCancelEdit={() => {
@@ -661,6 +685,7 @@ const App: React.FC = () => {
             onViewVariant={handleViewVariant}
             expandedIds={catalogueExpandedIds}
             setExpandedIds={setCatalogueExpandedIds}
+            onSuccess={fetchArticles}
           />
         )}
 
@@ -756,7 +781,7 @@ const App: React.FC = () => {
         )}
 
         {activeTab === "wishlist" && user.role === UserRole.DISTRIBUTOR && (
-          <Wishlist articles={articles} />
+          <Wishlist articles={articles} addToCart={addToCart} />
         )}
 
         {activeTab === "cart" && user.role === UserRole.DISTRIBUTOR && (

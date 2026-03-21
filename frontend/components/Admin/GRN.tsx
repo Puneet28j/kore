@@ -125,7 +125,11 @@ const GRN: React.FC = () => {
   /* ── Load PO list ── */
   useEffect(() => {
     grnService.listReferences("").then((res) => {
-      setPoRefs(res.data || []);
+      // Filter out Catalogue IDs (starting with CAT-)
+      const filtered = (res.data || []).filter(
+        (ref) => !ref.poNo.startsWith("CAT-")
+      );
+      setPoRefs(filtered);
     });
   }, []);
 
@@ -439,12 +443,8 @@ const GRN: React.FC = () => {
   };
 
   /* ── PO dropdown options ── */
-  const poOptions = poRefs.map(
-    (po) => `${po.poNo} • ${po.vendor} • ${po.article}`
-  );
-  const selectedPOLabel = poRefs.find((p) => p.id === selectedPOId)
-    ? `${selectedPOId} • ${poRefs.find((p) => p.id === selectedPOId)?.vendor} • ${poRefs.find((p) => p.id === selectedPOId)?.article}`
-    : "";
+  const poOptions = poRefs.map((po) => po.poNo);
+  const selectedPOLabel = poRefs.find((p) => p.id === selectedPOId)?.poNo || "";
 
   /* ── Item dropdown options ── */
   const itemOptions = (poDetail?.items || []).map((i) => i.itemName);
@@ -513,8 +513,7 @@ const GRN: React.FC = () => {
                   options={poOptions}
                   value={selectedPOLabel}
                   onChange={(val) => {
-                    const poNo = val.split(" • ")[0];
-                    const ref = poRefs.find((p) => p.poNo === poNo);
+                    const ref = poRefs.find((p) => p.poNo === val);
                     if (ref) {
                       setSelectedPOId(ref.id);
                       setSelectedItemName("");
@@ -785,46 +784,46 @@ const GRN: React.FC = () => {
                           </p>
                         </div>
 
-                        {/* Box cards */}
-                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-3 2xl:grid-cols-4">
-                          {boxes.map((box, idx) => (
-                            <div
-                              key={`${box.size}-${idx}`}
-                              className={`flex flex-col items-center justify-center rounded-2xl border p-4 transition-all duration-300 ${
-                                box.isScanned
-                                  ? "border-emerald-300 bg-emerald-50 shadow-sm shadow-emerald-100"
-                                  : "border-slate-200 bg-white"
-                              }`}
-                            >
-                              <div
-                                className={`mb-2 flex h-10 w-10 items-center justify-center rounded-full ${
-                                  box.isScanned
-                                    ? "bg-emerald-500 text-white"
-                                    : "bg-slate-100 text-slate-400"
-                                }`}
-                              >
-                                {box.isScanned ? (
-                                  <CheckCircle2 size={20} />
-                                ) : (
-                                  <span className="text-sm font-bold">
-                                    {box.size}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs font-bold text-slate-900">
-                                Size {box.size}
-                              </p>
-                              <p className="mt-0.5 text-[10px] font-mono text-slate-500 truncate w-full text-center">
-                                {box.sku}
-                              </p>
-                              {box.isScanned && (
-                                <span className="mt-1 text-[10px] font-black text-emerald-600">
-                                  SCANNED
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
+                        {/* Box cards grid: Responsive and dense */}
+                     <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+  {boxes.map((box, idx) => (
+    <div
+      key={`${box.size}-${idx}`}
+      className="group relative flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50/50 p-2 transition-all hover:bg-white hover:border-emerald-200 hover:shadow-sm"
+    >
+      {/* Sequence Number - Small & Subtle */}
+      <span className="text-[10px] font-bold text-slate-400 tabular-nums ml-1">
+        {String(idx + 1).padStart(2, '0')}
+      </span>
+
+      {/* Size Badge - The Primary Data Point */}
+      <div className="flex h-8 w-10 shrink-0 items-center justify-center rounded bg-white font-mono text-xs font-bold text-slate-700 shadow-sm ring-1 ring-slate-200 group-hover:ring-emerald-500/30">
+        {box.size}
+      </div>
+
+      {/* SKU & Status */}
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate font-mono text-[11px] font-medium tracking-tight text-slate-600 group-hover:text-emerald-700">
+          {box.sku}
+        </span>
+        <div className="flex items-center gap-1">
+          <div className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-[9px] font-semibold uppercase tracking-tighter text-emerald-600/80">
+            Verified
+          </span>
+        </div>
+      </div>
+
+      {/* Subtle "New" Indicator (only for the last scanned item) */}
+      {idx === boxes.length - 1 && (
+        <div className="absolute -right-1 -top-1 flex h-4 w-4">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+          <span className="relative inline-flex h-4 w-4 rounded-full bg-emerald-500"></span>
+        </div>
+      )}
+    </div>
+  ))}
+</div>
                       </SectionCard>
                     )}
 
@@ -868,12 +867,12 @@ const GRN: React.FC = () => {
                                   setSelectedItemName(item.itemName);
                                   setCurrentCartonIdx(cIdx);
                                 }}
-                                className={`w-full rounded-2xl border p-4 text-left transition ${
+                                className={`w-full rounded-xl border p-3 text-left transition-all duration-200 ${
                                   isActive
-                                    ? "border-emerald-300 bg-emerald-50 shadow-md"
+                                    ? "border-emerald-500 bg-emerald-50 shadow-sm"
                                     : isDone
-                                    ? "border-slate-200 bg-slate-50"
-                                    : "border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/30"
+                                    ? "border-slate-100 bg-slate-50/50 opacity-80"
+                                    : "border-slate-100 bg-white hover:border-indigo-200 hover:shadow-md hover:shadow-indigo-50/30"
                                 }`}
                               >
                                 <div className="flex items-center justify-between gap-3">

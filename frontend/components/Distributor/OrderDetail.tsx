@@ -14,6 +14,7 @@ import {
   FileText
 } from 'lucide-react';
 import { Order, OrderStatus, Article } from '../../types';
+import { getImageUrl } from '../../utils/imageUtils';
 
 interface OrderDetailProps {
   order: Order;
@@ -113,13 +114,16 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, onBack }) =>
                   <div key={idx} className="px-6 py-4 flex items-center gap-4 hover:bg-slate-50 transition-colors">
                     <div className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-50 shrink-0">
                       <img 
-                        src={variant?.images?.[0] || article?.imageUrl || ''} 
+                        src={getImageUrl(variant?.images?.[0] || article?.imageUrl || '')} 
                         alt={article?.name || 'Article'} 
                         className="w-full h-full object-cover"
                       />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <h4 className="font-bold text-sm text-slate-900 truncate tracking-tight">{article?.name || 'Unknown Article'}</h4>
+                      <h4 className="font-bold text-sm text-slate-900 truncate tracking-tight">
+                        {article?.name || 'Unknown Article'} 
+                        {variant && ` - ${variant.color} - ${variant.sizeRange}`}
+                      </h4>
                       <div className="flex items-center gap-3 mt-0.5">
                         <span className="text-[10px] font-semibold text-slate-400">
                           {variant?.color || 'N/A'}

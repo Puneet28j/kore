@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   ArrowLeft,
   Edit2,
@@ -11,6 +11,7 @@ import {
   ShoppingBag,
 } from "lucide-react";
 import { Article, Variant } from "../../types";
+import { getImageUrl } from "../../utils/imageUtils";
 
 interface VariantDetailsPageProps {
   article: Article;
@@ -20,7 +21,7 @@ interface VariantDetailsPageProps {
   onDelete: (id: string) => void;
 }
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL.replace("/api", "");
+// BASE_URL removed in favor of getImageUrl utility
 
 const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   article,
@@ -31,10 +32,35 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 }) => {
   const [activeImage, setActiveImage] = useState(0);
   const [copiedSku, setCopiedSku] = useState<string | null>(null);
+  const [stockData, setStockData] = useState<{
+    poMap: Record<string, number>;
+    liveStockMap: Record<string, number>;
+  } | null>(null);
+  const [loadingStock, setLoadingStock] = useState(false);
+
+  useEffect(() => {
+    const fetchStock = async () => {
+      setLoadingStock(true);
+      try {
+        const url = import.meta.env.VITE_API_BASE_URL + `/master-catalog/variants/${variant.id}/stock`;
+        console.log("[VariantDetailsPage] Fetching stock from:", url);
+        const res = await fetch(url);
+        console.log("[VariantDetailsPage] Fetch response status:", res.status);
+        const json = await res.json();
+        console.log("[VariantDetailsPage] Stock data received:", json.data);
+        setStockData(json.data);
+      } catch (err) {
+        console.error("Failed to fetch variant stock", err);
+      } finally {
+        setLoadingStock(false);
+      }
+    };
+    if (variant.id) fetchStock();
+  }, [variant.id]);
 
   const imgSrc = (url: string | undefined) => {
     if (!url) return "";
-    return url.startsWith("http") ? url : `${BASE_URL}${url}`;
+    return getImageUrl(url);
   };
 
   const colorMediaList = article.colorMedia || [];
@@ -77,10 +103,11 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
   const currentSizeMap = variant.sizeMap || variant.sizeQuantities || {};
   const currentBookingMap = variant.bookingMap || {};
-  const currentPOMap = variant.poMap || {};
+  const currentPOMap = stockData?.poMap || {};
+  const currentLiveStockMap = stockData?.liveStockMap || {};
 
   // Force totalPairs to 0 as current sizeMap values reflect assortment templates, not actual stock
-  const totalPairs = 0;
+  const totalPairs = Object.values(currentLiveStockMap).reduce((s: number, v) => s + (Number(v) || 0), 0);
 
   const totalAssortment = Object.values(currentSizeMap).reduce((s: number, data) => {
     const qty = typeof data === "object" ? (data as any)?.qty : Number(data);
@@ -373,7 +400,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-black text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
-                  <Package size={14} /> Size Stock
+                  <Package size={14} /> Live Stock
                 </h4>
                 <span className="text-[10px] font-bold text-slate-400">
                   pairs
@@ -382,16 +409,15 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {sizes.map((sz) => {
+                  const qty = currentLiveStockMap[sz] || 0;
                   const data = currentSizeMap[sz];
-                  const qty = 0; // Forced to 0 for master catalog display
                   const sku =
                     (typeof data === "object"
                       ? (data as any)?.sku
                       : variant.sizeSkus?.[sz]) || "";
 
-                  let statusColor = "rose"; // Forced to zero stock status
-                  let bgClass = "bg-rose-50/60 border-rose-200";
-                  let qtyClass = "text-rose-600";
+                  let bgClass = qty > 0 ? "bg-indigo-50/60 border-indigo-200" : "bg-rose-50/60 border-rose-200";
+                  let qtyClass = qty > 0 ? "text-indigo-600" : "text-rose-600";
 
                   return (
                     <div

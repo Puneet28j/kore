@@ -26,9 +26,11 @@ import { AssortmentType, Article, Variant } from "../../types";
 import { ASSORTMENTS } from "../../constants";
 import SearchableSelect from "../SearchableSelect";
 import { masterCatalogService } from "../../services/masterCatalogService";
+import { getImageUrl } from "../../utils/imageUtils";
 
 interface ProductMasterProps {
   addArticle: (article: Article) => void;
+  updateArticle?: (article: Article) => void;
   editingId?: string | null;
   onCancelEdit?: () => void;
   onSuccess?: () => void;
@@ -36,6 +38,7 @@ interface ProductMasterProps {
 
 const ProductMaster: React.FC<ProductMasterProps> = ({ 
   addArticle, 
+  updateArticle,
   editingId, 
   onCancelEdit,
   onSuccess 
@@ -139,7 +142,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           item.colorMedia.forEach((cm: any) => {
             mediaMap[cm.color] = {
               images: [], // We don't have the File objects for existing images
-              previews: cm.images?.map((img: any) => img.url) || [],
+              previews: cm.images?.map((img: any) => getImageUrl(img.url || img)) || [],
             };
           });
           setColorMedia(mediaMap);
@@ -621,14 +624,15 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     data.append("sizeRanges", JSON.stringify(sizeRanges));
 
     // Normalize variants for backend
-   const normalizedVariants = variants.map((v) => ({
-  itemName: v.itemName,
-  costPrice: v.costPrice,
-  sellingPrice: v.sellingPrice || 0,
-  mrp: v.mrp,
-  hsnCode: v.hsnCode,
-  color: v.color,
-  sizeRange: v.sizeRange,
+    const normalizedVariants = variants.map((v) => ({
+      _id: v.id?.startsWith('var-') ? undefined : v.id, // Only send if it's a real DB ID, not a temporary one
+      itemName: v.itemName,
+      costPrice: v.costPrice,
+      sellingPrice: v.sellingPrice || 0,
+      mrp: v.mrp,
+      hsnCode: v.hsnCode,
+      color: v.color,
+      sizeRange: v.sizeRange,
       sizeQuantities: v.sizeQuantities || {},
       sizeSkus: v.sizeSkus || {},
     }));
@@ -654,7 +658,54 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
     const savePromise = async () => {
       if (editingId) {
-        await masterCatalogService.updateMasterItem(editingId, data);
+        const res = await masterCatalogService.updateMasterItem(editingId, data);
+        const item = res.data || res;
+
+        // Map backend item to Article type (consistent with App.tsx fetchArticles logic)
+        const normalizedVariants = (item.variants || []).map((v: any) => {
+          const sizeSkus: Record<string, string> = {};
+          const sizeQuantities: Record<string, number> = {};
+          if (v.sizeMap) {
+            Object.entries(v.sizeMap).forEach(([sz, cell]: [string, any]) => {
+              sizeSkus[sz] = cell.sku || "";
+              sizeQuantities[sz] = cell.qty || 0;
+            });
+          }
+          return {
+            ...v,
+            id: v._id,
+            sizeSkus,
+            sizeQuantities,
+          };
+        });
+
+        const mappedArticle: Article = {
+          id: item._id,
+          sku: item.sku || "",
+          name: item.articleName,
+          category: item.gender,
+          assortmentId: item.assortmentId || "",
+          productCategory: item.categoryId?.name,
+          brand: item.brandId?.name,
+          pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+          mrp: item.mrp,
+          soleColor: item.soleColor,
+          manufacturer: item.manufacturerCompanyId?.name,
+          unit: item.unitId?.name,
+          status: item.stage,
+          expectedDate: item.expectedAvailableDate
+            ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
+            : "",
+          imageUrl: item.primaryImage?.url,
+          secondaryImages: item.secondaryImages || [],
+          selectedSizes: item.sizeRanges || [],
+          selectedColors: item.productColors || [],
+          colorMedia: item.colorMedia || [],
+          variants: normalizedVariants,
+          isActive: item.isActive !== false,
+        };
+
+        if (updateArticle) updateArticle(mappedArticle);
         if (onSuccess) onSuccess();
         if (onCancelEdit) onCancelEdit();
       } else {

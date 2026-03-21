@@ -22,4 +22,7 @@ router.put("/:id", maybeUpload, ctrl.updateMasterCatalog);
 router.patch("/:id/toggle-status", ctrl.toggleMasterCatalogStatus);
 router.delete("/:id", ctrl.deleteMasterCatalog);
 
-module.exports = router;
+// Stock aggregation
+router.get("/variants/:variantId/stock", ctrl.getVariantStock);
+
+module.exports = router;

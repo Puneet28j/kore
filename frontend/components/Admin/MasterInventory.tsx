@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { Search, Plus, Minus, Database, ArrowUpCircle, ArrowDownCircle, AlertTriangle, X } from 'lucide-react';
 import { Inventory, Article } from '../../types';
+import { getImageUrl } from '../../utils/imageUtils';
 
 interface MasterInventoryProps {
   inventory: Inventory[];
@@ -105,7 +106,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
               <div key={inv.articleId} className="p-4 space-y-4">
                 <div className="flex items-start gap-4">
                   <div className="relative shrink-0">
-                    <img src={article.imageUrl} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100" />
+                    <img src={getImageUrl(article.imageUrl)} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100" />
                     {isLowStock && (
                       <div className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 rounded-full border-2 border-white animate-pulse"></div>
                     )}
@@ -183,7 +184,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-4">
                         <div className="relative">
-                          <img src={article.imageUrl} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-100" />
+                          <img src={getImageUrl(article.imageUrl)} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-100" />
                           {isLowStock && (
                             <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white animate-pulse"></div>
                           )}

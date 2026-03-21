@@ -88,6 +88,7 @@ export interface Article {
   brand?: string;
   status?: "AVAILABLE" | "WISHLIST";
   expectedDate?: string;
+  expectedAvailableDate?: string;
   manufacturer?: string;
   unit?: string;
   selectedSizes?: string[];
@@ -276,4 +277,6 @@ export interface PurchaseOrder {
   billRemark?: string;
   billApprovedAt?: string;
   billRejectedAt?: string;
+  isRevised?: boolean;
+  revisionCount?: number;
 }

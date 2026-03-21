@@ -91,6 +91,9 @@ const PurchaseOrderSchema = new mongoose.Schema(
     billApprovedAt: { type: Date, default: null },
     billRejectedAt: { type: Date, default: null },
 
+    isRevised: { type: Boolean, default: false },
+    revisionCount: { type: Number, default: 0 },
+
     isDeleted: { type: Boolean, default: false, index: true },
   },
   { timestamps: true }

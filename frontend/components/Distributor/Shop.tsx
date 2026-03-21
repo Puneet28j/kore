@@ -126,8 +126,12 @@ const ArticleCard: React.FC<{
     return gallery;
   }, [article, color, variants]);
 
-  const [currentImageIndex, setCurrentImageIndex] = useState(1);
+  const [currentImageIndex, setCurrentImageIndex] = useState(images.length > 1 ? 1 : 0);
   const [transitionEnabled, setTransitionEnabled] = useState(true);
+
+  useEffect(() => {
+    setCurrentImageIndex(images.length > 1 ? 1 : 0);
+  }, [images.length]);
 
   useEffect(() => {
     if (images.length <= 1) return;
@@ -337,34 +341,36 @@ const ArticleCard: React.FC<{
           </div>
         )}
 
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex flex-col">
-             <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Cartons</span>
-             <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 shadow-inner">
-                <button 
-                  onClick={() => setCartonCount(prev => Math.max(1, prev - 1))}
-                  className="p-1.5 hover:bg-white rounded-lg text-slate-600 transition-all disabled:opacity-30"
-                  disabled={cartonCount <= 1}
-                >
-                  <Minus size={14} />
-                </button>
-                <span className="px-3 font-black text-slate-900 min-w-[32px] text-center">{cartonCount}</span>
-                <button 
-                  onClick={() => setCartonCount(prev => prev + 1)}
-                  className="p-1.5 hover:bg-white rounded-lg text-slate-600 transition-all"
-                >
-                  <Plus size={14} />
-                </button>
+        <div className="flex items-stretch gap-3">
+          <div className="flex items-center bg-slate-50 border border-slate-200 rounded-2xl p-1 shadow-inner group/carton">
+             <button 
+               onClick={() => setCartonCount(prev => Math.max(1, prev - 1))}
+               className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all disabled:opacity-20"
+               disabled={cartonCount <= 1}
+             >
+               <Minus size={14} />
+             </button>
+             
+             <div className="flex flex-col items-center justify-center min-w-[56px] px-1">
+                <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter mb-0.5 leading-none">Cartons</span>
+                <span className="text-sm font-black text-slate-900 leading-none">{cartonCount}</span>
              </div>
+
+             <button 
+               onClick={() => setCartonCount(prev => prev + 1)}
+               className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all"
+             >
+               <Plus size={14} />
+             </button>
           </div>
 
           <button
             onClick={handleAdd}
             disabled={totalPairs === 0}
-            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-2xl py-3.5 px-4 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-2xl px-6 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 group/btn active:scale-95"
           >
-            <ShoppingCart size={16} />
-            Book {totalPairs} Pairs
+            <ShoppingCart size={16} className="group-hover/btn:scale-110 transition-transform" />
+            <span>Book</span>
           </button>
         </div>
       </div>
@@ -373,7 +379,7 @@ const ArticleCard: React.FC<{
 };
 
 const Shop: React.FC<ShopProps> = ({
-  articles,
+  articles, 
   inventory,
   cart,
   addToCart,

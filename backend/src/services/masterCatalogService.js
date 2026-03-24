@@ -142,7 +142,8 @@ exports.create = async (req) => {
     Array.isArray(productColors) ? productColors : []
   );
 
-  const { primaryImage, secondaryImages } = buildFlatImagesFromColorMedia(colorMedia);
+  const { primaryImage, secondaryImages } =
+    buildFlatImagesFromColorMedia(colorMedia);
 
   if (!primaryImage?.url) {
     const err = new Error("At least one product image is required");
@@ -308,27 +309,36 @@ exports.update = async (req, id) => {
   if (body.variants !== undefined) {
     const variantsRaw = parseMaybeJson(body.variants, []);
     const normalized = normalizeVariants(variantsRaw);
-    
+
     // Convert current variants to a map for ID-based lookup
-    const existingById = new Map(doc.variants.map(v => [v._id.toString(), v]));
-    
+    const existingById = new Map(
+      doc.variants.map((v) => [v._id.toString(), v])
+    );
+
     // Create a secondary map for name+color based lookup as fallback
     const existingByNameColor = new Map(
-      doc.variants.map(v => [`${v.itemName.trim().toLowerCase()}|${(v.color || "").trim().toLowerCase()}`, v])
+      doc.variants.map((v) => [
+        `${v.itemName.trim().toLowerCase()}|${(v.color || "")
+          .trim()
+          .toLowerCase()}`,
+        v,
+      ])
     );
 
     const newVariants = [];
-    
-    normalized.forEach(v => {
+
+    normalized.forEach((v) => {
       let matched = null;
 
       // 1. Primary Match: By ID
       if (v._id && existingById.has(v._id.toString())) {
         matched = existingById.get(v._id.toString());
-      } 
+      }
       // 2. Secondary Match: By Name + Color (Fallback if ID is missing or mismatched)
       else {
-        const key = `${v.itemName.trim().toLowerCase()}|${(v.color || "").trim().toLowerCase()}`;
+        const key = `${v.itemName.trim().toLowerCase()}|${(v.color || "")
+          .trim()
+          .toLowerCase()}`;
         if (existingByNameColor.has(key)) {
           matched = existingByNameColor.get(key);
         }
@@ -345,11 +355,15 @@ exports.update = async (req, id) => {
         matched.hsnCode = v.hsnCode;
         matched.sizeMap = v.sizeMap;
         matched.isActive = v.isActive;
-        
+
         // Remove from both maps to prevent double matching or accidental deletion
         existingById.delete(matched._id.toString());
-        existingByNameColor.delete(`${matched.itemName.trim().toLowerCase()}|${(matched.color || "").trim().toLowerCase()}`);
-        
+        existingByNameColor.delete(
+          `${matched.itemName.trim().toLowerCase()}|${(matched.color || "")
+            .trim()
+            .toLowerCase()}`
+        );
+
         newVariants.push(matched);
       } else {
         // 3. No match: Treat as new variant
@@ -386,16 +400,20 @@ exports.update = async (req, id) => {
         existingMap.set(cm.color, [...oldImages, ...cm.images]);
       });
 
-      doc.colorMedia = Array.from(existingMap.entries()).map(([color, images]) => ({
-        color,
-        images: images.map((img, idx) => ({
-          ...img,
-          isCover: idx === 0,
-        })),
-      }));
+      doc.colorMedia = Array.from(existingMap.entries()).map(
+        ([color, images]) => ({
+          color,
+          images: images.map((img, idx) => ({
+            ...img,
+            isCover: idx === 0,
+          })),
+        })
+      );
     }
 
-    const { primaryImage, secondaryImages } = buildFlatImagesFromColorMedia(doc.colorMedia);
+    const { primaryImage, secondaryImages } = buildFlatImagesFromColorMedia(
+      doc.colorMedia
+    );
     doc.primaryImage = primaryImage;
     doc.secondaryImages = secondaryImages;
   }
@@ -448,77 +466,194 @@ exports.getVariantStock = async (variantId) => {
     err.statusCode = 404;
     throw err;
   }
-  
-  const sizeMap = variant.sizeMap || new Map();
-  const sizes = Array.from(sizeMap.keys());
-  const skus = sizes.map(sz => sizeMap.get(sz)?.sku).filter(Boolean);
 
-  console.log(`[getVariantStock] variantId: ${variantId}, name: ${variant.itemName}, sizes: ${sizes}`);
+  // 1a. Normalize sizeMap (support Map + plain object + legacy sizeQuantities/sizeSkus)
+  let normalizedSizeMap = new Map();
+
+  const setSizeCell = (size, cell) => {
+    const sizeKey = String(size || "").trim();
+    if (!sizeKey) return;
+    const qty = Number(cell?.qty || 0);
+    const sku = (cell?.sku || "").trim();
+    normalizedSizeMap.set(sizeKey, { qty, sku });
+  };
+
+  if (variant.sizeMap instanceof Map) {
+    for (const [size, cell] of variant.sizeMap.entries()) {
+      setSizeCell(size, cell);
+    }
+  } else if (variant.sizeMap && typeof variant.sizeMap === "object") {
+    Object.keys(variant.sizeMap).forEach((size) => {
+      setSizeCell(size, variant.sizeMap[size]);
+    });
+  }
+
+  if (
+    normalizedSizeMap.size === 0 &&
+    variant.sizeQuantities &&
+    typeof variant.sizeQuantities === "object"
+  ) {
+    Object.keys(variant.sizeQuantities).forEach((size) => {
+      setSizeCell(size, {
+        qty: variant.sizeQuantities[size],
+        sku: variant.sizeSkus?.[size] || "",
+      });
+    });
+  }
+
+  const sizes = Array.from(normalizedSizeMap.keys());
+  let skus = sizes
+    .map((sz) => (normalizedSizeMap.get(sz) || {}).sku)
+    .filter((v) => typeof v === "string" && v.trim().length > 0);
+
+  // 1b. If variant lacks SKUs, try to fetch them from related PO
+  if (skus.length === 0) {
+    const PurchaseOrder = require("../models/PurchaseOrder");
+    const posWithSkus = await PurchaseOrder.find({
+      isDeleted: false,
+      $or: [
+        { "items.variantId": variantId.toString() },
+        { "items.itemName": variant.itemName || "" },
+      ],
+    })
+      .lean()
+      .limit(1);
+
+    if (posWithSkus.length > 0) {
+      const poItem = (posWithSkus[0].items || []).find(
+        (item) =>
+          String(item.variantId) === String(variantId) ||
+          item.itemName === variant.itemName
+      );
+
+      if (poItem && poItem.sizeMap) {
+        for (const [sz, cell] of Object.entries(poItem.sizeMap)) {
+          if (!normalizedSizeMap.has(sz) && cell && cell.sku) {
+            setSizeCell(sz, cell);
+          } else if (normalizedSizeMap.has(sz)) {
+            const existing = normalizedSizeMap.get(sz);
+            if (!existing.sku && cell && cell.sku) {
+              existing.sku = cell.sku;
+              normalizedSizeMap.set(sz, existing);
+            }
+          }
+        }
+
+        // Recalculate skus after fetching from PO
+        skus = Array.from(normalizedSizeMap.values())
+          .map((cell) => (cell && cell.sku ? cell.sku : ""))
+          .filter((v) => typeof v === "string" && v.trim().length > 0);
+      }
+    }
+  }
+
+  console.log(
+    `[getVariantStock] variantId: ${variantId}, name: ${variant.itemName}, sizes: ${sizes}, skus: ${skus}`
+  );
 
   // 2. Calculate PO Quantity (Sum of cartonCount * sizeMap[size].qty)
   // Match by both ID and Name to handle inconsistent storage
-  const pos = await PurchaseOrder.find({
+  const poFilter = {
+    isDeleted: false,
     $or: [
       { "items.variantId": variantId.toString() },
-      { "items.itemName": variant.itemName }
+      { "items.itemName": variant.itemName || "" },
     ],
-    status: "SENT",
-    billStatus: "APPROVED",
-    isDeleted: false
-  }).lean();
+  };
 
-  console.log(`[getVariantStock] found ${pos.length} sent POs`);
+  if (variant.sku) {
+    poFilter.$or.push({ "items.sku": variant.sku });
+  }
+
+  const pos = await PurchaseOrder.find(poFilter).lean();
+
+  console.log(`[getVariantStock] found ${pos.length} matched POs`);
 
   const poMap = {};
-  sizes.forEach(sz => poMap[sz] = 0);
+  sizes.forEach((sz) => {
+    poMap[sz] = 0;
+  });
 
-  pos.forEach(po => {
-    (po.items || []).forEach(item => {
-      // Loose match: ID or Name
-      if (String(item.variantId) === String(variantId) || item.itemName === variant.itemName) {
-        sizes.forEach(sz => {
+  pos.forEach((po) => {
+    (po.items || []).forEach((item) => {
+      if (
+        String(item.variantId) === String(variantId) ||
+        item.itemName === variant.itemName ||
+        (variant.sku && item.sku === variant.sku)
+      ) {
+        sizes.forEach((sz) => {
           const qtyPerCarton = item.sizeMap?.[sz]?.qty || 0;
           const cartonCount = item.cartonCount || 0;
-          poMap[sz] += (cartonCount * qtyPerCarton);
+          poMap[sz] += cartonCount * qtyPerCarton;
         });
       }
     });
   });
 
-  // 3. Calculate Live Stock (Count occurrences in submitted GRNs referencing these POs or matching SKUs)
-  const poNumbers = pos.map(p => p.poNumber).filter(Boolean);
-  
+  const poNumbers = pos.map((p) => p.poNumber).filter(Boolean);
+
+  // 3. Find GRNs that reference those POs and accumulate live stock
   const grns = await GRNDraft.find({
     status: "SUBMITTED",
-    $or: [
-      { referenceNumber: { $in: poNumbers } },
-      { "cartons.pairBarcodes": { $in: skus } }
-    ]
+    refId: { $in: poNumbers },
   }).lean();
 
-  console.log(`[getVariantStock] found ${grns.length} submitted GRNs`);
+  console.log(
+    `[getVariantStock] found ${grns.length} submitted GRNs for refIds: ${poNumbers}`
+  );
 
   const liveStockMap = {};
-  sizes.forEach(sz => liveStockMap[sz] = 0);
-
-  const skuToSize = {};
-  sizes.forEach(sz => {
-    const entry = sizeMap.get(sz);
-    if (entry && entry.sku) skuToSize[entry.sku] = sz;
+  sizes.forEach((sz) => {
+    liveStockMap[sz] = 0;
   });
 
-  grns.forEach(grn => {
-    (grn.cartons || []).forEach(carton => {
-      (carton.pairBarcodes || []).forEach(barcode => {
-        // Try SKU match
-        let sz = skuToSize[barcode];
-        
-        // Fallback: If barcode is "ItemName-Size"
-        if (!sz && barcode.startsWith(variant.itemName + "-")) {
-          const parts = barcode.split("-");
-          sz = parts[parts.length - 1];
+  // Build SKU-to-size mapping from the actual POs (source of truth)
+  const skuToSizeFromPO = {};
+  pos.forEach((po) => {
+    (po.items || []).forEach((item) => {
+      if (
+        String(item.variantId) === String(variantId) ||
+        item.itemName === variant.itemName ||
+        (variant.sku && item.sku === variant.sku)
+      ) {
+        // Extract SKU to size mapping from this PO item
+        if (item.sizeMap) {
+          for (const [size, cell] of Object.entries(item.sizeMap)) {
+            if (cell && cell.sku) {
+              skuToSizeFromPO[cell.sku] = size;
+            }
+          }
         }
-        
+      }
+    });
+  });
+
+  // Also include variants SKUs as fallback
+  const skuToSize = { ...skuToSizeFromPO };
+  sizes.forEach((sz) => {
+    const entry = normalizedSizeMap.get(sz);
+    if (entry && entry.sku && !skuToSize[entry.sku]) {
+      skuToSize[entry.sku] = sz;
+    }
+  });
+
+  // Process GRNs and accumulate stock using the SKU-to-size mapping
+  grns.forEach((grn) => {
+    (grn.cartons || []).forEach((carton) => {
+      (carton.pairBarcodes || []).forEach((barcode) => {
+        // First try direct SKU match (most reliable)
+        let sz = skuToSize[barcode];
+
+        // Fallback: try pattern matching if barcode follows {itemName}-{size} format
+        if (!sz && variant.itemName && typeof barcode === "string") {
+          const fallbackPrefix = `${variant.itemName}-`;
+          if (barcode.startsWith(fallbackPrefix)) {
+            const parts = barcode.split("-");
+            sz = parts[parts.length - 1];
+          }
+        }
+
+        // Increment stock if size found and valid
         if (sz && liveStockMap[sz] !== undefined) {
           liveStockMap[sz] += 1;
         }
@@ -526,7 +661,12 @@ exports.getVariantStock = async (variantId) => {
     });
   });
 
-  console.log(`[getVariantStock] final -> poMap:`, poMap, `liveStockMap:`, liveStockMap);
+  console.log(
+    `[getVariantStock] PO-based SKU mapping:`,
+    skuToSizeFromPO,
+    `liveStockMap:`,
+    liveStockMap
+  );
 
   return { poMap, liveStockMap };
 };

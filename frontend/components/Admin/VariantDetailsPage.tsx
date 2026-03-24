@@ -38,24 +38,30 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   } | null>(null);
   const [loadingStock, setLoadingStock] = useState(false);
 
+  const fetchStock = async () => {
+    if (!variant.id) return;
+    setLoadingStock(true);
+    try {
+      const url =
+        import.meta.env.VITE_API_BASE_URL +
+        `/master-catalog/variants/${variant.id}/stock`;
+      console.log("[VariantDetailsPage] Fetching stock from:", url);
+      const res = await fetch(url);
+      console.log("[VariantDetailsPage] Fetch response status:", res.status);
+      const json = await res.json();
+      console.log("[VariantDetailsPage] Stock data received:", json.data);
+      setStockData(json.data);
+    } catch (err) {
+      console.error("Failed to fetch variant stock", err);
+    } finally {
+      setLoadingStock(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchStock = async () => {
-      setLoadingStock(true);
-      try {
-        const url = import.meta.env.VITE_API_BASE_URL + `/master-catalog/variants/${variant.id}/stock`;
-        console.log("[VariantDetailsPage] Fetching stock from:", url);
-        const res = await fetch(url);
-        console.log("[VariantDetailsPage] Fetch response status:", res.status);
-        const json = await res.json();
-        console.log("[VariantDetailsPage] Stock data received:", json.data);
-        setStockData(json.data);
-      } catch (err) {
-        console.error("Failed to fetch variant stock", err);
-      } finally {
-        setLoadingStock(false);
-      }
-    };
-    if (variant.id) fetchStock();
+    if (variant.id) {
+      fetchStock();
+    }
   }, [variant.id]);
 
   const imgSrc = (url: string | undefined) => {
@@ -72,13 +78,15 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   );
 
   const allImages =
-    matchedColorMedia && matchedColorMedia.images && matchedColorMedia.images.length > 0
-      ? matchedColorMedia.images.map((img: any) => img.url || img).filter(Boolean)
+    matchedColorMedia &&
+    matchedColorMedia.images &&
+    matchedColorMedia.images.length > 0
+      ? matchedColorMedia.images
+          .map((img: any) => img.url || img)
+          .filter(Boolean)
       : [
           article.imageUrl,
-          ...(article.secondaryImages || []).map(
-            (img: any) => img.url || img
-          ),
+          ...(article.secondaryImages || []).map((img: any) => img.url || img),
         ].filter(Boolean);
 
   const variantName = variant.itemName || `${article.name} – ${variant.color}`;
@@ -107,16 +115,25 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   const currentLiveStockMap = stockData?.liveStockMap || {};
 
   // Force totalPairs to 0 as current sizeMap values reflect assortment templates, not actual stock
-  const totalPairs = Object.values(currentLiveStockMap).reduce((s: number, v) => s + (Number(v) || 0), 0);
+  const totalPairs = Object.values(currentLiveStockMap).reduce(
+    (s: number, v) => s + (Number(v) || 0),
+    0
+  );
 
-  const totalAssortment = Object.values(currentSizeMap).reduce((s: number, data) => {
-    const qty = typeof data === "object" ? (data as any)?.qty : Number(data);
-    return s + (Number(qty) || 0);
-  }, 0);
+  const totalAssortment = Object.values(currentSizeMap).reduce(
+    (s: number, data) => {
+      const qty = typeof data === "object" ? (data as any)?.qty : Number(data);
+      return s + (Number(qty) || 0);
+    },
+    0
+  );
 
-  const totalBooked = Object.values(currentBookingMap).reduce((s: number, v) => {
-    return s + (Number(v) || 0);
-  }, 0);
+  const totalBooked = Object.values(currentBookingMap).reduce(
+    (s: number, v) => {
+      return s + (Number(v) || 0);
+    },
+    0
+  );
 
   const totalPO = Object.values(currentPOMap).reduce((s: number, v) => {
     return s + (Number(v) || 0);
@@ -330,13 +347,12 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               label="Assortment Qty"
               value={String(totalAssortment)}
               badge={
-                totalAssortment > 0 && (totalAssortment as number) % 24 === 0 ? "emerald" : undefined
+                totalAssortment > 0 && (totalAssortment as number) % 24 === 0
+                  ? "emerald"
+                  : undefined
               }
             />
-            <SpecRow
-              label="Current Stock"
-              value={String(totalPairs)}
-            />
+            <SpecRow label="Current Stock" value={String(totalPairs)} />
             {/* <SpecRow
               label="Size Range1"
               value={article.selectedSizes?.join(", ") || "—"}
@@ -416,7 +432,10 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                       ? (data as any)?.sku
                       : variant.sizeSkus?.[sz]) || "";
 
-                  let bgClass = qty > 0 ? "bg-indigo-50/60 border-indigo-200" : "bg-rose-50/60 border-rose-200";
+                  let bgClass =
+                    qty > 0
+                      ? "bg-indigo-50/60 border-indigo-200"
+                      : "bg-rose-50/60 border-rose-200";
                   let qtyClass = qty > 0 ? "text-indigo-600" : "text-rose-600";
 
                   return (
@@ -516,9 +535,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                         </span>
                         <div
                           className={`text-xl font-black leading-none ${
-                            poQty > 0
-                              ? "text-orange-600"
-                              : "text-slate-300"
+                            poQty > 0 ? "text-orange-600" : "text-slate-300"
                           }`}
                         >
                           {poQty}

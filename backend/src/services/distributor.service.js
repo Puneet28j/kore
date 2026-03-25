@@ -409,6 +409,9 @@ exports.updateDistributor = async (id, body) => {
     }
   }
 
+  const { emitDistributorUpdate } = require("../socket");
+  emitDistributorUpdate(distributor._id);
+
   return distributor.toObject();
 };
 

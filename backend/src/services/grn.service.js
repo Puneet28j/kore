@@ -181,36 +181,39 @@ exports.scanPair = async (draftId, pairBarcodeRaw) => {
   return draft;
 };
 
-exports.bulkScan = async (draftId, pairBarcodesRaw) => {
-  if (!Array.isArray(pairBarcodesRaw)) throw new Error("pairBarcodes must be an array");
+exports.bulkScan = async (draftId, cartonsPayload) => {
+  if (!Array.isArray(cartonsPayload)) throw new Error("cartons payload must be an array");
 
   const draft = await GRNDraft.findById(draftId);
   if (!draft) throw new Error("Draft not found");
   if (draft.status !== "DRAFT") throw new Error("GRN already submitted");
 
   let modified = false;
-  for (const rawCode of pairBarcodesRaw) {
-    const pairBarcode = (rawCode || "").trim();
-    if (!pairBarcode) continue;
+  for (const carton of cartonsPayload) {
+    const { cartonIndex, pairBarcodes, itemName } = carton;
+    if (!pairBarcodes || pairBarcodes.length === 0) continue;
 
-    draft.currentPairs.push(pairBarcode);
-    draft.scannedSet.push(pairBarcode);
+    // Use the explicit cartonIndex for the serial number
+    const refNo = String(draft.refId).split("-")[1] || draft.refId;
+    const cartonBarcode = makeCartonBarcode(draft.refType, refNo, cartonIndex || draft.cartonSerial);
+
+    draft.cartons.unshift({
+      cartonBarcode,
+      itemName: itemName || "", // NEW: Save specific variant name
+      pairBarcodes: [...pairBarcodes],
+      lockedAt: new Date(),
+    });
+
+    // Mark these pairs as scanned so rescanning prevents duplicates if logic depends on it
+    pairBarcodes.forEach(b => draft.scannedSet.push(b));
     modified = true;
-
-    if (draft.currentPairs.length === PAIRS_PER_CARTON) {
-      const refNo = String(draft.refId).split("-")[1] || draft.refId;
-      const cartonBarcode = makeCartonBarcode(draft.refType, refNo, draft.cartonSerial);
-
-      draft.cartons.unshift({
-        cartonBarcode,
-        pairBarcodes: [...draft.currentPairs],
-        lockedAt: new Date(),
-      });
-
-      draft.cartonSerial += 1;
-      draft.currentPairs = [];
-    }
+    
+    // Increment cartonSerial just in case it's used elsewhere, though we now rely on explicit indices
+    draft.cartonSerial = Math.max(draft.cartonSerial, (cartonIndex || draft.cartonSerial) + 1);
   }
+
+  // Clear currentPairs since we bulk inserted locked cartons directly
+  draft.currentPairs = [];
 
   if (modified) {
     await draft.save();
@@ -254,7 +257,7 @@ exports.removeCarton = async (draftId, cartonBarcode) => {
   return draft;
 };
 
-exports.submitDraft = async (draftId) => {
+exports.submitDraft = async (draftId, { scannedItemNames } = {}) => {
   const draft = await GRNDraft.findById(draftId);
   if (!draft) throw new Error("Draft not found");
   if (draft.status !== "DRAFT") throw new Error("GRN already submitted");
@@ -273,7 +276,12 @@ exports.submitDraft = async (draftId) => {
     const po = await PurchaseOrder.findOne({ poNumber: draft.refId }).lean();
     if (po) {
       vendorName = po.vendorName || "";
-      articleName = (po.items && po.items[0]?.itemName) || "";
+      // Use scannedItemNames from frontend if provided, otherwise fall back to first item
+      if (scannedItemNames && scannedItemNames.length > 0) {
+        articleName = scannedItemNames.join(", ");
+      } else {
+        articleName = (po.items && po.items[0]?.itemName) || "";
+      }
     }
   } else if (draft.refType === "CAT") {
     const cat = await MasterCatalog.findById(draft.refId.replace("CAT-", "")).lean();

@@ -213,7 +213,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, isLoading: global
                   <div className="flex items-center gap-6">
                     <div className="text-right">
                       <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Total</p>
-                      <p className="text-sm font-bold text-slate-900">₹{order.totalAmount.toLocaleString()}</p>
+                      <p className="text-sm font-bold text-slate-900">₹{(order.finalAmount || order.totalAmount).toLocaleString()}</p>
                     </div>
                     <ChevronRight size={16} className="text-slate-300 group-hover:text-indigo-600 group-hover:translate-x-1 transition-all" />
                   </div>

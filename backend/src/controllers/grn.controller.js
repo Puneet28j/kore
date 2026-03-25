@@ -39,7 +39,7 @@ exports.scanPair = async (req, res) => {
 
 exports.bulkScan = async (req, res) => {
   try {
-    const data = await grnService.bulkScan(req.params.draftId, req.body.pairBarcodes);
+    const data = await grnService.bulkScan(req.params.draftId, req.body.cartons);
     return ok(res, { message: "Bulk Scanned", data });
   } catch (e) {
     return fail(res, { message: e.message });
@@ -66,7 +66,7 @@ exports.removeCarton = async (req, res) => {
 
 exports.submitDraft = async (req, res) => {
   try {
-    const data = await grnService.submitDraft(req.params.draftId);
+    const data = await grnService.submitDraft(req.params.draftId, req.body);
     return ok(res, { message: "GRN submitted", data });
   } catch (e) {
     return fail(res, { message: e.message });

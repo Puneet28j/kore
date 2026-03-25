@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const CartonSchema = new mongoose.Schema(
   {
     cartonBarcode: { type: String, required: true },
+    itemName: { type: String }, // NEW: tracks which specific item this carton belongs to
     pairBarcodes: { type: [String], default: [] },
     lockedAt: { type: Date, required: true },
   },

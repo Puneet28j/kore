@@ -36,11 +36,35 @@ exports.login = async (req, res, next) => {
 
     const { token, user } = await authService.login({ email, password });
 
+    let creditInfo = null;
+    if (user.role === "distributor" && user.distributorId) {
+      const Distributor = require("../models/Distributor");
+      const Order = require("../models/Order");
+      const dist = await Distributor.findById(user.distributorId).lean();
+      if (dist) {
+        const pendingOrders = await Order.aggregate([
+          { $match: { distributorId: user._id, status: { $ne: "DELIVERED" } } },
+          { $group: { _id: null, totalPending: { $sum: { $ifNull: ["$finalAmount", "$totalAmount"] } } } }
+        ]);
+        const pendingValue = pendingOrders[0]?.totalPending || 0;
+        creditInfo = {
+          creditLimit: dist.creditLimit || 0,
+          discountPercentage: dist.discountPercentage || 0,
+          availableCredit: (dist.creditLimit || 0) - pendingValue
+        };
+      }
+    }
+
+    const userData = user.toObject ? user.toObject() : { ...user };
+    if (creditInfo) {
+      Object.assign(userData, creditInfo);
+    }
+
     return ok(res, {
       message: "Login successful",
       data: {
         token,
-        user,
+        user: userData,
         auth: {
           role: user.role,
           distributorId: user.distributorId || null,
@@ -79,10 +103,34 @@ exports.me = async (req, res, next) => {
 
     const user = await usersService.getMe(userId);
 
+    let creditInfo = null;
+    if (user.role === "distributor" && user.distributorId) {
+      const Distributor = require("../models/Distributor");
+      const Order = require("../models/Order");
+      const dist = await Distributor.findById(user.distributorId).lean();
+      if (dist) {
+        const pendingOrders = await Order.aggregate([
+          { $match: { distributorId: user._id, status: { $ne: "DELIVERED" } } },
+          { $group: { _id: null, totalPending: { $sum: { $ifNull: ["$finalAmount", "$totalAmount"] } } } }
+        ]);
+        const pendingValue = pendingOrders[0]?.totalPending || 0;
+        creditInfo = {
+          creditLimit: dist.creditLimit || 0,
+          discountPercentage: dist.discountPercentage || 0,
+          availableCredit: (dist.creditLimit || 0) - pendingValue
+        };
+      }
+    }
+
+    const userData = user.toObject ? user.toObject() : { ...user };
+    if (creditInfo) {
+      Object.assign(userData, creditInfo);
+    }
+
     return ok(res, {
       message: "Profile fetched",
       data: {
-        user,
+        user: userData,
         auth: {
           role: user.role,
           distributorId: user.distributorId || null,

@@ -137,33 +137,53 @@ export const grnService = {
     if (!draftRes.data || !draftRes.data._id) throw new Error("Failed to create GRN Draft");
     const draftId = draftRes.data._id;
     
-    const pairBarcodes: string[] = [];
+    const scannedCartons: { cartonIndex: number; itemName: string; pairBarcodes: string[] }[] = [];
+    const scannedItemNames: string[] = [];
+    
     Object.keys(scanState).forEach((itemName) => {
       const cartons = scanState[itemName];
       const poItem = poDoc.items.find((it: any) => it.itemName === itemName);
       if (!poItem || !poItem.sizeMap) return;
       
-      cartons.forEach((carton: any) => {
+      let itemHasScans = false;
+      cartons.forEach((carton: any, cIdx: number) => {
+        const cartonPairs: string[] = [];
         Object.keys(carton).forEach((size) => {
           const count = carton[size];
           const sku = poItem.sizeMap[size]?.sku;
-          if (sku) {
-            for (let i = 0; i < count; i++) pairBarcodes.push(sku);
+          if (sku && count > 0) {
+            itemHasScans = true;
+            for (let i = 0; i < count; i++) cartonPairs.push(sku);
           }
         });
+        if (cartonPairs.length > 0) {
+          scannedCartons.push({ 
+            cartonIndex: cIdx + 1, 
+            itemName: itemName, // NEW: Include itemName
+            pairBarcodes: cartonPairs 
+          });
+        }
       });
+      if (itemHasScans) scannedItemNames.push(itemName);
     });
     
-    if (pairBarcodes.length > 0) {
+    if (scannedCartons.length > 0) {
       await apiFetch(`/grn/drafts/${draftId}/bulk-scan`, {
         method: "POST",
-        body: JSON.stringify({ pairBarcodes })
+        body: JSON.stringify({ cartons: scannedCartons })
       });
     }
     
+    // Pass the actual scanned article names so backend stores the correct one
     const submitRes = await apiFetch(`/grn/drafts/${draftId}/submit`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify({ scannedItemNames })
     });
+    
+    // Attach scanned item names to the response for the frontend history entry
+    if (submitRes.data) {
+      submitRes.data._scannedItemNames = scannedItemNames;
+    }
     return submitRes;
   },
 };

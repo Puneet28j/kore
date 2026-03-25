@@ -32,11 +32,19 @@ const getIO = () => {
 const emitOrderUpdate = (order) => {
   if (io) {
     io.emit("orderUpdated", {
-      orderId: order.id || order._id,
+      orderId: String(order.id || order._id),
       status: order.status,
-      distributorId: order.distributorId
+      distributorId: String(order.distributorId)
     });
   }
 };
 
-module.exports = { init, getIO, emitOrderUpdate };
+const emitDistributorUpdate = (distributorId) => {
+  if (io) {
+    io.emit("distributorUpdated", {
+      distributorId: String(distributorId)
+    });
+  }
+};
+
+module.exports = { init, getIO, emitOrderUpdate, emitDistributorUpdate };

@@ -126,11 +126,11 @@ export const useKoreStore = () => {
       localStorage.setItem("kore_user", JSON.stringify(currentUser));
   }, [inventory, orders, currentUser]);
 
-  const checkAuth = async () => {
-    setIsLoadingAuth(true);
+  const checkAuth = async (silent: boolean = false) => {
+    if (!silent) setIsLoadingAuth(true);
     const token = localStorage.getItem("kore_token");
     if (!token) {
-      setIsLoadingAuth(false);
+      if (!silent) setIsLoadingAuth(false);
       return;
     }
     try {
@@ -140,7 +140,7 @@ export const useKoreStore = () => {
       console.error("Session restoration failed", err);
       logout();
     } finally {
-      setIsLoadingAuth(false);
+      if (!silent) setIsLoadingAuth(false);
     }
   };
 

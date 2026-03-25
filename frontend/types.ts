@@ -30,6 +30,8 @@ export interface User {
    */
   loginPassword?: string;
   loginEnabled?: boolean;
+  availableCredit?: number; // Augmented dynamically for distributors
+  distributorId?: string;
 }
 
 export enum AssortmentType {
@@ -138,6 +140,9 @@ export interface Order {
   totalAmount: number;
   totalCartons: number;
   totalPairs: number;
+  discountPercentage?: number;
+  discountAmount?: number;
+  finalAmount?: number;
 }
 
 export interface MovementRecord {

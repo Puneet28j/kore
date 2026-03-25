@@ -112,6 +112,12 @@ const GRN: React.FC = () => {
   const [scanInput, setScanInput] = useState("");
   const scanInputRef = useRef<HTMLInputElement>(null);
 
+  // Track which cartons are already GRN'd (from previous submissions) - stores array of 0-based indices
+  const [doneCartons, setDoneCartons] = useState<Record<string, number[]>>({}); // itemName -> array of done carton indices
+
+  // Collapsible state for items in All Items Status
+  const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+
   /* ── History ── */
   const [grnHistory, setGrnHistory] = useState<GRNHistoryItem[]>([]);
   const [activeTab, setActiveTab] = useState<"scan" | "history">("scan");
@@ -175,18 +181,59 @@ const GRN: React.FC = () => {
     setPoLoading(true);
     grnService
       .getReferenceDetail(selectedPOId)
-      .then((res) => {
+      .then(async (res) => {
         const data = res.data as MockPODetail | null;
         setPoDetail(data);
         // Initialize scan state
         if (data) {
+          // Query previously submitted GRNs for this PO to figure out which cartons are done
+          let doneMap: Record<string, number[]> = {};
+          try {
+            const histRes = await grnService.history();
+            const pastGRNs = (histRes.data || []).filter((h: any) => h.refId === selectedPOId);
+            // Collect completed carton indices per article from past GRNs
+            for (const grn of pastGRNs) {
+              try {
+                const detail = await grnService.getGRNDetail(grn.grnId);
+                const grnData = detail.data;
+                if (grnData?.cartons) {
+                  grnData.cartons.forEach((c: any) => {
+                    // Use the itemName stored in the carton if available
+                    // Fallback: If articleName contains commas (legacy multi-item GRN), we can't be 100% sure which carton is which
+                    // but we can at least try to mark it for all items in that list (or the first one)
+                    let articleKeys = [c.itemName || grnData.articleName || data.items[0]?.itemName || ""];
+                    
+                    if (!c.itemName && grnData.articleName && grnData.articleName.includes(", ")) {
+                      articleKeys = grnData.articleName.split(", ").map((s: string) => s.trim());
+                    }
+
+                    articleKeys.forEach(articleKey => {
+                      if (!doneMap[articleKey]) doneMap[articleKey] = [];
+                      
+                      const parts = (c.cartonBarcode || "").split("-");
+                      const cartonNum = parts.length > 0 ? Number(parts[parts.length - 1]) : 1;
+                      
+                      if (!isNaN(cartonNum) && !doneMap[articleKey].includes(cartonNum - 1)) {
+                        doneMap[articleKey].push(cartonNum - 1);
+                      }
+                    });
+                  });
+                }
+              } catch { /* ignore individual GRN fetch errors */ }
+            }
+          } catch { /* ignore history fetch errors */ }
+          setDoneCartons(doneMap);
+
           const state: ScanState = {};
           data.items.forEach((item) => {
-            // Create an array of cartons, each with an empty scan count map
-            state[item.itemName] = Array.from({ length: item.cartonCount || 1 }, () => ({}));
+            state[item.itemName] = Array.from(
+              { length: item.cartonCount || 1 },
+              () => ({})
+            );
           });
           setScanState(state);
           setCurrentCartonIdx(0);
+          setExpandedItems({});
         }
       })
       .catch(() => {
@@ -247,19 +294,38 @@ const GRN: React.FC = () => {
   const overallProgress = useMemo(() => {
     let totalPairsAll = 0;
     let scannedAll = 0;
+    let totalCartonsAll = 0;
+    let doneCartonsAll = 0; // previously GRN'd
+    let completedCartonsThisSession = 0;
 
     poDetail?.items.forEach((item) => {
       const perCartonTotal = Object.values(item.sizeMap).reduce((s, d) => s + (d.qty || 0), 0);
-      totalPairsAll += perCartonTotal * (item.cartonCount || 1);
+      const cartonCount = item.cartonCount || 1;
+      totalPairsAll += perCartonTotal * cartonCount;
+      totalCartonsAll += cartonCount;
+
+      const prevDoneIndices = doneCartons[item.itemName] || [];
+      doneCartonsAll += prevDoneIndices.length;
       
       const itemScans = scanState[item.itemName] || [];
-      itemScans.forEach((carton) => {
-        scannedAll += Object.values(carton).reduce((s, q) => s + q, 0);
+      itemScans.forEach((carton, idx) => {
+        const cartonScanned = Object.values(carton).reduce((s, q) => s + q, 0);
+        scannedAll += cartonScanned;
+        if (!prevDoneIndices.includes(idx) && cartonScanned >= 24) {
+          completedCartonsThisSession++;
+        }
       });
     });
 
-    return { total: totalPairsAll, scanned: scannedAll };
-  }, [poDetail, scanState]);
+    return {
+      total: totalPairsAll,
+      scanned: scannedAll,
+      totalCartons: totalCartonsAll,
+      previouslyDone: doneCartonsAll,
+      completedThisSession: completedCartonsThisSession,
+      remainingCartons: totalCartonsAll - doneCartonsAll - completedCartonsThisSession,
+    };
+  }, [poDetail, scanState, doneCartons]);
 
   // Item-level progress
   const getItemProgress = (itemName: string) => {
@@ -335,14 +401,13 @@ const GRN: React.FC = () => {
     setScanInput("");
     scanInputRef.current?.focus();
 
-    // Check if carton is now full
+    // Check if carton is now full — notify but DO NOT auto-advance
     const newCartonTotal = Object.values({...currentCartonScan, [size]: (currentCartonScan?.[size] || 0) + 1})
       .reduce((s, q) => s + q, 0);
     
     if (newCartonTotal >= 24) {
       if (currentCartonIdx < (selectedItem.cartonCount || 1) - 1) {
-        toast.info(`Carton ${currentCartonIdx + 1} complete! Moving to next carton.`);
-        setCurrentCartonIdx(prev => prev + 1);
+        toast.success(`✅ Carton ${currentCartonIdx + 1} complete! Select the next carton when ready.`);
       } else {
         toast.success("All cartons for this item are complete!");
       }
@@ -419,13 +484,17 @@ const GRN: React.FC = () => {
         totals: overallProgress,
       });
 
+      const articleName = res.data._scannedItemNames?.length 
+        ? res.data._scannedItemNames.join(", ") 
+        : (poDetail.items[0]?.itemName || "");
+
       setGrnHistory((prev) => [
         {
           grnId: res.data._id,
           grnNo: res.data.grnNo,
           refId: poDetail.poNo,
           vendorName: poDetail.vendorName,
-          articleName: poDetail.items[0]?.itemName || "",
+          articleName,
           totalPairs: overallProgress.scanned,
           cartons: res.data.cartons?.length || 0,
           createdAt: res.data.submittedAt || new Date().toISOString(),
@@ -434,7 +503,48 @@ const GRN: React.FC = () => {
       ]);
 
       toast.success("GRN submitted successfully");
-      resetAll();
+
+      // 1. Update `doneCartons` with the newly submitted indices
+      const newDone = { ...doneCartons };
+      Object.keys(scanState).forEach((itemName) => {
+        const cartons = scanState[itemName];
+        if (!newDone[itemName]) newDone[itemName] = [];
+        cartons.forEach((carton, idx) => {
+          const pairsCount = Object.values(carton).reduce((s, q) => s + q, 0);
+          if (pairsCount >= 24 && !newDone[itemName].includes(idx)) {
+            newDone[itemName].push(idx);
+          }
+        });
+      });
+      setDoneCartons(newDone);
+
+      // 2. Reset scanState so remaining cartons are clean
+      const freshScanState: ScanState = {};
+      poDetail.items.forEach((item) => {
+        freshScanState[item.itemName] = Array.from(
+          { length: item.cartonCount || 1 },
+          () => ({})
+        );
+      });
+      setScanState(freshScanState);
+
+      // 3. Reset form
+      setScanInput("");
+      setForm({
+        grnDate: new Date().toISOString().split("T")[0],
+        vendorInvoiceNo: "",
+        vendorChallanNo: "",
+        vehicleNo: "",
+        eWayBillNo: "",
+        receivedBy: "",
+        warehouse: "",
+        remarks: "",
+      });
+
+      // 4. Auto-select the first item that still has pending cartons (if possible)
+      // For now, we just keep the selectedItemName but reset currentCartonIdx
+      setCurrentCartonIdx(0);
+
     } catch (err: any) {
       toast.error(err.message || "Failed to submit GRN");
     } finally {
@@ -692,8 +802,8 @@ const GRN: React.FC = () => {
                                  <p className="text-xs font-black uppercase tracking-widest text-indigo-400">Current Item</p>
                                  <StatusPill label="ACTIVE" tone="indigo" />
                                </div>
-                               <p className="font-bold text-indigo-900">{selectedItem.itemName}</p>
-                               <p className="text-xs text-indigo-600">{selectedItem.color} • {Object.keys(selectedItem.sizeMap).join(", ")}</p>
+                               <p className="font-bold text-indigo-900 break-all leading-snug">{selectedItem.itemName}</p>
+                               <p className="text-xs text-indigo-600 font-medium">{selectedItem.color} • {Object.keys(selectedItem.sizeMap).join(", ")}</p>
                             </div>
                             
                             {/* Simple Progress text */}
@@ -784,46 +894,34 @@ const GRN: React.FC = () => {
                           </p>
                         </div>
 
-                        {/* Box cards grid: Responsive and dense */}
-                     <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-  {boxes.map((box, idx) => (
-    <div
-      key={`${box.size}-${idx}`}
-      className="group relative flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50/50 p-2 transition-all hover:bg-white hover:border-emerald-200 hover:shadow-sm"
-    >
-      {/* Sequence Number - Small & Subtle */}
-      <span className="text-[10px] font-bold text-slate-400 tabular-nums ml-1">
-        {String(idx + 1).padStart(2, '0')}
-      </span>
+                        {/* Box cards grid: Ultra-compact with SKU visibility */}
+                        <div className="grid grid-cols-2 gap-1.5 xs:grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+                          {boxes.map((box, idx) => (
+                            <div
+                              key={`${box.size}-${idx}`}
+                              className={`group relative flex flex-col items-center justify-center rounded-xl border px-2 py-2 transition-all cursor-default min-w-0 ${
+                                idx === boxes.length - 1
+                                  ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-200 shadow-md'
+                                  : 'border-slate-100 bg-white hover:border-emerald-200 shadow-sm'
+                              }`}
+                            >
+                              {/* Slot Number */}
+                              <span className="text-[8px] font-black text-slate-300 absolute top-1 left-1.5 uppercase">
+                                #{idx + 1}
+                              </span>
+                              
+                              {/* SKU */}
+                              <p className="text-[10px] font-black text-indigo-600 break-all leading-none mt-1 text-center">
+                                {box.sku}
+                              </p>
 
-      {/* Size Badge - The Primary Data Point */}
-      <div className="flex h-8 w-10 shrink-0 items-center justify-center rounded bg-white font-mono text-xs font-bold text-slate-700 shadow-sm ring-1 ring-slate-200 group-hover:ring-emerald-500/30">
-        {box.size}
-      </div>
-
-      {/* SKU & Status */}
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate font-mono text-[11px] font-medium tracking-tight text-slate-600 group-hover:text-emerald-700">
-          {box.sku}
-        </span>
-        <div className="flex items-center gap-1">
-          <div className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[9px] font-semibold uppercase tracking-tighter text-emerald-600/80">
-            Verified
-          </span>
-        </div>
-      </div>
-
-      {/* Subtle "New" Indicator (only for the last scanned item) */}
-      {idx === boxes.length - 1 && (
-        <div className="absolute -right-1 -top-1 flex h-4 w-4">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
-          <span className="relative inline-flex h-4 w-4 rounded-full bg-emerald-500"></span>
-        </div>
-      )}
-    </div>
-  ))}
-</div>
+                              {/* Size (Carton Number) */}
+                              <p className="text-[14px] font-black text-slate-900 mt-1">
+                                {box.size}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
                       </SectionCard>
                     )}
 
@@ -838,77 +936,100 @@ const GRN: React.FC = () => {
                       </SectionCard>
                     )}
 
-                    {/* All items progress */}
+                    {/* All items progress — grouped & collapsible */}
                     <SectionCard
                       icon={
                         <PackageCheck size={18} className="text-emerald-600" />
                       }
                       title="All Items Status"
                     >
-                      <div className="space-y-3">
-                        {poDetail.items.flatMap((item) => {
-                          return Array.from({
-                            length: item.cartonCount || 1,
-                          }).map((_, cIdx) => {
-                            const prog = getCartonProgress(
-                              item.itemName,
-                              cIdx
-                            );
-                            const isDone = prog.scanned >= 24;
-                            const isActive =
-                              item.itemName === selectedItemName &&
-                              cIdx === currentCartonIdx;
+                      <div className="space-y-4">
+                        {poDetail.items.map((item) => {
+                          const totalCartons = item.cartonCount || 1;
+                          const doneIndices = doneCartons[item.itemName] || [];
+                          const doneCnt = doneIndices.length;
+                          const isExpanded = expandedItems[item.itemName] ?? false;
+                          const itemProg = getItemProgress(item.itemName);
+                          const allDoneForItem = doneCnt >= totalCartons;
 
-                            return (
+                          // Show first 5 or all if expanded
+                          const visibleCount = isExpanded ? totalCartons : Math.min(5, totalCartons);
+
+                          return (
+                            <div key={item.itemName} className="rounded-2xl border border-slate-200 overflow-hidden">
+                              {/* Item Header */}
                               <button
-                                key={`${item.itemName}-${cIdx}`}
                                 type="button"
-                                onClick={() => {
-                                  setSelectedItemName(item.itemName);
-                                  setCurrentCartonIdx(cIdx);
-                                }}
-                                className={`w-full rounded-xl border p-3 text-left transition-all duration-200 ${
-                                  isActive
-                                    ? "border-emerald-500 bg-emerald-50 shadow-sm"
-                                    : isDone
-                                    ? "border-slate-100 bg-slate-50/50 opacity-80"
-                                    : "border-slate-100 bg-white hover:border-indigo-200 hover:shadow-md hover:shadow-indigo-50/30"
-                                }`}
+                                onClick={() => setExpandedItems(prev => ({ ...prev, [item.itemName]: !isExpanded }))}
+                                className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-slate-50 hover:bg-slate-100 transition text-left"
                               >
-                                <div className="flex items-center justify-between gap-3">
-                                  <div>
-                                    <p className="font-bold text-slate-900">
-                                      {item.itemName} — Carton {cIdx + 1}
-                                    </p>
-                                    <p className="text-xs text-slate-500">
-                                      {item.color} •{" "}
-                                      {Object.keys(item.sizeMap).join(", ")}
-                                    </p>
+                                  <div className="min-w-0">
+                                    <p className="font-bold text-sm text-slate-900 break-all leading-tight">{item.itemName}</p>
+                                    <p className="text-[10px] text-slate-500">{item.color} • {totalCartons} cartons • {Object.keys(item.sizeMap).join(", ")}</p>
                                   </div>
-                                  <div className="text-right">
-                                    {isDone ? (
-                                      <StatusPill label="DONE" tone="emerald" />
-                                    ) : isActive ? (
-                                      <StatusPill
-                                        label="ACTIVE"
-                                        tone="indigo"
-                                      />
-                                    ) : prog.scanned > 0 ? (
-                                      <StatusPill
-                                        label="PARTIAL"
-                                        tone="amber"
-                                      />
-                                    ) : (
-                                      <StatusPill label="OPEN" tone="slate" />
-                                    )}
-                                    <p className="mt-1 text-xs font-bold text-slate-600">
-                                      {prog.scanned}/{prog.total} pairs
-                                    </p>
-                                  </div>
+                                <div className="flex items-center gap-2">
+                                  {allDoneForItem ? (
+                                    <StatusPill label="ALL DONE" tone="emerald" />
+                                  ) : doneCnt > 0 ? (
+                                    <StatusPill label={`${doneCnt}/${totalCartons} GRN'd`} tone="amber" />
+                                  ) : null}
+                                  <span className="text-xs font-bold text-slate-500">{itemProg.scanned}/{itemProg.total}</span>
+                                  <ChevronDown size={16} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                                 </div>
                               </button>
-                            );
-                          });
+
+                              {/* Carton Chip Grid — compact seat-map style */}
+                              <div className="p-3">
+                                {/* Legend */}
+                                <div className="flex flex-wrap items-center gap-3 mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                  <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-emerald-500" /> Done / GRN'd</span>
+                                  <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-indigo-500 ring-2 ring-indigo-300" /> Active</span>
+                                  <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-amber-400" /> Partial</span>
+                                  <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-slate-200" /> Open</span>
+                                </div>
+
+                                <div className="flex flex-wrap gap-1">
+                                  {Array.from({ length: totalCartons }).map((_, cIdx) => {
+                                    const isPreviouslyDone = doneIndices.includes(cIdx);
+                                    const prog = getCartonProgress(item.itemName, cIdx);
+                                    const isDone = isPreviouslyDone || prog.scanned >= 24;
+                                    const isActive = item.itemName === selectedItemName && cIdx === currentCartonIdx;
+                                    const isPartial = !isDone && !isActive && prog.scanned > 0;
+
+                                    let chipClass = "bg-slate-100 text-slate-500 hover:bg-slate-200";
+                                    if (isPreviouslyDone) chipClass = "bg-emerald-500 text-white cursor-not-allowed opacity-70";
+                                    else if (isDone) chipClass = "bg-emerald-500 text-white";
+                                    else if (isActive) chipClass = "bg-indigo-500 text-white ring-2 ring-indigo-300 ring-offset-1";
+                                    else if (isPartial) chipClass = "bg-amber-400 text-white";
+
+                                    return (
+                                      <button
+                                        key={`${item.itemName}-${cIdx}`}
+                                        type="button"
+                                        disabled={isPreviouslyDone}
+                                        title={
+                                          isPreviouslyDone
+                                            ? `Carton ${cIdx + 1} — Already GRN'd`
+                                            : isDone
+                                            ? `Carton ${cIdx + 1} — Complete (${prog.scanned}/${prog.total})`
+                                            : `Carton ${cIdx + 1} — ${prog.scanned}/${prog.total} scanned`
+                                        }
+                                        onClick={() => {
+                                          if (!isPreviouslyDone) {
+                                            setSelectedItemName(item.itemName);
+                                            setCurrentCartonIdx(cIdx);
+                                          }
+                                        }}
+                                        className={`h-7 w-7 rounded text-[10px] font-bold tabular-nums transition-all ${chipClass}`}
+                                      >
+                                        {cIdx + 1}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          );
                         })}
                       </div>
                     </SectionCard>
@@ -944,23 +1065,31 @@ const GRN: React.FC = () => {
                       </BannerMessage>
                     )}
 
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                       <MiniStatCard
-                        label="Total Boxes"
-                        value={overallProgress.total}
+                        label="Total Cartons"
+                        value={overallProgress.totalCartons}
                         tone="slate"
                       />
                       <MiniStatCard
-                        label="Scanned"
-                        value={overallProgress.scanned}
+                        label="Prev GRN'd"
+                        value={overallProgress.previouslyDone}
+                        tone="indigo"
+                      />
+                      <MiniStatCard
+                        label="Done (Session)"
+                        value={overallProgress.completedThisSession}
                         tone="emerald"
                       />
                       <MiniStatCard
-                        label="Pending"
-                        value={
-                          overallProgress.total - overallProgress.scanned
-                        }
+                        label="Remaining"
+                        value={overallProgress.remainingCartons}
                         tone="amber"
+                      />
+                      <MiniStatCard
+                        label="Pairs Scanned"
+                        value={overallProgress.scanned}
+                        tone="emerald"
                       />
                       <MiniStatCard
                         label="Items"
@@ -1061,33 +1190,39 @@ const GRN: React.FC = () => {
                       title={`Cartons (${viewingGRN.cartons?.length || 0})`}
                     >
                       <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                        {viewingGRN.cartons?.map((carton: any, idx: number) => (
-                          <div key={idx} className="p-4 rounded-2xl border border-slate-200 bg-white hover:border-amber-200 transition">
-                            <div className="flex justify-between items-center mb-2">
-                              <p className="text-sm font-black text-slate-900">BOX #{idx + 1}</p>
-                              <StatusPill label={`${carton.pairBarcodes?.length} Pairs`} tone="amber" />
+                        {viewingGRN.cartons?.map((carton: any, idx: number) => {
+                          // Try to extract the carton sequence number from barcode (e.g. CTN-260325-PO-1023-007)
+                          const parts = (carton.cartonBarcode || "").split("-");
+                          const cartonNum = parts.length > 0 ? Number(parts[parts.length - 1]) : idx + 1;
+                          
+                          return (
+                            <div key={idx} className="p-4 rounded-2xl border border-slate-200 bg-white hover:border-amber-200 transition">
+                              <div className="flex justify-between items-center mb-2">
+                                <p className="text-sm font-black text-slate-900">BOX #{cartonNum}</p>
+                                <StatusPill label={`${carton.pairBarcodes?.length} Pairs`} tone="amber" />
+                              </div>
+                              <p className="text-[10px] font-mono text-slate-400 break-all bg-slate-50 p-2 rounded-lg border border-slate-100 mb-2">
+                                {carton.cartonBarcode}
+                              </p>
+                              <div className="flex flex-wrap gap-1">
+                                {/* Show count per unique SKU in this carton */}
+                                {Object.entries(
+                                  (carton.pairBarcodes || []).reduce((acc: any, b: string) => {
+                                    acc[b] = (acc[b] || 0) + 1;
+                                    return acc;
+                                  }, {})
+                                ).map(([sku, count]: any) => (
+                                  <div key={sku} className="flex items-center gap-1.5 rounded-lg bg-indigo-50 px-2 py-1 border border-indigo-100">
+                                    <span className="text-[10px] font-black text-indigo-600">{sku}</span>
+                                    <span className="h-4 w-4 flex items-center justify-center rounded-md bg-white text-[10px] font-black text-indigo-900 border border-indigo-200">
+                                      {count}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                            <p className="text-[10px] font-mono text-slate-400 break-all bg-slate-50 p-2 rounded-lg border border-slate-100 mb-2">
-                              {carton.cartonBarcode}
-                            </p>
-                            <div className="flex flex-wrap gap-1">
-                              {/* Show count per unique SKU in this carton */}
-                              {Object.entries(
-                                (carton.pairBarcodes || []).reduce((acc: any, b: string) => {
-                                  acc[b] = (acc[b] || 0) + 1;
-                                  return acc;
-                                }, {})
-                              ).map(([sku, count]: any) => (
-                                <div key={sku} className="flex items-center gap-1.5 rounded-lg bg-indigo-50 px-2 py-1 border border-indigo-100">
-                                  <span className="text-[10px] font-black text-indigo-600">{sku}</span>
-                                  <span className="h-4 w-4 flex items-center justify-center rounded-md bg-white text-[10px] font-black text-indigo-900 border border-indigo-200">
-                                    {count}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </SectionCard>
                   </div>
@@ -1132,9 +1267,9 @@ const GRN: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-5 py-5">
-                            <div className="flex flex-col gap-0.5">
-                              <p className="text-sm font-bold text-slate-800">{h.vendorName || "—"}</p>
-                              <p className="text-xs text-slate-500">{h.articleName || "—"}</p>
+                            <div className="flex flex-col gap-0.5 min-w-0">
+                              <p className="text-sm font-bold text-slate-800 break-all leading-tight">{h.vendorName || "—"}</p>
+                              <p className="text-xs text-slate-500 break-all leading-tight">{h.articleName || "—"}</p>
                             </div>
                           </td>
                           <td className="px-5 py-5">
@@ -1201,9 +1336,9 @@ const SectionCard: React.FC<{
   return (
     <div className={`rounded-3xl border border-slate-200 bg-white shadow-sm relative ${className}`}>
       <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           {icon}
-          <p className="font-black text-slate-900">{title}</p>
+          <p className="font-black text-slate-900 break-all leading-tight">{title}</p>
         </div>
         {action}
       </div>
@@ -1243,7 +1378,7 @@ const InfoCard: React.FC<{
         {icon}
         <p className="text-xs font-black uppercase tracking-widest">{label}</p>
       </div>
-      <div className="break-words font-bold text-slate-900">{value || "—"}</div>
+      <div className="wrap-break-word font-bold text-slate-900">{value || "—"}</div>
     </div>
   );
 };

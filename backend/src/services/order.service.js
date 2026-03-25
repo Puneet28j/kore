@@ -25,13 +25,42 @@ const createOrder = async (distributorId, orderData) => {
       throw new Error("Distributor not found");
     }
 
-    // Determine the name to use
     let distrName = distributor.name || distributor.email;
     if (distributor.companyName) {
       distrName = `${distributor.companyName} (${distrName})`;
     }
 
     const { items, totalAmount, totalCartons, totalPairs, date } = orderData;
+
+    let discountPercentage = 0;
+    let creditLimit = 0;
+    if (distributor.distributorId) {
+      const Distributor = require("../models/Distributor");
+      const distProfile = await Distributor.findById(distributor.distributorId).lean();
+      if (distProfile) {
+        discountPercentage = distProfile.discountPercentage || 0;
+        creditLimit = typeof distProfile.creditLimit === 'number' ? distProfile.creditLimit : 0;
+      }
+    }
+
+    const discountAmount = (totalAmount * discountPercentage) / 100;
+    const finalAmount = totalAmount - discountAmount;
+
+    // Strict credit limit validation
+    if (creditLimit === 0) {
+      throw new Error("You have no credit limit to book an order. Please contact administrator.");
+    }
+    
+    const pendingOrders = await Order.aggregate([
+      { $match: { distributorId: distributor._id, status: { $ne: "DELIVERED" } } },
+      { $group: { _id: null, totalPending: { $sum: { $ifNull: ["$finalAmount", "$totalAmount"] } } } }
+    ]);
+    const pendingValue = pendingOrders[0]?.totalPending || 0;
+    
+    if (pendingValue + finalAmount > creditLimit) {
+      const available = creditLimit - pendingValue;
+      throw new Error(`Credit limit exceeded. Available credit: ₹${available > 0 ? available.toLocaleString() : 0}. Required: ₹${finalAmount.toLocaleString()}`);
+    }
 
     // Use provided date or fallback to today
     const orderDate =
@@ -49,6 +78,9 @@ const createOrder = async (distributorId, orderData) => {
       totalAmount,
       totalCartons,
       totalPairs,
+      discountPercentage,
+      discountAmount,
+      finalAmount,
     });
 
     const savedOrder = await order.save();

@@ -206,6 +206,16 @@ const App: React.FC = () => {
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
+  // ── Refs to avoid stale closures inside socket handlers ──
+  const userRef = React.useRef(user);
+  userRef.current = user;  // always the latest user
+
+  const checkAuthRef = React.useRef(checkAuth);
+  checkAuthRef.current = checkAuth;
+
+  // Fetch orders (defined outside useEffect so it can be referenced)
+  const fetchOrdersRef = React.useRef<((silent?: boolean) => Promise<void>) | undefined>(undefined);
+
   // Fetch orders with socket.io for real-time updates
   useEffect(() => {
     if (!user) return;
@@ -230,10 +240,14 @@ const App: React.FC = () => {
       }
     };
 
+    fetchOrdersRef.current = fetchOrders;
+
     // Initial fetch
     fetchOrders();
+  }, [user?.id, user?.role]);
 
-    // Socket.io connection
+  // ── Stable socket connection (does NOT depend on `user`) ──
+  useEffect(() => {
     const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5005/api";
     const socketBase = API_BASE_URL.replace("/api", "");
     const socket = io(socketBase);
@@ -244,20 +258,57 @@ const App: React.FC = () => {
 
     socket.on("orderUpdated", (data) => {
       console.log("📦 Order update received:", data);
-      
-      // If the distributor only sees their own orders, check the ID
-      if (user.role === UserRole.DISTRIBUTOR && data.distributorId !== user.id) {
-        return;
-      }
+      const u = userRef.current;
+      if (!u) return;
 
-      // Re-fetch to ensure data consistency and UI sync
-      fetchOrders(true);
+      const isDistributor = u.role === UserRole.DISTRIBUTOR;
+      const isMyOrder = String(data.distributorId) === String(u.id);
+
+      // Distributors only care about their own orders
+      if (isDistributor && !isMyOrder) return;
+
+      // Re-fetch orders for data consistency
+      fetchOrdersRef.current?.(true);
+
+      // Always refresh credit limits for distributors on ANY order status change
+      if (isDistributor) {
+        checkAuthRef.current?.(true);
+      }
+    });
+
+    socket.on("distributorUpdated", (data) => {
+      console.log("👤 Distributor profile update received:", data);
+      const u = userRef.current;
+      if (!u || u.role !== UserRole.DISTRIBUTOR) return;
+
+      if (
+        String(data.distributorId) === String(u.distributorId) ||
+        String(data.distributorId) === String(u.id)
+      ) {
+        checkAuthRef.current?.(true);
+      }
     });
 
     return () => {
       socket.disconnect();
     };
-  }, [user]);
+  }, []); // Empty deps = socket connects ONCE, never reconnects
+
+  // ── Periodic credit refresh when distributor is on the cart tab ──
+  useEffect(() => {
+    if (!user || user.role !== UserRole.DISTRIBUTOR) return;
+    if (activeTab !== "cart") return;
+
+    // Refresh credit immediately when entering cart
+    checkAuth(true);
+
+    // Then poll every 10 seconds as a reliable fallback
+    const interval = setInterval(() => {
+      checkAuthRef.current?.(true);
+    }, 10_000);
+
+    return () => clearInterval(interval);
+  }, [activeTab, user?.id]);
 
   // Initialize inventory based on articles
   const [inventory, setInventory] = useState<Inventory[]>(() => {
@@ -514,6 +565,26 @@ const App: React.FC = () => {
     };
 
     const placePromise = async () => {
+      // Pre-checkout: refresh credit data from server to ensure we have the latest
+      await checkAuth(true);
+      
+      // Re-read the latest user from store after the refresh
+      const freshUser = store.currentUser;
+      if (freshUser?.role === UserRole.DISTRIBUTOR) {
+        const availCredit = freshUser.availableCredit ?? 0;
+        const discPct = freshUser.discountPercentage || 0;
+        const orderTotal = availableItems.reduce((sum, i) => sum + i.price, 0);
+        const discAmt = (orderTotal * discPct) / 100;
+        const finalAmt = orderTotal - discAmt;
+
+        if (availCredit === 0) {
+          throw new Error("You have no credit limit available. Please contact administrator.");
+        }
+        if (finalAmt > availCredit) {
+          throw new Error(`Credit limit exceeded. Available: ₹${availCredit.toLocaleString()}, Required: ₹${finalAmt.toLocaleString()}`);
+        }
+      }
+
       const response = await distributorOrderService.placeOrder(payload);
       // Map _id to id if necessary
       const newOrder = { ...response, id: (response as any)._id || response.id };
@@ -537,12 +608,15 @@ const App: React.FC = () => {
 
       setCart(wishlistItems);
       setActiveTab("orders");
+
+      // Auto-sync the newly utilized credit limit
+      await checkAuth(true);
     };
 
     toast.promise(placePromise(), {
       loading: "Placing your order...",
       success: "Order placed successfully!",
-      error: "Failed to place order",
+      error: (err: any) => err?.response?.data?.message || err?.message || "Failed to place order. Please check your credit limit.",
     });
   };
 
@@ -792,6 +866,7 @@ const App: React.FC = () => {
             onCheckout={placeOrder}
             total={cartTotal}
             assortments={ASSORTMENTS as Assortment[]}
+            user={user}
           />
         )}
 

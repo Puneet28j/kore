@@ -7,8 +7,9 @@ import {
   Package,
   AlertCircle,
   Info,
+  CreditCard,
 } from "lucide-react";
-import { Article, Assortment } from "../../types";
+import { User, Article, Assortment } from "../../types";
 import { getImageUrl } from "../../utils/imageUtils";
 
 // utility to expand a range like "5-7" into ["5","6","7"]
@@ -39,6 +40,7 @@ interface CartProps {
   onCheckout: () => void;
   total: number;
   assortments: Assortment[];
+  user?: User;
 }
 
 const Cart: React.FC<CartProps> = ({
@@ -47,7 +49,20 @@ const Cart: React.FC<CartProps> = ({
   clearCartItem,
   onCheckout,
   total,
+  user,
 }) => {
+  const currentUser = user;
+
+  const discountPercentage = currentUser?.discountPercentage || 0;
+  const discountAmount = (total * discountPercentage) / 100;
+  const finalAmount = total - discountAmount;
+  
+  const availableCredit = currentUser?.availableCredit ?? 0;
+  // Based on strict 0 requirements from backend:
+  // If credit is exactly 0, they cannot order at all.
+  // If credit < required, they cannot order.
+  const isCreditExceeded = availableCredit === 0 || finalAmount > availableCredit;
+
   if (cart.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 px-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
@@ -84,8 +99,9 @@ const Cart: React.FC<CartProps> = ({
   const totalCartons = cart.reduce((sum, item) => sum + item.cartonCount, 0);
 
   const renderItem = (item: typeof cart[0]) => {
-    const article = articles.find((a) => a.id === item.articleId)!;
-    const variant = article?.variants?.find((v) => v.id === item.variantId);
+    const article = articles.find((a) => a.id === item.articleId);
+    if (!article) return null;
+    const variant = article.variants?.find((v) => v.id === item.variantId);
     const sizes = variant
       ? parseSizeRange(variant.sizeRange || "")
       : Object.keys(item.sizeQuantities || {});
@@ -112,7 +128,7 @@ const Cart: React.FC<CartProps> = ({
           />
         </div>
         <div className="flex-1 min-w-0">
-          <h4 className="font-bold text-sm text-slate-900 tracking-tight truncate">
+          <h4 className="font-bold text-sm text-slate-900 tracking-tight break-all">
             {article.name} <span className="text-slate-400 font-medium">({variant?.color || "N/A"})</span>
           </h4>
           <div className="flex flex-wrap gap-1 mt-1.5">
@@ -219,19 +235,50 @@ const Cart: React.FC<CartProps> = ({
               <span>Pairs</span>
               <span className="font-bold text-white">{totalPairs}</span>
             </div>
-            <div className="pt-4 border-t border-white/10">
+            
+            <div className="pt-4 border-t border-white/10 space-y-2">
               <div className="flex justify-between items-end">
-                <span className="text-xs font-bold text-slate-300">Grand Total</span>
-                <span className="text-xl font-black text-indigo-400 tracking-tight">
+                <span className="text-xs font-bold text-slate-400">Subtotal</span>
+                <span className="text-sm font-bold text-slate-300">
                   ₹{total.toLocaleString()}
                 </span>
               </div>
+              {discountPercentage > 0 && (
+                <div className="flex justify-between items-end">
+                  <span className="text-xs font-bold text-emerald-400">Discount ({discountPercentage}%)</span>
+                  <span className="text-sm font-bold text-emerald-400">
+                    -₹{discountAmount.toLocaleString()}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between items-end pt-2 border-t border-white/5">
+                <span className="text-xs font-bold text-slate-300">Final Amount</span>
+                <span className={`text-xl font-black tracking-tight ${isCreditExceeded ? 'text-red-400' : 'text-indigo-400'}`}>
+                  ₹{finalAmount.toLocaleString()}
+                </span>
+              </div>
+            </div>
+
+            {/* Credit Status Box */}
+            <div className={`mt-4 p-3 rounded-xl border ${isCreditExceeded ? 'bg-red-500/10 border-red-500/20' : 'bg-white/5 border-white/10'}`}>
+              <div className="flex justify-between text-[11px] mb-1">
+                <span className="text-slate-400">Available Credit</span>
+                <span className={`font-bold ${isCreditExceeded ? 'text-red-400' : 'text-emerald-400'}`}>
+                  ₹{availableCredit.toLocaleString()}
+                </span>
+              </div>
+              {isCreditExceeded && (
+                <p className="text-[10px] text-red-400/90 mt-2 font-medium flex items-center gap-1.5">
+                  <AlertCircle size={12} />
+                  {availableCredit === 0 ? "You have no credit limit available." : "Exceeds available credit limit."}
+                </p>
+              )}
             </div>
           </div>
 
           <button
             onClick={onCheckout}
-            disabled={availableItems.length === 0}
+            disabled={availableItems.length === 0 || isCreditExceeded}
             className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-slate-100 transition-all active:scale-95 group disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Confirm Order

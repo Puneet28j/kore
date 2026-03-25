@@ -163,10 +163,20 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, onBack }) =>
                 <span>Total Pairs</span>
                 <span className="font-bold text-white">{order.totalPairs}</span>
               </div>
-              <div className="pt-3 border-t border-white/10">
+              <div className="pt-3 border-t border-white/10 space-y-2">
                 <div className="flex justify-between items-end">
-                  <span className="text-xs font-bold text-slate-300">Total Amount</span>
-                  <span className="text-xl font-black text-indigo-400 tracking-tight">₹{order.totalAmount.toLocaleString()}</span>
+                  <span className="text-[11px] font-bold text-slate-400">Subtotal</span>
+                  <span className="text-sm font-bold text-slate-300">₹{order.totalAmount.toLocaleString()}</span>
+                </div>
+                {(order.discountPercentage || 0) > 0 && (
+                  <div className="flex justify-between items-end">
+                    <span className="text-[11px] font-bold text-emerald-400">Discount ({order.discountPercentage}%)</span>
+                    <span className="text-sm font-bold text-emerald-400">-₹{(order.discountAmount || 0).toLocaleString()}</span>
+                  </div>
+                )}
+                <div className="flex justify-between items-end pt-2 border-t border-white/5">
+                  <span className="text-xs font-bold text-white">Final Amount</span>
+                  <span className="text-xl font-black text-indigo-400 tracking-tight">₹{(order.finalAmount || order.totalAmount).toLocaleString()}</span>
                 </div>
               </div>
             </div>

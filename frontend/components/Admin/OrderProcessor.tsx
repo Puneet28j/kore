@@ -180,7 +180,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({ articles, updateStatus,
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
                       <span className="flex items-center gap-1.5"><User size={12} className="text-slate-300" /> {order.distributorName}</span>
                       <span className="flex items-center gap-1.5"><Clock size={12} /> {order.date}</span>
-                      <span className="text-indigo-600 font-black">₹{order.totalAmount.toLocaleString()}</span>
+                      <span className="text-indigo-600 font-black">₹{(order.finalAmount || order.totalAmount).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>

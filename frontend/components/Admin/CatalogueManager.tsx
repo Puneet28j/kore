@@ -292,13 +292,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // ── Backend pagination state ─────────────────────────────────────────────
+  // ── Infinite Scroll state ────────────────────────────────────────────────
+  const BATCH_SIZE = 20; // 20 items per batch
   const [localArticles, setLocalArticles] = useState<Article[]>([]);
   const [totalItems, setTotalItems] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
+  const [hasMorePages, setHasMorePages] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageLoading, setPageLoading] = useState(false);
-  const [pageSize, setPageSize] = usePageSize("catalogue", 20);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const observerRef = useRef<HTMLDivElement | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useRef("");
 
@@ -924,69 +926,83 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     });
   };
 
+  // ---------- Article mapping helper ----------
+  const mapItem = (item: any): Article => {
+    const normalizedVariants = (item.variants || []).map((v: any) => {
+      const sizeSkus: Record<string, string> = v.sizeSkus || {};
+      const sizeQuantities: Record<string, number> = v.sizeQuantities || {};
+      if (Object.keys(sizeQuantities).length === 0 && v.sizeMap) {
+        Object.entries(v.sizeMap).forEach(([sz, cell]: [string, any]) => {
+          sizeSkus[sz] = cell.sku || "";
+          sizeQuantities[sz] = cell.qty || 0;
+        });
+      }
+      return { ...v, id: v._id || Math.random().toString(36).substr(2, 9), sizeSkus, sizeQuantities };
+    });
+    return {
+      id: item._id,
+      sku: item.sku || "",
+      name: item.articleName,
+      category: item.gender,
+      assortmentId: item.assortmentId || "",
+      productCategory: item.categoryId?.name,
+      brand: item.brandId?.name,
+      pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+      mrp: item.mrp,
+      soleColor: item.soleColor,
+      manufacturer: item.manufacturerCompanyId?.name,
+      unit: item.unitId?.name,
+      status: item.stage,
+      expectedDate: item.expectedAvailableDate
+        ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
+        : "",
+      imageUrl: item.primaryImage?.url,
+      secondaryImages: item.secondaryImages || [],
+      selectedSizes: item.sizeRanges || [],
+      selectedColors: item.productColors || [],
+      colorMedia: item.colorMedia || [],
+      variants: normalizedVariants,
+      isActive: item.isActive !== false,
+    };
+  };
+
   // ---------- Backend-paginated data fetch ----------
-  const fetchLocalArticles = useCallback(async (page: number, limit: number, q: string, tab: CatalogStatus) => {
-    setPageLoading(true);
+  const fetchLocalArticles = useCallback(async (page: number, q: string, tab: CatalogStatus, append = false) => {
+    if (page === 1) setPageLoading(true);
+    else setLoadingMore(true);
     try {
+    
       const res = await masterCatalogService.listMasterItems({
         page,
-        limit,
+        limit: BATCH_SIZE,
         q: q || undefined,
         stage: tab,
       });
-      const mapped: Article[] = (res.data || []).map((item: any) => {
-        const normalizedVariants = (item.variants || []).map((v: any) => {
-          const sizeSkus: Record<string, string> = v.sizeSkus || {};
-          const sizeQuantities: Record<string, number> = v.sizeQuantities || {};
-          if (Object.keys(sizeQuantities).length === 0 && v.sizeMap) {
-            Object.entries(v.sizeMap).forEach(([sz, cell]: [string, any]) => {
-              sizeSkus[sz] = cell.sku || "";
-              sizeQuantities[sz] = cell.qty || 0;
-            });
-          }
-          return { ...v, id: v._id || Math.random().toString(36).substr(2, 9), sizeSkus, sizeQuantities };
-        });
-        return {
-          id: item._id,
-          sku: item.sku || "",
-          name: item.articleName,
-          category: item.gender,
-          assortmentId: item.assortmentId || "",
-          productCategory: item.categoryId?.name,
-          brand: item.brandId?.name,
-          pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
-          mrp: item.mrp,
-          soleColor: item.soleColor,
-          manufacturer: item.manufacturerCompanyId?.name,
-          unit: item.unitId?.name,
-          status: item.stage,
-          expectedDate: item.expectedAvailableDate
-            ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
-            : "",
-          imageUrl: item.primaryImage?.url,
-          secondaryImages: item.secondaryImages || [],
-          selectedSizes: item.sizeRanges || [],
-          selectedColors: item.productColors || [],
-          colorMedia: item.colorMedia || [],
-          variants: normalizedVariants,
-          isActive: item.isActive !== false,
-        };
-      });
-      setLocalArticles(mapped);
-      setTotalItems(res.meta?.total ?? res.data?.length ?? 0);
-      setTotalPages(res.meta?.totalPages ?? 1);
+      
+      const mapped: Article[] = (res.data || []).map(mapItem);
+      if (append) {
+        setLocalArticles((prev) => [...prev, ...mapped]);
+      } else {
+        setLocalArticles(mapped);
+      }
+      const meta = res.meta || {};
+      setTotalItems(meta.total ?? mapped.length);
+      setHasMorePages(page < (meta.totalPages ?? 1));
     } catch (err) {
       console.error("Failed to fetch catalogue page", err);
     } finally {
       setPageLoading(false);
+      setLoadingMore(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Trigger fetch whenever page, pageSize, or tab changes
+  // Trigger fresh fetch when tab changes
   useEffect(() => {
-    fetchLocalArticles(currentPage, pageSize, debouncedSearch.current, activeTab);
+    setCurrentPage(1);
+    fetchLocalArticles(1, debouncedSearch.current, activeTab, false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize, activeTab]);
+  }, [activeTab]);
 
   // Debounced search: 400ms delay, resets to page 1
   useEffect(() => {
@@ -994,7 +1010,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     searchDebounceRef.current = setTimeout(() => {
       debouncedSearch.current = searchTerm.trim();
       setCurrentPage(1);
-      fetchLocalArticles(1, pageSize, searchTerm.trim(), activeTab);
+      fetchLocalArticles(1, searchTerm.trim(), activeTab, false);
     }, 400);
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1002,11 +1018,38 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
   // Real-time refresh on catalogRefetch socket event
   useEffect(() => {
-    const handler = () => fetchLocalArticles(currentPage, pageSize, debouncedSearch.current, activeTab);
+    const handler = () => fetchLocalArticles(1, debouncedSearch.current, activeTab, false);
     window.addEventListener("catalogRefetch", handler);
     return () => window.removeEventListener("catalogRefetch", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize, activeTab]);
+  }, [activeTab]);
+
+  // Load Next Page for Infinite Scroll (reactive pattern matching Shop.tsx)
+  const loadNextPage = useCallback(() => {
+    if (!hasMorePages || loadingMore || pageLoading) return;
+    const nextPage = currentPage + 1;
+    setCurrentPage(nextPage);
+    console.log(`[Catalogue Scroll] Loading page ${nextPage}`);
+    fetchLocalArticles(nextPage, debouncedSearch.current, activeTab, true);
+  }, [currentPage, hasMorePages, loadingMore, pageLoading, activeTab, fetchLocalArticles]);
+
+  // Observer matches Shop.tsx precisely, re-binding on loading/page transitions
+  useEffect(() => {
+    if (!hasMorePages || loadingMore || pageLoading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadNextPage();
+        }
+      },
+      { threshold: 0.1, rootMargin: "300px" }
+    );
+    const el = observerRef.current;
+    if (el) observer.observe(el);
+    return () => {
+      if (el) observer.unobserve(el);
+    };
+  }, [hasMorePages, loadingMore, pageLoading, loadNextPage]);
 
   // Keep App-level articles in sync when a save/delete happens (so modals etc. work)
   const filteredMasters = localArticles;
@@ -1677,17 +1720,21 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           );
         })}
 
-        {/* Pagination */}
-        {!pageLoading && totalPages >= 1 && (
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-            <Pagination
-              currentPage={currentPage}
-              totalPages={totalPages}
-              totalItems={totalItems}
-              itemsPerPage={pageSize}
-              onPageChange={setCurrentPage}
-              onPageSizeChange={setPageSize}
-            />
+        {/* Infinite Scroll Sentinel */}
+        {localArticles.length > 0 && (
+          <div className="flex flex-col items-center gap-2 py-4">
+            {loadingMore && (
+              <div className="flex items-center gap-2 text-xs font-bold text-indigo-500">
+                <Loader2 size={16} className="animate-spin" />
+                Loading more items...
+              </div>
+            )}
+            {!hasMorePages && (
+              <p className="text-xs font-bold text-slate-400 border-t border-slate-100 w-full text-center pt-4">
+                🎉 All {totalItems} items loaded
+              </p>
+            )}
+            <div ref={observerRef} className="h-4 w-full" />
           </div>
         )}
       </div>

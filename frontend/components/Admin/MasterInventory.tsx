@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Search, Plus, Minus, Database, ArrowUpCircle, ArrowDownCircle, AlertTriangle, X, ChevronDown, ImageIcon, Package, TrendingUp, Lock, ShoppingCart, ChevronRight, CheckCircle, Loader2 } from 'lucide-react';
 import { Inventory, Article } from '../../types';
 import { getImageUrl } from '../../utils/imageUtils';
@@ -7,6 +7,9 @@ import { formatAssortment } from '../../utils/assortmentUtils';
 import { apiFetch } from '../../services/api';
 import { masterCatalogService } from '../../services/masterCatalogService';
 import { toast } from 'sonner';
+import Pagination from '../ui/Pagination';
+import { usePageSize } from '../../utils/usePageSize';
+import { Article as ArticleType } from '../../types';
 
 interface MasterInventoryProps {
   inventory: Inventory[];
@@ -41,12 +44,21 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
   // Secondary lookup by SKU — used when PO item has no variantId (older POs)
   const [poPairsByVariantSku, setPoPairsByVariantSku] = useState<Record<string, number>>({});
 
-  // Live  = sizeMap[size].qty      → available stock; reduces when order blocked, stays reduced after dispatch
-  // Blocked = sizeMap[size].blockedQty → reserved for booked orders, reduces when order dispatched
+  // ── Backend pagination state ─────────────────────────────────────────────
+  const [localArticles, setLocalArticles] = useState<ArticleType[]>([]);
+  const [totalItems, setTotalItems] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [pageSize, setPageSize] = usePageSize('master_inventory', 20);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedSearch = useRef('');
+
+  // Live + Blocked totals from the current page of localArticles (header stats)
   const { totalLivePairs, totalBlockedPairs } = useMemo(() => {
     let live = 0;
     let blocked = 0;
-    articles.forEach(a => {
+    localArticles.forEach(a => {
       (a.variants || []).forEach(v => {
         Object.values(v.sizeMap || {}).forEach((cell: any) => {
           live    += Number(cell?.qty        || 0);
@@ -55,7 +67,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
       });
     });
     return { totalLivePairs: live, totalBlockedPairs: blocked };
-  }, [articles]);
+  }, [localArticles]);
 
   // PO Pending = all active POs (SENT, not deleted) that have NOT yet been received via GRN
   const fetchPOPairs = async () => {
@@ -135,11 +147,83 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
     });
   };
 
-  const filteredInventory = inventory.filter(inv => {
-    const article = articles.find(a => a.id === inv.articleId);
-    return article?.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-           article?.sku.toLowerCase().includes(searchTerm.toLowerCase());
-  });
+  // ── Backend-paginated inventory fetch ──────────────────────────────────
+  const fetchLocalInventory = useCallback(async (page: number, limit: number, q: string) => {
+    setPageLoading(true);
+    try {
+      const res = await masterCatalogService.listMasterItems({ page, limit, q: q || undefined });
+      const mapped: ArticleType[] = (res.data || []).map((item: any) => {
+        const normalizedVariants = (item.variants || []).map((v: any) => {
+          const sizeSkus: Record<string, string> = v.sizeSkus || {};
+          const sizeQuantities: Record<string, number> = v.sizeQuantities || {};
+          if (Object.keys(sizeQuantities).length === 0 && v.sizeMap) {
+            Object.entries(v.sizeMap).forEach(([sz, cell]: [string, any]) => {
+              sizeSkus[sz] = cell.sku || '';
+              sizeQuantities[sz] = cell.qty || 0;
+            });
+          }
+          return { ...v, id: v._id || Math.random().toString(36).substr(2, 9), sizeSkus, sizeQuantities };
+        });
+        return {
+          id: item._id,
+          sku: item.sku || '',
+          name: item.articleName,
+          category: item.gender,
+          assortmentId: item.assortmentId || '',
+          productCategory: item.categoryId?.name,
+          brand: item.brandId?.name,
+          pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+          mrp: item.mrp,
+          soleColor: item.soleColor,
+          status: item.stage,
+          imageUrl: item.primaryImage?.url,
+          colorMedia: item.colorMedia || [],
+          variants: normalizedVariants,
+          isActive: item.isActive !== false,
+        } as ArticleType;
+      });
+      setLocalArticles(mapped);
+      setTotalItems(res.meta?.total ?? res.data?.length ?? 0);
+      setTotalPages(res.meta?.totalPages ?? 1);
+    } catch (err) {
+      console.error('Failed to fetch inventory page', err);
+    } finally {
+      setPageLoading(false);
+    }
+  }, []);
+
+  // Fetch on page/pageSize change
+  useEffect(() => {
+    fetchLocalInventory(currentPage, pageSize, debouncedSearch.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, pageSize]);
+
+  // Debounced search resets to page 1
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      debouncedSearch.current = searchTerm.trim();
+      setCurrentPage(1);
+      fetchLocalInventory(1, pageSize, searchTerm.trim());
+    }, 400);
+    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm]);
+
+  // Real-time refresh inventory on catalog / grn changes
+  useEffect(() => {
+    const handler = () => fetchLocalInventory(currentPage, pageSize, debouncedSearch.current);
+    window.addEventListener('catalogRefetch', handler);
+    window.addEventListener('grnRefetch', handler);
+    return () => {
+      window.removeEventListener('catalogRefetch', handler);
+      window.removeEventListener('grnRefetch', handler);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, pageSize]);
+
+  const filteredInventory = localArticles.map(a => ({ articleId: a.id, ...inventory.find(i => i.articleId === a.id) }));
+
 
   const openMovementModal = (type: 'INWARD' | 'OUTWARD', articleId = '', variantId = '') => {
     setMovementType(type);
@@ -270,15 +354,22 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
       </div>
 
       <div className="space-y-3">
-        {filteredInventory.length === 0 && (
+        {pageLoading && (
+          <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center">
+            <Loader2 className="mx-auto text-indigo-400 mb-3 animate-spin" size={36} />
+            <p className="text-slate-400 font-medium font-mono uppercase tracking-widest text-xs italic">Loading stock records…</p>
+          </div>
+        )}
+        {!pageLoading && filteredInventory.length === 0 && (
           <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center">
             <Package className="mx-auto text-slate-200 mb-3" size={48} />
             <p className="text-slate-400 font-medium font-mono uppercase tracking-widest text-xs italic">No matching stock records</p>
           </div>
         )}
 
-        {filteredInventory.map(inv => {
-          const article = articles.find(a => a.id === inv.articleId)!;
+        {!pageLoading && filteredInventory.map(inv => {
+          const article = localArticles.find(a => a.id === inv.articleId);
+          if (!article) return null;
           const isExpanded = expandedIds.has(article.id);
           const variantCount = article.variants?.length || 0;
 
@@ -490,6 +581,20 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
             </div>
           );
         })}
+
+        {/* Pagination */}
+        {!pageLoading && totalPages >= 1 && (
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={totalItems}
+              itemsPerPage={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={setPageSize}
+            />
+          </div>
+        )}
       </div>
 
       {/* Multi-Step Stock Movement Modal */}

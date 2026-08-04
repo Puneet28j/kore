@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useState, useMemo,useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import {
   Plus,
@@ -27,6 +27,8 @@ import Switch from "../ui/Switch";
 import { masterCatalogService } from "../../services/masterCatalogService";
 import { getImageUrl } from "../../utils/imageUtils";
 import { formatAssortment } from "../../utils/assortmentUtils";
+import Pagination from "../ui/Pagination";
+import { usePageSize } from "../../utils/usePageSize";
 
 type CatalogStatus = "AVAILABLE" | "WISHLIST";
 
@@ -207,11 +209,11 @@ function parseCsv(text: string): CsvRow[] {
   }).filter(r => r.name);
 }
 
-function groupCsvByName(rows: CsvRow[]): Record<string, CsvRow[]> {
-  const g: Record<string, CsvRow[]> = {};
-  rows.forEach(r => { (g[r.name] = g[r.name] || []).push(r); });
-  return g;
-}
+// function groupCsvByName(rows: CsvRow[]): Record<string, CsvRow[]> {
+//   const g: Record<string, CsvRow[]> = {};
+//   rows.forEach(r => { (g[r.name] = g[r.name] || []).push(r); });
+//   return g;
+// }
 
 // Normalize listing_status → "WISHLIST" or "AVAILABLE"
 // Accepts: wishlist, preorder, pre-order, pre_order, "pre order" → all = WISHLIST
@@ -289,6 +291,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [editingArticle, setEditingArticle] = useState<Article | null>(null);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // ── Backend pagination state ─────────────────────────────────────────────
+  const [localArticles, setLocalArticles] = useState<Article[]>([]);
+  const [totalItems, setTotalItems] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [pageSize, setPageSize] = usePageSize("catalogue", 20);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedSearch = useRef("");
 
   // ── CSV Import State ─────────────────────────────────────────────────────────
   const [csvOpen, setCsvOpen] = useState(false);
@@ -912,34 +924,92 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     });
   };
 
-  // ---------- Data: filtered master articles ----------
-  const filteredMasters = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
-    return articles.filter((a) => {
-      const status = (a.status || "AVAILABLE") as CatalogStatus;
-      if (status !== activeTab) return false;
-      if (!q) return true;
-      // Match on article name, sku, or any variant name/sku
-      if ((a.name || "").toLowerCase().includes(q)) return true;
-      if ((a.sku || "").toLowerCase().includes(q)) return true;
-      if (
-        a.variants?.some((v) => {
-          const vName = v.itemName || `${a.name} - ${v.color}`;
-          if (vName.toLowerCase().includes(q)) return true;
-          // if ((v.sku || "").toLowerCase().includes(q)) return true;
-          // if (
-          //   Object.values(v.sizeSkus || {}).some((sk) =>
-          //     sk.toLowerCase().includes(q)
-          //   )
-          // )
-            return true;
-          return false;
-        })
-      )
-        return true;
-      return false;
-    });
-  }, [articles, activeTab, searchTerm]);
+  // ---------- Backend-paginated data fetch ----------
+  const fetchLocalArticles = useCallback(async (page: number, limit: number, q: string, tab: CatalogStatus) => {
+    setPageLoading(true);
+    try {
+      const res = await masterCatalogService.listMasterItems({
+        page,
+        limit,
+        q: q || undefined,
+        stage: tab,
+      });
+      const mapped: Article[] = (res.data || []).map((item: any) => {
+        const normalizedVariants = (item.variants || []).map((v: any) => {
+          const sizeSkus: Record<string, string> = v.sizeSkus || {};
+          const sizeQuantities: Record<string, number> = v.sizeQuantities || {};
+          if (Object.keys(sizeQuantities).length === 0 && v.sizeMap) {
+            Object.entries(v.sizeMap).forEach(([sz, cell]: [string, any]) => {
+              sizeSkus[sz] = cell.sku || "";
+              sizeQuantities[sz] = cell.qty || 0;
+            });
+          }
+          return { ...v, id: v._id || Math.random().toString(36).substr(2, 9), sizeSkus, sizeQuantities };
+        });
+        return {
+          id: item._id,
+          sku: item.sku || "",
+          name: item.articleName,
+          category: item.gender,
+          assortmentId: item.assortmentId || "",
+          productCategory: item.categoryId?.name,
+          brand: item.brandId?.name,
+          pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+          mrp: item.mrp,
+          soleColor: item.soleColor,
+          manufacturer: item.manufacturerCompanyId?.name,
+          unit: item.unitId?.name,
+          status: item.stage,
+          expectedDate: item.expectedAvailableDate
+            ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
+            : "",
+          imageUrl: item.primaryImage?.url,
+          secondaryImages: item.secondaryImages || [],
+          selectedSizes: item.sizeRanges || [],
+          selectedColors: item.productColors || [],
+          colorMedia: item.colorMedia || [],
+          variants: normalizedVariants,
+          isActive: item.isActive !== false,
+        };
+      });
+      setLocalArticles(mapped);
+      setTotalItems(res.meta?.total ?? res.data?.length ?? 0);
+      setTotalPages(res.meta?.totalPages ?? 1);
+    } catch (err) {
+      console.error("Failed to fetch catalogue page", err);
+    } finally {
+      setPageLoading(false);
+    }
+  }, []);
+
+  // Trigger fetch whenever page, pageSize, or tab changes
+  useEffect(() => {
+    fetchLocalArticles(currentPage, pageSize, debouncedSearch.current, activeTab);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, pageSize, activeTab]);
+
+  // Debounced search: 400ms delay, resets to page 1
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      debouncedSearch.current = searchTerm.trim();
+      setCurrentPage(1);
+      fetchLocalArticles(1, pageSize, searchTerm.trim(), activeTab);
+    }, 400);
+    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm]);
+
+  // Real-time refresh on catalogRefetch socket event
+  useEffect(() => {
+    const handler = () => fetchLocalArticles(currentPage, pageSize, debouncedSearch.current, activeTab);
+    window.addEventListener("catalogRefetch", handler);
+    return () => window.removeEventListener("catalogRefetch", handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, pageSize, activeTab]);
+
+  // Keep App-level articles in sync when a save/delete happens (so modals etc. work)
+  const filteredMasters = localArticles;
 
   // ---------- Modal ----------
   const openModal = (article?: Article) => {
@@ -1105,8 +1175,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           <div>
             <h3 className="text-xl font-bold text-slate-900">Catalogue</h3>
             <p className="text-sm text-slate-500">
-              {filteredMasters.length} Master
-              {filteredMasters.length !== 1 ? "s" : ""} •{" "}
+              {pageLoading ? "Loading…" : `${totalItems} Master${totalItems !== 1 ? "s" : ""}`} •{" "}
               <b>{activeTab === "AVAILABLE" ? "Available" : "Pre-Order"}</b>
             </p>
           </div>
@@ -1143,7 +1212,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       {/* Tabs */}
       <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
         <button
-          onClick={() => setActiveTab("AVAILABLE")}
+          onClick={() => { setActiveTab("AVAILABLE"); setCurrentPage(1); }}
           className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
             activeTab === "AVAILABLE"
               ? "bg-emerald-600 text-white shadow"
@@ -1154,7 +1223,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           Available Catalogue
         </button>
         <button
-          onClick={() => setActiveTab("WISHLIST")}
+          onClick={() => { setActiveTab("WISHLIST"); setCurrentPage(1); }}
           className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
             activeTab === "WISHLIST"
               ? "bg-amber-500 text-white shadow"
@@ -1168,7 +1237,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
       {/* Master Articles List */}
       <div className="space-y-3">
-        {filteredMasters.length === 0 && (
+        {pageLoading && (
+          <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center">
+            <Loader2 className="mx-auto text-indigo-400 mb-3 animate-spin" size={32} />
+            <p className="text-slate-400 font-medium text-sm">Loading catalogue…</p>
+          </div>
+        )}
+        {!pageLoading && filteredMasters.length === 0 && (
           <div className="bg-white border border-slate-200 rounded-2xl p-2 text-center">
             <Package className="mx-auto text-slate-300 mb-3" size={40} />
             <p className="text-slate-400 font-medium">No items in this tab.</p>
@@ -1601,6 +1676,20 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             </div>
           );
         })}
+
+        {/* Pagination */}
+        {!pageLoading && totalPages >= 1 && (
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={totalItems}
+              itemsPerPage={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={setPageSize}
+            />
+          </div>
+        )}
       </div>
 
       {/* ── CSV Import Modal ─────────────────────────────────────────────────── */}

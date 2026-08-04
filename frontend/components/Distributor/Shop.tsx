@@ -58,6 +58,26 @@ const colorToHex = (color: string): string => {
   return map[color.toLowerCase()] || "#cbd5e1";
 };
 
+const isVariantInStock = (v: Variant): boolean => {
+  const sizeMap = v.sizeMap || {};
+  const baseBreakdown = v.sizeQuantities || {};
+  const sizes = Object.keys(baseBreakdown);
+  if (sizes.length === 0) return true; // no assortment data — no limit
+  let min = Infinity;
+  for (const sz of sizes) {
+    const assortQty = Number(baseBreakdown[sz]) || 0;
+    if (assortQty === 0) continue;
+    const stockEntry = sizeMap[sz];
+    const available = stockEntry
+      ? Math.max(0, (stockEntry.qty || 0) - (stockEntry.blockedQty || 0))
+      : 0;
+    min = Math.min(min, Math.floor(available / assortQty));
+  }
+  const stock = min === Infinity ? 0 : min;
+  return stock > 0;
+};
+
+
 // ─── Amazon-style zoom hook ─────────────────────────────────────────────────
 const ZOOM_SIZE = 300;
 
@@ -312,7 +332,7 @@ const ArticleCard: React.FC<{
         {/* Amazon zoom panel — rendered via portal so it escapes overflow:hidden */}
         {zoom.visible && currentImageUrl && createPortal(
           <div
-            className="pointer-events-none fixed z-[9999] rounded-2xl overflow-hidden border-2 border-slate-200 shadow-2xl"
+            className="pointer-events-none fixed z-9999 rounded-2xl overflow-hidden border-2 border-slate-200 shadow-2xl"
             style={{
               left: zoom.panelLeft,
               top: zoom.panelTop,
@@ -355,12 +375,12 @@ const ArticleCard: React.FC<{
           </div>
         )}
 
-        {/* Stock badge (shown when not out of stock) */}
-        {!isOutOfStock && maxCartonsFromStock <= 10 && (
+        {/* Stock badge commented out as per request */}
+        {/* {!isOutOfStock && maxCartonsFromStock <= 10 && (
           <div className="absolute top-3 right-3 z-10 bg-amber-500 text-white text-[10px] font-black px-2 py-1 rounded-full shadow-md">
             Only {maxCartonsFromStock} CTN left
           </div>
-        )}
+        )} */}
 
         <div className="absolute top-4 left-4 flex flex-col gap-2 z-10">
           <div className="bg-white/95 backdrop-blur shadow-sm px-3 py-1.5 rounded-full text-[10px] font-black text-indigo-600 uppercase tracking-widest border border-indigo-50">
@@ -514,13 +534,14 @@ const Shop: React.FC<ShopProps> = ({
     );
   }, [articles, search]);
 
-  // Build color groups — filtered by distributor tag
+  // Build color groups — filtered by distributor tag and stock availability
   const allColorGroups = useMemo(() => {
     return filtered.flatMap((article) => {
       const variants = article.variants || [];
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
+        if (!isVariantInStock(v)) return; // Only show variants that are in stock
         if (!groups[v.color]) groups[v.color] = [];
         groups[v.color].push(v);
       });

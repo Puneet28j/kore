@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const MasterCatalog = require("../models/MasterCatalog");
 
-const ALLOWED_PAGE_LIMITS = [10, 20, 30, 50, 100, 200, 500, 1000];
+const ALLOWED_PAGE_LIMITS = [ 10, 20, 30, 50, 100, 200, 500, 1000];
 
 const parseMaybeJson = (val, fallback) => {
   if (val === undefined || val === null) return fallback;

@@ -10,11 +10,12 @@ import {
   Package,
   Tag,
   Layers,
+  Loader2,
 } from "lucide-react";
 import { Article, Inventory, Variant, User } from "../../types";
 import { toast } from "sonner";
 import { getImageUrl } from "../../utils/imageUtils";
-import Pagination from "../ui/Pagination";
+import { masterCatalogService } from "../../services/masterCatalogService";
 
 interface ShopProps {
   articles: Article[];
@@ -62,17 +63,32 @@ const isVariantInStock = (v: Variant): boolean => {
   const sizeMap = v.sizeMap || {};
   const baseBreakdown = v.sizeQuantities || {};
   const sizes = Object.keys(baseBreakdown);
-  if (sizes.length === 0) return true; // no assortment data — no limit
+  
+  if (sizes.length === 0) {
+    const entries = typeof (sizeMap as any).entries === "function"
+      ? Array.from((sizeMap as any).entries())
+      : Object.entries(sizeMap);
+    if (entries.length === 0) return false;
+    return entries.some(([, val]: [string, any]) => {
+      const qty = typeof val === "number" ? val : Number(val?.qty || 0);
+      const blocked = typeof val === "object" ? Number(val?.blockedQty || 0) : 0;
+      return (qty - blocked) > 0;
+    });
+  }
+
   let min = Infinity;
+  let hasValidAssort = false;
   for (const sz of sizes) {
     const assortQty = Number(baseBreakdown[sz]) || 0;
     if (assortQty === 0) continue;
-    const stockEntry = sizeMap[sz];
+    hasValidAssort = true;
+    const stockEntry = typeof (sizeMap as any).get === "function" ? (sizeMap as any).get(sz) : sizeMap[sz];
     const available = stockEntry
-      ? Math.max(0, (stockEntry.qty || 0) - (stockEntry.blockedQty || 0))
+      ? Math.max(0, Number(stockEntry.qty || 0) - Number(stockEntry.blockedQty || 0))
       : 0;
     min = Math.min(min, Math.floor(available / assortQty));
   }
+  if (!hasValidAssort) return false;
   const stock = min === Infinity ? 0 : min;
   return stock > 0;
 };
@@ -495,10 +511,9 @@ const ArticleCard: React.FC<{
           <button
             onClick={handleAdd}
             disabled={totalPairs === 0 || isOutOfStock || maxAdditionalCartons === 0}
-            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-2xl px-6 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 group/btn active:scale-95"
+            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-2xl px-6 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 group/btn active:scale-95 py-3"
           >
             <ShoppingCart size={16} className="group-hover/btn:scale-110 transition-transform" />
-            {/* <span>Add to Cart</span> */}
           </button>
         </div>
       </div>
@@ -506,9 +521,50 @@ const ArticleCard: React.FC<{
   );
 };
 
+// Helper to map DB master catalog item to Article interface
+const mapDocToArticle = (doc: any): Article => ({
+  id: doc._id || doc.id,
+  sku: doc.variants?.[0]?.hsnCode || doc._id,
+  name: doc.articleName,
+  category: doc.gender || doc.categoryId?.name,
+  assortmentId: doc._id,
+  pricePerPair: doc.mrp || doc.variants?.[0]?.sellingPrice || doc.variants?.[0]?.mrp || 0,
+  imageUrl: doc.primaryImage?.url || doc.variants?.[0]?.images?.[0] || "",
+  images: doc.secondaryImages?.map((i: any) => i.url) || [],
+  mrp: doc.mrp,
+  soleColor: doc.soleColor,
+  productCategory: doc.categoryId?.name,
+  brand: doc.brandId?.name,
+  status: doc.stage || "AVAILABLE",
+  expectedDate: doc.expectedAvailableDate,
+  selectedColors: doc.productColors || [],
+  selectedSizes: doc.sizeRanges || [],
+  variants: (doc.variants || []).map((v: any) => ({
+    id: v._id || v.id,
+    _id: v._id || v.id,
+    itemName: v.itemName || doc.articleName,
+    sku: v.hsnCode || "",
+    sizeSkus: {},
+    color: v.color,
+    sizeRange: v.sizeRange,
+    sizeRangeId: v.sizeRangeId,
+    costPrice: v.costPrice || 0,
+    sellingPrice: v.sellingPrice || 0,
+    mrp: v.mrp || 0,
+    hsnCode: v.hsnCode,
+    sizeQuantities: v.sizeQuantities || {},
+    sizeMap: v.sizeMap || {},
+    images: (v.images || []).map((i: any) => typeof i === "string" ? i : i.url),
+    isActive: v.isActive !== false,
+    tag: v.tag,
+    onlineMrp: v.onlineMrp,
+    offlineMrp: v.offlineMrp,
+  })),
+});
+
 // ─── Shop (page) ────────────────────────────────────────────────────────────
 const Shop: React.FC<ShopProps> = ({
-  articles,
+  articles: initialArticles,
   inventory,
   cart,
   addToCart,
@@ -521,27 +577,115 @@ const Shop: React.FC<ShopProps> = ({
   const distributorTag = user?.tag;
   const [priceView, setPriceView] = useState<PriceView>("pair");
   const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
-  const PAGE_SIZE = 24;
-  useEffect(() => { setPage(1); }, [search]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return articles.filter(
-      (a) =>
-        a.status !== "WISHLIST" &&
-        (!q || a.name.toLowerCase().includes(q) || (a.sku || "").toLowerCase().includes(q))
+  // Filter & Sort state
+  const [genderFilter, setGenderFilter] = useState<string>("ALL");
+  const [sortOption, setSortOption] = useState<string>("default");
+  const [inStockOnly, setInStockOnly] = useState<boolean>(true);
+
+  // Server-side Pagination & Infinite Scroll State
+  const BATCH_SIZE = 12;
+  const [page, setPage] = useState(1);
+  const [hasMorePages, setHasMorePages] = useState(true);
+  const [totalServerItems, setTotalServerItems] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const [backendArticles, setBackendArticles] = useState<Article[]>([]);
+  const observerRef = useRef<HTMLDivElement | null>(null);
+
+  // Fetch Page 1 whenever search, gender, or sort changes
+  const fetchInitialPage = useCallback(async () => {
+    setLoading(true);
+    setPage(1);
+    try {
+      const res = await masterCatalogService.listMasterItems({
+        page: 1,
+        limit: BATCH_SIZE,
+        stage: "AVAILABLE",
+        q: search || undefined,
+        gender: genderFilter !== "ALL" ? genderFilter : undefined,
+        sort: sortOption,
+      });
+
+      const docs = res.data || res.items || [];
+      const fetchedArticles = docs.map(mapDocToArticle);
+      setBackendArticles(fetchedArticles);
+
+      const meta = res.meta || {};
+      const totalPages = meta.totalPages || 1;
+      const totalCount = meta.total || fetchedArticles.length;
+      setTotalServerItems(totalCount);
+      setHasMorePages(1 < totalPages);
+    } catch {
+      toast.error("Failed to load catalog");
+    } finally {
+      setLoading(false);
+    }
+  }, [search, genderFilter, sortOption]);
+
+  // Load Next Page for Infinite Scroll
+  const loadNextPage = useCallback(async () => {
+    if (loadingMore || !hasMorePages) return;
+    setLoadingMore(true);
+    const nextPage = page + 1;
+    try {
+      const res = await masterCatalogService.listMasterItems({
+        page: nextPage,
+        limit: BATCH_SIZE,
+        stage: "AVAILABLE",
+        q: search || undefined,
+        gender: genderFilter !== "ALL" ? genderFilter : undefined,
+        sort: sortOption,
+      });
+
+      const docs = res.data || res.items || [];
+      const fetchedArticles = docs.map(mapDocToArticle);
+      setBackendArticles((prev) => [...prev, ...fetchedArticles]);
+      setPage(nextPage);
+
+      const meta = res.meta || {};
+      const totalPages = meta.totalPages || 1;
+      setHasMorePages(nextPage < totalPages);
+    } catch {
+      toast.error("Failed to load more items");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [page, hasMorePages, loadingMore, search, genderFilter, sortOption]);
+
+  useEffect(() => {
+    fetchInitialPage();
+  }, [fetchInitialPage]);
+
+  // IntersectionObserver for Backend Infinite Scroll
+  useEffect(() => {
+    if (!hasMorePages || loadingMore || loading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadNextPage();
+        }
+      },
+      { threshold: 0.1, rootMargin: "200px" }
     );
-  }, [articles, search]);
+
+    const currentObs = observerRef.current;
+    if (currentObs) observer.observe(currentObs);
+
+    return () => {
+      if (currentObs) observer.unobserve(currentObs);
+    };
+  }, [hasMorePages, loadingMore, loading, loadNextPage]);
 
   // Build color groups — filtered by distributor tag and stock availability
-  const allColorGroups = useMemo(() => {
-    return filtered.flatMap((article) => {
+  const colorGroups = useMemo(() => {
+    return backendArticles.flatMap((article) => {
       const variants = article.variants || [];
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
-        if (!isVariantInStock(v)) return; // Only show variants that are in stock
+        if (inStockOnly && !isVariantInStock(v)) return; // Filter 0 stock items when inStockOnly is active
         if (!groups[v.color]) groups[v.color] = [];
         groups[v.color].push(v);
       });
@@ -553,30 +697,68 @@ const Shop: React.FC<ShopProps> = ({
           variants: colorVariants,
         }));
     });
-  }, [filtered, distributorTag]);
-
-  const totalPages = Math.ceil(allColorGroups.length / PAGE_SIZE);
-  const colorGroups = useMemo(
-    () => allColorGroups.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [allColorGroups, page, PAGE_SIZE]
-  );
+  }, [backendArticles, distributorTag, inStockOnly]);
 
   return (
     <div className="space-y-8 pb-20">
       {/* Search + filters bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="relative w-full md:max-w-md">
+        <div className="relative w-full md:max-w-xs">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             type="text"
-            placeholder="Search by article name or SKU..."
-            className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
+            placeholder="Search article or SKU..."
+            className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-sm font-medium"
           />
         </div>
 
-        <div className="flex gap-2 w-full md:w-auto items-center">
+        {/* Filters & Sorting controls */}
+        <div className="flex flex-wrap gap-2 w-full md:w-auto items-center justify-between md:justify-end">
+          {/* Gender Filter Pills */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
+            {["ALL", "MEN", "WOMEN", "KIDS"].map((g) => (
+              <button
+                key={g}
+                onClick={() => setGenderFilter(g)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  genderFilter === g
+                    ? "bg-white text-indigo-600 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {g === "ALL" ? "All" : g.charAt(0) + g.slice(1).toLowerCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* Stock Filter Toggle */}
+          <button
+            onClick={() => setInStockOnly(!inStockOnly)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+              inStockOnly
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm"
+                : "bg-slate-50 text-slate-500 border-slate-200 hover:text-slate-800"
+            }`}
+          >
+            {inStockOnly ? "✓ In Stock Only" : "Show All Stock"}
+          </button>
+
+          {/* Sort dropdown */}
+          <select
+            value={sortOption}
+            onChange={(e) => setSortOption(e.target.value)}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+          >
+            <option value="default">Sort: Featured</option>
+            <option value="price_asc">Price: Low to High</option>
+            <option value="price_desc">Price: High to Low</option>
+            <option value="name_asc">Name: A to Z</option>
+            <option value="newest">Newest First</option>
+            <option value="oldest">Oldest First</option>
+          </select>
+
           {/* Price view toggle */}
           <div className="flex items-center bg-slate-100 rounded-xl p-1 gap-1">
             <button
@@ -588,7 +770,7 @@ const Shop: React.FC<ShopProps> = ({
               }`}
             >
               <Tag size={12} />
-              Per Pair
+              Pair
             </button>
             <button
               onClick={() => setPriceView("carton")}
@@ -599,17 +781,17 @@ const Shop: React.FC<ShopProps> = ({
               }`}
             >
               <Layers size={12} />
-              Per Carton
+              Carton
             </button>
           </div>
 
           {cartItemsCount > 0 && (
             <button
               onClick={goToCart}
-              className="flex-1 md:flex-none bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all"
+              className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all text-xs"
             >
-              <ShoppingCart size={18} />
-              View Cart ({cartItemsCount})
+              <ShoppingCart size={16} />
+              Cart ({cartItemsCount})
             </button>
           )}
         </div>
@@ -627,44 +809,70 @@ const Shop: React.FC<ShopProps> = ({
         </div>
       )}
 
-      {/* Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-        {colorGroups.map(({ article, color, variants }) => {
-          const inv = inventory.find((i) => i.articleId === article.id);
-
-          return (
-            <ArticleCard
-              key={`${article.id}-${color}`}
-              group={{ article, color, variants }}
-              inv={inv}
-              cart={cart}
-              addToCart={addToCart}
-              discountPercentage={discountPercentage}
-              priceView={priceView}
-              distributorTag={distributorTag}
-            />
-          );
-        })}
-      </div>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
-          <Pagination
-            currentPage={page}
-            totalPages={totalPages}
-            onPageChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-            totalItems={allColorGroups.length}
-            itemsPerPage={PAGE_SIZE}
-          />
+      {/* Loading state */}
+      {loading ? (
+        <div className="flex flex-col items-center justify-center py-20 gap-3">
+          <Loader2 size={32} className="animate-spin text-indigo-600" />
+          <p className="text-xs font-bold text-slate-500">Loading catalog from server...</p>
         </div>
-      )}
+      ) : (
+        <>
+          {/* Product Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+            {colorGroups.map(({ article, color, variants }) => {
+              const inv = inventory.find((i) => i.articleId === article.id);
 
-      {allColorGroups.length === 0 && (
-        <div className="py-20 flex flex-col items-center gap-3 text-slate-400">
-          <Package size={40} />
-          <p className="text-sm">No articles found</p>
-        </div>
+              return (
+                <ArticleCard
+                  key={`${article.id}-${color}`}
+                  group={{ article, color, variants }}
+                  inv={inv}
+                  cart={cart}
+                  addToCart={addToCart}
+                  discountPercentage={discountPercentage}
+                  priceView={priceView}
+                  distributorTag={distributorTag}
+                />
+              );
+            })}
+          </div>
+
+          {/* Infinite Scroll Trigger & Status */}
+          {colorGroups.length > 0 && (
+            <div className="flex flex-col items-center justify-center gap-3 pt-6 pb-4">
+              {hasMorePages ? (
+                <div ref={observerRef} className="flex flex-col items-center gap-2 py-4">
+                  {loadingMore ? (
+                    <div className="flex items-center gap-2 text-xs font-bold text-indigo-600">
+                      <Loader2 size={18} className="animate-spin" />
+                      Loading more products...
+                    </div>
+                  ) : (
+                    <button
+                      onClick={loadNextPage}
+                      className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline"
+                    >
+                      Load more items ({totalServerItems - backendArticles.length} remaining)
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-4 border-t border-slate-100 w-full">
+                  <p className="text-xs font-bold text-slate-400">
+                    🎉 You've reached the end of the catalogue ({colorGroups.length} items shown)
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {colorGroups.length === 0 && (
+            <div className="py-20 flex flex-col items-center gap-3 text-slate-400">
+              <Package size={40} />
+              <p className="text-sm">No matching articles found</p>
+            </div>
+          )}
+        </>
       )}
 
       {/* Mobile sticky cart bar */}

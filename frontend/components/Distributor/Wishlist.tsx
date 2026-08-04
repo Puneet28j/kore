@@ -15,6 +15,7 @@ import {
 import { toast } from "sonner";
 import { Article, Inventory, Variant } from "../../types";
 import { getImageUrl } from "../../utils/imageUtils";
+import { masterCatalogService } from "../../services/masterCatalogService";
 
 // Grouping unit for the pre-order
 interface ColorGroup {
@@ -404,15 +405,149 @@ interface PreOrderProps {
     pairCount: number,
     price: number
   ) => Promise<void>;
-}
+}// Helper to map DB master catalog item to Article interface
+const mapDocToArticle = (doc: any): Article => ({
+  id: doc._id || doc.id,
+  sku: doc.variants?.[0]?.hsnCode || doc._id,
+  name: doc.articleName,
+  category: doc.gender || doc.categoryId?.name,
+  assortmentId: doc._id,
+  pricePerPair: doc.mrp || doc.variants?.[0]?.sellingPrice || doc.variants?.[0]?.mrp || 0,
+  imageUrl: doc.primaryImage?.url || doc.variants?.[0]?.images?.[0] || "",
+  images: doc.secondaryImages?.map((i: any) => i.url) || [],
+  mrp: doc.mrp,
+  soleColor: doc.soleColor,
+  productCategory: doc.categoryId?.name,
+  brand: doc.brandId?.name,
+  status: doc.stage || "WISHLIST",
+  expectedDate: doc.expectedAvailableDate,
+  selectedColors: doc.productColors || [],
+  selectedSizes: doc.sizeRanges || [],
+  variants: (doc.variants || []).map((v: any) => ({
+    id: v._id || v.id,
+    _id: v._id || v.id,
+    itemName: v.itemName || doc.articleName,
+    sku: v.hsnCode || "",
+    sizeSkus: {},
+    color: v.color,
+    sizeRange: v.sizeRange,
+    sizeRangeId: v.sizeRangeId,
+    costPrice: v.costPrice || 0,
+    sellingPrice: v.sellingPrice || 0,
+    mrp: v.mrp || 0,
+    hsnCode: v.hsnCode,
+    sizeQuantities: v.sizeQuantities || {},
+    sizeMap: v.sizeMap || {},
+    images: (v.images || []).map((i: any) => typeof i === "string" ? i : i.url),
+    isActive: v.isActive !== false,
+    tag: v.tag,
+    onlineMrp: v.onlineMrp,
+    offlineMrp: v.offlineMrp,
+  })),
+});
 
-const PreOrder: React.FC<PreOrderProps> = ({ articles, onPlacePreOrder }) => {
+const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlacePreOrder }) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const [genderFilter, setGenderFilter] = useState<string>("ALL");
+  const [sortOption, setSortOption] = useState<string>("default");
+
+  // Server-side Infinite Scroll state
+  const BATCH_SIZE = 12;
+  const [page, setPage] = useState(1);
+  const [hasMorePages, setHasMorePages] = useState(true);
+  const [totalServerItems, setTotalServerItems] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const [backendArticles, setBackendArticles] = useState<Article[]>([]);
+  const observerRef = useRef<HTMLDivElement | null>(null);
+
+  // Fetch Page 1 from backend
+  const fetchInitialPage = React.useCallback(async () => {
+    setLoading(true);
+    setPage(1);
+    try {
+      const res = await masterCatalogService.listMasterItems({
+        page: 1,
+        limit: BATCH_SIZE,
+        stage: "WISHLIST",
+        q: searchQuery || undefined,
+        gender: genderFilter !== "ALL" ? genderFilter : undefined,
+        sort: sortOption,
+      });
+
+      const docs = res.data || res.items || [];
+      const fetchedArticles = docs.map(mapDocToArticle);
+      setBackendArticles(fetchedArticles);
+
+      const meta = res.meta || {};
+      const totalPages = meta.totalPages || 1;
+      const totalCount = meta.total || fetchedArticles.length;
+      setTotalServerItems(totalCount);
+      setHasMorePages(1 < totalPages);
+    } catch {
+      toast.error("Failed to load pre-orders");
+    } finally {
+      setLoading(false);
+    }
+  }, [searchQuery, genderFilter, sortOption]);
+
+  // Load Next Page
+  const loadNextPage = React.useCallback(async () => {
+    if (loadingMore || !hasMorePages) return;
+    setLoadingMore(true);
+    const nextPage = page + 1;
+    try {
+      const res = await masterCatalogService.listMasterItems({
+        page: nextPage,
+        limit: BATCH_SIZE,
+        stage: "WISHLIST",
+        q: searchQuery || undefined,
+        gender: genderFilter !== "ALL" ? genderFilter : undefined,
+        sort: sortOption,
+      });
+
+      const docs = res.data || res.items || [];
+      const fetchedArticles = docs.map(mapDocToArticle);
+      setBackendArticles((prev) => [...prev, ...fetchedArticles]);
+      setPage(nextPage);
+
+      const meta = res.meta || {};
+      const totalPages = meta.totalPages || 1;
+      setHasMorePages(nextPage < totalPages);
+    } catch {
+      toast.error("Failed to load more pre-orders");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [page, hasMorePages, loadingMore, searchQuery, genderFilter, sortOption]);
+
+  useEffect(() => {
+    fetchInitialPage();
+  }, [fetchInitialPage]);
+
+  // IntersectionObserver for Backend Infinite Scroll
+  useEffect(() => {
+    if (!hasMorePages || loadingMore || loading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadNextPage();
+        }
+      },
+      { threshold: 0.1, rootMargin: "200px" }
+    );
+
+    const currentObs = observerRef.current;
+    if (currentObs) observer.observe(currentObs);
+
+    return () => {
+      if (currentObs) observer.unobserve(currentObs);
+    };
+  }, [hasMorePages, loadingMore, loading, loadNextPage]);
 
   const colorGroups = useMemo(() => {
-    const preOrderArticles = articles.filter(a => a.status === "WISHLIST");
-
-    return preOrderArticles.flatMap((article) => {
+    return backendArticles.flatMap((article) => {
       const variants = article.variants || [];
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
@@ -425,33 +560,13 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles, onPlacePreOrder }) => {
         color,
         variants: colorVariants,
       }));
-    }).filter(group => 
-      group.article.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      group.article.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      group.color.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [articles, searchQuery]);
-
-  if (colorGroups.length === 0 && searchQuery === "") {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 px-4 bg-white rounded-3xl border border-slate-200 shadow-sm">
-        <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center mb-6">
-          <Star size={40} className="text-slate-200" />
-        </div>
-        <h3 className="text-xl font-bold text-slate-900 mb-2">
-          Your pre-order is empty
-        </h3>
-        <p className="text-slate-500 max-w-xs text-center text-sm">
-          Upcoming articles will appear here. Stay tuned for new launches!
-        </p>
-      </div>
-    );
-  }
+    });
+  }, [backendArticles]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
       <div className="bg-white p-4 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="flex items-center gap-4 flex-1">
+        <div className="flex items-center gap-4 shrink-0">
           <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center shrink-0">
             <Star className="text-amber-600" size={20} />
           </div>
@@ -461,27 +576,108 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles, onPlacePreOrder }) => {
           </div>
         </div>
 
-        <div className="relative w-full md:max-w-md">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input
-            type="text"
-            placeholder="Search pre-order..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all text-sm font-medium"
-          />
+        {/* Filter and Sort controls */}
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-between md:justify-end">
+          {/* Gender Filter */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
+            {["ALL", "MEN", "WOMEN", "KIDS"].map((g) => (
+              <button
+                key={g}
+                onClick={() => setGenderFilter(g)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  genderFilter === g
+                    ? "bg-white text-amber-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {g === "ALL" ? "All" : g.charAt(0) + g.slice(1).toLowerCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* Sort dropdown */}
+          <select
+            value={sortOption}
+            onChange={(e) => setSortOption(e.target.value)}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-amber-500/20 cursor-pointer"
+          >
+            <option value="default">Sort: Featured</option>
+            <option value="price_asc">Price: Low to High</option>
+            <option value="price_desc">Price: High to Low</option>
+            <option value="name_asc">Name: A to Z</option>
+            <option value="newest">Newest First</option>
+            <option value="oldest">Oldest First</option>
+          </select>
+
+          {/* Search box */}
+          <div className="relative w-full md:w-64">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input
+              type="text"
+              placeholder="Search pre-order..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all text-xs font-medium"
+            />
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-        {colorGroups.map((group) => (
-          <PreOrderCard
-            key={`${group.article.id}-${group.color}`}
-            group={group}
-            onPlacePreOrder={onPlacePreOrder}
-          />
-        ))}
-      </div>
+      {loading ? (
+        <div className="flex flex-col items-center justify-center py-20 gap-3">
+          <Loader2 size={32} className="animate-spin text-amber-600" />
+          <p className="text-xs font-bold text-slate-500">Loading pre-orders from server...</p>
+        </div>
+      ) : (
+        <>
+          {/* Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+            {colorGroups.map((group) => (
+              <PreOrderCard
+                key={`${group.article.id}-${group.color}`}
+                group={group}
+                onPlacePreOrder={onPlacePreOrder}
+              />
+            ))}
+          </div>
+
+          {/* Infinite Scroll Trigger */}
+          {colorGroups.length > 0 && (
+            <div className="flex flex-col items-center justify-center gap-3 pt-6 pb-4">
+              {hasMorePages ? (
+                <div ref={observerRef} className="flex flex-col items-center gap-2 py-4">
+                  {loadingMore ? (
+                    <div className="flex items-center gap-2 text-xs font-bold text-amber-600">
+                      <Loader2 size={18} className="animate-spin" />
+                      Loading more pre-orders...
+                    </div>
+                  ) : (
+                    <button
+                      onClick={loadNextPage}
+                      className="text-xs font-bold text-amber-600 hover:text-amber-800 hover:underline"
+                    >
+                      Load more items ({totalServerItems - backendArticles.length} remaining)
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-4 border-t border-slate-100 w-full">
+                  <p className="text-xs font-bold text-slate-400">
+                    🎉 End of Pre-Orders catalogue ({colorGroups.length} items shown)
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {colorGroups.length === 0 && (
+            <div className="py-20 flex flex-col items-center gap-3 text-slate-400">
+              <Star size={40} className="text-slate-300" />
+              <p className="text-sm">No matching pre-orders found</p>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 };

@@ -7,6 +7,7 @@ import { Order, OrderStatus, Article, Inventory } from '../../types';
 import { distributorOrderService } from '../../services/distributorOrderService';
 import OrderDetail from './OrderDetail';
 import Pagination from '../ui/Pagination';
+import { usePageSize } from '../../utils/usePageSize';
 import { toast } from 'sonner';
 
 interface Props {
@@ -35,6 +36,7 @@ const DistributorPreOrders: React.FC<Props> = ({ userId, articles, inventory, la
   const [loading, setLoading] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = usePageSize('distributorPreOrders', 10);
   const [search, setSearch] = useState('');
 
   const fetchOrders = useCallback(async (silent = false) => {
@@ -42,7 +44,7 @@ const DistributorPreOrders: React.FC<Props> = ({ userId, articles, inventory, la
     try {
       const res = await distributorOrderService.getOrdersByDistributor(userId, {
         page: currentPage,
-        limit: 10,
+        limit: pageSize,
         q: search || undefined,
         orderType: 'PREORDER',
       });
@@ -53,7 +55,7 @@ const DistributorPreOrders: React.FC<Props> = ({ userId, articles, inventory, la
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [userId, currentPage, search]);
+  }, [userId, currentPage, pageSize, search]);
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
   useEffect(() => { if (lastUpdated) fetchOrders(true); }, [lastUpdated]);
@@ -225,11 +227,14 @@ const DistributorPreOrders: React.FC<Props> = ({ userId, articles, inventory, la
         </div>
       )}
 
-      {meta && meta.totalPages > 1 && (
+      {meta && (
         <Pagination
           currentPage={currentPage}
           totalPages={meta.totalPages}
           onPageChange={setCurrentPage}
+          totalItems={meta.total}
+          itemsPerPage={pageSize}
+          onPageSizeChange={setPageSize}
         />
       )}
     </div>

@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const MasterCatalog = require("../models/MasterCatalog");
 
-const ALLOWED_PAGE_LIMITS = [ 10, 20, 30, 50, 100, 200, 500, 1000];
+const ALLOWED_PAGE_LIMITS = [1, 2, 5, 10, 12, 20, 24, 30, 50, 100, 200, 500, 1000];
 
 const parseMaybeJson = (val, fallback) => {
   if (val === undefined || val === null) return fallback;
@@ -252,6 +252,7 @@ exports.list = async (query) => {
     manufacturerCompanyId,
     gender,
     isActive,
+    sort,
     page = 1,
     limit = 10,
   } = query;
@@ -262,7 +263,13 @@ exports.list = async (query) => {
 
   const filter = { isDeleted: false };
 
-  if (stage) filter.stage = stage;
+  if (stage === "WISHLIST") {
+    filter.stage = "WISHLIST";
+  } else if (stage === "AVAILABLE") {
+    filter.stage = { $ne: "WISHLIST" };
+  } else if (stage) {
+    filter.stage = stage;
+  }
   if (gender) filter.gender = gender;
 
   if (categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
@@ -297,12 +304,19 @@ exports.list = async (query) => {
     ];
   }
 
+  let sortObj = { createdAt: -1 };
+  if (sort === "price_asc") sortObj = { mrp: 1, createdAt: -1 };
+  else if (sort === "price_desc") sortObj = { mrp: -1, createdAt: -1 };
+  else if (sort === "name_asc") sortObj = { articleName: 1 };
+  else if (sort === "oldest") sortObj = { createdAt: 1 };
+  else if (sort === "newest") sortObj = { createdAt: -1 };
+
   const items = await MasterCatalog.find(filter)
     .populate("categoryId", "name")
     .populate("brandId", "name")
     .populate("manufacturerCompanyId", "name")
     .populate("unitId", "name")
-    .sort({ createdAt: -1 })
+    .sort(sortObj)
     .skip(skip)
     .limit(normalizedLimit)
     .lean();

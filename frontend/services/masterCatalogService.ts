@@ -2,13 +2,15 @@ import { apiFetch } from "./api";
 
 export const masterCatalogService = {
   async listMasterItems(
-    query: { q?: string; page?: number; limit?: number; stage?: string } = {}
+    query: { q?: string; page?: number; limit?: number; stage?: string; gender?: string; sort?: string } = {}
   ) {
     const params = new URLSearchParams();
     if (query.q) params.append("q", query.q);
     if (query.page) params.append("page", query.page.toString());
     if (query.limit) params.append("limit", query.limit.toString());
     if (query.stage) params.append("stage", query.stage);
+    if (query.gender) params.append("gender", query.gender);
+    if (query.sort) params.append("sort", query.sort);
 
     const queryString = params.toString() ? `?${params.toString()}` : "";
     return apiFetch(`/master-catalog${queryString}`);

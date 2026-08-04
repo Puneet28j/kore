@@ -259,14 +259,21 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
     }
   };
 
-  const selectedArticle = articles.find(a => a.id === selectedArticleId);
+  const selectedArticle = articles.find(a => a.id === selectedArticleId) || localArticles.find(a => a.id === selectedArticleId);
   const selectedVariant = selectedArticle?.variants?.find(v => v.id === selectedVariantId);
   const variantLive = selectedVariant ? Object.values(selectedVariant.sizeMap || {}).reduce((s, c: any) => s + (c?.qty || 0), 0) : 0;
   const reasonOptions = movementType === 'INWARD' ? INWARD_REASONS : OUTWARD_REASONS;
 
-  const filteredModalArticles = articles.filter(a =>
-    a.name.toLowerCase().includes(modalArticleSearch.toLowerCase()) ||
-    a.sku.toLowerCase().includes(modalArticleSearch.toLowerCase())
+  const allAvailableArticles = useMemo(() => {
+    const map = new Map<string, ArticleType>();
+    articles.forEach(a => map.set(a.id, a));
+    localArticles.forEach(a => { if (!map.has(a.id)) map.set(a.id, a); });
+    return Array.from(map.values());
+  }, [articles, localArticles]);
+
+  const filteredModalArticles = allAvailableArticles.filter(a =>
+    (a.name || '').toLowerCase().includes(modalArticleSearch.toLowerCase()) ||
+    (a.sku || '').toLowerCase().includes(modalArticleSearch.toLowerCase())
   );
 
   return (
@@ -390,7 +397,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                 onClick={() => toggleExpand(article.id)}
               >
                 <div className="relative shrink-0">
-                  <img src={getImageUrl(article.imageUrl)} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100" />
+                  <img src={getImageUrl(article?.imageUrl)} alt="" className="w-14 h-14 rounded-xl object-cover border border-slate-100" />
                   {isLowStock && (
                     <div className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 rounded-full border-2 border-white animate-pulse shadow-sm"></div>
                   )}
@@ -515,7 +522,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                                              const matched = colorMedia.find(cm => cm.color.toLowerCase() === variant.color.toLowerCase());
                                              const vImg = (matched && matched.images && matched.images.length > 0)
                                                ? matched.images[0].url
-                                               : (variant.images && variant.images.length > 0 ? variant.images[0] : article.imageUrl);
+                                               : (variant.images && variant.images.length > 0 ? variant.images[0] : article?.imageUrl);
                                              return vImg ? (
                                                <img src={getImageUrl(vImg)} alt={variant.color} className="w-full h-full object-cover rounded-md" />
                                              ) : (
@@ -703,10 +710,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                     <div>
                       {/* Selected article chip */}
                       <div className="flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-100 rounded-xl mb-3">
-                        <img src={getImageUrl(selectedArticle!.imageUrl)} alt="" className="w-8 h-8 rounded-lg object-cover border border-indigo-100" />
+                        <img src={getImageUrl(selectedArticle?.imageUrl)} alt="" className="w-8 h-8 rounded-lg object-cover border border-indigo-100" />
                         <div className="flex-1 min-w-0">
-                          <p className="text-xs font-bold text-indigo-800 truncate">{selectedArticle!.name}</p>
-                          <p className="text-[9px] font-mono text-indigo-400">{selectedArticle!.sku}</p>
+                          <p className="text-xs font-bold text-indigo-800 truncate">{selectedArticle?.name || "Selected Article"}</p>
+                          <p className="text-[9px] font-mono text-indigo-400">{selectedArticle?.sku}</p>
                         </div>
                         <button onClick={() => { setSelectedArticleId(''); setSelectedVariantId(''); }} className="text-indigo-300 hover:text-indigo-600 p-1 transition-colors">
                           <X size={14} />
@@ -715,7 +722,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                       {/* Variant list */}
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Select Variant</p>
                       <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
-                        {(selectedArticle!.variants || []).map(v => {
+                        {(selectedArticle?.variants || []).map(v => {
                           const livePairs = Object.values(v.sizeMap || {}).reduce((s, c: any) => s + (c?.qty || 0), 0);
                           return (
                             <button

@@ -97,12 +97,12 @@ const useAmazonZoom = () => {
 const ArticleCard: React.FC<{
   group: ColorGroup;
   inv?: Inventory;
-  inCartPairs: number;
+  cart: ShopProps["cart"];
   addToCart: ShopProps["addToCart"];
   discountPercentage: number;
   priceView: PriceView;
   distributorTag?: "online" | "offline";
-}> = ({ group, inv, inCartPairs, addToCart, discountPercentage, priceView, distributorTag }) => {
+}> = ({ group, inv, cart, addToCart, discountPercentage, priceView, distributorTag }) => {
   const { article, color, variants } = group;
 
   const [selectedVariantId, setSelectedVariantId] = useState<string>(
@@ -117,6 +117,44 @@ const ArticleCard: React.FC<{
     0
   );
   const totalPairs = totalPairsPerCarton * cartonCount;
+
+  // ── Stock cap logic (per variant, per size) ──────────────────────────────
+  // sizeMap[size].qty is live stock; blockedQty is reserved. Available = qty - blockedQty.
+  const maxCartonsFromStock = useMemo(() => {
+    if (!selectedVariant) return 0;
+    const sizeMap = selectedVariant.sizeMap || {};
+    const sizes = Object.keys(baseBreakdown);
+    if (sizes.length === 0) return 999; // no assortment data — no limit
+    let min = Infinity;
+    for (const sz of sizes) {
+      const assortQty = Number(baseBreakdown[sz]) || 0;
+      if (assortQty === 0) continue;
+      const stockEntry = sizeMap[sz];
+      const available = stockEntry
+        ? Math.max(0, (stockEntry.qty || 0) - (stockEntry.blockedQty || 0))
+        : 0;
+      min = Math.min(min, Math.floor(available / assortQty));
+    }
+    return min === Infinity ? 0 : min;
+  }, [selectedVariant, baseBreakdown]);
+
+  // Cartons already in cart for this specific variant
+  const cartonsAlreadyInCart = useMemo(() => {
+    const entry = cart.find(
+      (c) => c.articleId === article.id && c.variantId === selectedVariantId
+    );
+    return entry ? entry.cartonCount : 0;
+  }, [cart, article.id, selectedVariantId]);
+
+  // Max additional cartons the distributor can still add
+  const maxAdditionalCartons = Math.max(0, maxCartonsFromStock - cartonsAlreadyInCart);
+  const isOutOfStock = maxCartonsFromStock === 0;
+  const isAtMax = cartonCount >= maxAdditionalCartons;
+
+  // Reset carton count if selected variant or stock max changes
+  useEffect(() => {
+    setCartonCount(1);
+  }, [selectedVariantId]);
 
   // Pricing
   const fullPricePerPair = article.pricePerPair;
@@ -216,6 +254,14 @@ const ArticleCard: React.FC<{
 
   const handleAdd = () => {
     if (!selectedVariant || totalPairs === 0) return;
+    if (isOutOfStock) {
+      toast.error("This variant is out of stock");
+      return;
+    }
+    if (cartonCount > maxAdditionalCartons) {
+      toast.error(`Only ${maxAdditionalCartons} carton(s) available for this variant`);
+      return;
+    }
     const finalSizeQty: Record<string, number> = {};
     Object.entries(baseBreakdown).forEach(([sz, qty]) => {
       finalSizeQty[sz] = (Number(qty) || 0) * cartonCount;
@@ -226,7 +272,11 @@ const ArticleCard: React.FC<{
   };
 
   return (
-    <div className="bg-white rounded-3xl overflow-hidden border border-slate-200 shadow-sm group hover:shadow-xl hover:border-indigo-200 transition-all duration-300">
+    <div className={`bg-white rounded-3xl overflow-hidden border shadow-sm group transition-all duration-300 ${
+      isOutOfStock
+        ? "border-slate-200 opacity-75"
+        : "border-slate-200 hover:shadow-xl hover:border-indigo-200"
+    }`}>
       {/* Image + Magnifier */}
       <div
         ref={carouselRef}
@@ -289,10 +339,26 @@ const ArticleCard: React.FC<{
           ))}
         </div>
 
+        {/* Out of Stock overlay */}
+        {isOutOfStock && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 backdrop-blur-[2px]">
+            <span className="bg-red-600 text-white text-xs font-black px-4 py-2 rounded-full shadow-lg tracking-widest uppercase">
+              Out of Stock
+            </span>
+          </div>
+        )}
+
         {/* Discount badge */}
-        {discountPercentage > 0 && (
+        {discountPercentage > 0 && !isOutOfStock && (
           <div className="absolute top-3 right-3 z-10 bg-emerald-500 text-white text-[10px] font-black px-2 py-1 rounded-full shadow-md">
             {discountPercentage}% OFF
+          </div>
+        )}
+
+        {/* Stock badge (shown when not out of stock) */}
+        {!isOutOfStock && maxCartonsFromStock <= 10 && (
+          <div className="absolute top-3 right-3 z-10 bg-amber-500 text-white text-[10px] font-black px-2 py-1 rounded-full shadow-md">
+            Only {maxCartonsFromStock} CTN left
           </div>
         )}
 
@@ -387,7 +453,7 @@ const ArticleCard: React.FC<{
             <button
               onClick={() => setCartonCount((p) => Math.max(1, p - 1))}
               className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all disabled:opacity-20"
-              disabled={cartonCount <= 1}
+              disabled={cartonCount <= 1 || isOutOfStock}
             >
               <Minus size={14} />
             </button>
@@ -395,11 +461,12 @@ const ArticleCard: React.FC<{
               <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter mb-0.5 leading-none">
                 Cartons
               </span>
-              <span className="text-sm font-black text-slate-900 leading-none">{cartonCount}</span>
+              <span className="text-sm font-black text-slate-900 leading-none">{isOutOfStock ? 0 : cartonCount}</span>
             </div>
             <button
-              onClick={() => setCartonCount((p) => p + 1)}
-              className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all"
+              onClick={() => setCartonCount((p) => Math.min(maxAdditionalCartons, p + 1))}
+              className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all disabled:opacity-20"
+              disabled={isOutOfStock || isAtMax}
             >
               <Plus size={14} />
             </button>
@@ -407,7 +474,7 @@ const ArticleCard: React.FC<{
 
           <button
             onClick={handleAdd}
-            disabled={totalPairs === 0}
+            disabled={totalPairs === 0 || isOutOfStock || maxAdditionalCartons === 0}
             className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-2xl px-6 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 group/btn active:scale-95"
           >
             <ShoppingCart size={16} className="group-hover/btn:scale-110 transition-transform" />
@@ -543,16 +610,13 @@ const Shop: React.FC<ShopProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
         {colorGroups.map(({ article, color, variants }) => {
           const inv = inventory.find((i) => i.articleId === article.id);
-          const pairsInCart = cart
-            .filter((c) => c.articleId === article.id)
-            .reduce((sum, i) => sum + i.pairCount, 0);
 
           return (
             <ArticleCard
               key={`${article.id}-${color}`}
               group={{ article, color, variants }}
               inv={inv}
-              inCartPairs={pairsInCart}
+              cart={cart}
               addToCart={addToCart}
               discountPercentage={discountPercentage}
               priceView={priceView}

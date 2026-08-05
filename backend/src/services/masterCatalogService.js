@@ -335,6 +335,40 @@ exports.list = async (query) => {
   };
 };
 
+/** Company-wide live + blocked pair totals across all non-deleted catalog items */
+exports.getStockTotals = async () => {
+  const [row] = await MasterCatalog.aggregate([
+    { $match: { isDeleted: false } },
+    { $unwind: { path: "$variants", preserveNullAndEmptyArrays: false } },
+    {
+      $project: {
+        sizeCells: {
+          $objectToArray: { $ifNull: ["$variants.sizeMap", {}] },
+        },
+      },
+    },
+    { $unwind: { path: "$sizeCells", preserveNullAndEmptyArrays: false } },
+    {
+      $group: {
+        _id: null,
+        totalLivePairs: {
+          $sum: { $convert: { input: "$sizeCells.v.qty", to: "double", onError: 0, onNull: 0 } },
+        },
+        totalBlockedPairs: {
+          $sum: {
+            $convert: { input: "$sizeCells.v.blockedQty", to: "double", onError: 0, onNull: 0 },
+          },
+        },
+      },
+    },
+  ]);
+
+  return {
+    totalLivePairs: Math.max(0, Math.round(row?.totalLivePairs || 0)),
+    totalBlockedPairs: Math.max(0, Math.round(row?.totalBlockedPairs || 0)),
+  };
+};
+
 exports.getById = async (id) => {
   const doc = await MasterCatalog.findOne({ _id: id, isDeleted: false })
     .populate("categoryId", "name")
@@ -616,6 +650,16 @@ exports.getVariantStock = async (variantId) => {
   const sizeMapData = variant.sizeMap && typeof variant.sizeMap.toJSON === 'function' ? variant.sizeMap.toJSON() : (variant.sizeMap || {});
   const sizeSkusData = variant.sizeSkus && typeof variant.sizeSkus.toJSON === 'function' ? variant.sizeSkus.toJSON() : (variant.sizeSkus || {});
 
+  // Seed totalReceived from sizeMap.qty — this reflects manual Stock Inward/Outward movements
+  // GRN-based receipts will be layered on top below, but ONLY if no sizeMap.qty exists yet
+  // (prevents double-counting when sizeMap is also updated by GRN submit)
+  const sizeMapBaseStock = {};
+  Object.entries(sizeMapData).forEach(([size, cell]) => {
+    const cleanSize = size.trim();
+    const qty = Number(cell?.qty || 0);
+    if (qty > 0) sizeMapBaseStock[cleanSize] = qty;
+  });
+
   Object.entries(sizeMapData).forEach(([size, cell]) => {
     const cleanSize = size.trim();
     variantSizes.push(cleanSize);
@@ -811,9 +855,15 @@ exports.getVariantStock = async (variantId) => {
 
   console.log(`[DEBUG DYNAMIC] Returned per size:`, totalReturned);
 
-  // 5. Combine: Live Stock = Received + Returned - Dispatched
+  // 5. Combine: Live Stock = sizeMap.qty (canonical) - Dispatched + Returned
+  // sizeMap.qty is written by BOTH GRN submit ($inc) and manual stockMovement.
+  // Using GRN-derived totalReceived was ignoring manual inward/outward movements.
   variantSizes.forEach(sz => {
-    liveStockMap[sz] = Math.max(0, (totalReceived[sz] || 0) + (totalReturned[sz] || 0) - (totalDispatched[sz] || 0));
+    const baseQty = sizeMapBaseStock[sz] || 0;
+    // Use sizeMap.qty if it has been populated (either by GRN or manual movement).
+    // Fall back to GRN-derived totalReceived only for old variants where sizeMap was never set.
+    const received = baseQty > 0 ? baseQty : (totalReceived[sz] || 0);
+    liveStockMap[sz] = Math.max(0, received + (totalReturned[sz] || 0) - (totalDispatched[sz] || 0));
   });
 
   // Calculate PO Map for upcoming stock

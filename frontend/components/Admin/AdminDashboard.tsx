@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
@@ -9,6 +9,8 @@ import {
 import InteractiveIndiaMap from './InteractiveIndiaMap';
 import { Order, Inventory, Article, OrderStatus, PurchaseOrder } from '../../types';
 import { poService } from '../../services/poService';
+import { masterCatalogService } from '../../services/masterCatalogService';
+import { distributorOrderService } from '../../services/distributorOrderService';
 import { getImageUrl } from '../../utils/imageUtils';
 import OverduePayments from '../shared/OverduePayments';
 
@@ -475,6 +477,42 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [poSort, setPoSort]           = useState<SortOption>('newest');
 
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
+  const [totalLivePairs, setTotalLivePairs] = useState(0);
+  const [dashMetrics, setDashMetrics] = useState({
+    totalRevenue: 0,
+    ordersPlaced: 0,
+    activeParties: 0,
+  });
+
+  // Map dashboard date filter → YYYY-MM-DD range for full-data metrics API
+  const metricsDateRange = useMemo(() => {
+    const now = new Date();
+    const ymd = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    if (dateFilter === 'all') return {};
+    if (dateFilter === 'this_month') {
+      return { startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), endDate: ymd(now) };
+    }
+    if (dateFilter === 'last_month') {
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const end = new Date(now.getFullYear(), now.getMonth(), 0);
+      return { startDate: ymd(start), endDate: ymd(end) };
+    }
+    if (dateFilter === 'this_year') {
+      return { startDate: ymd(new Date(now.getFullYear(), 0, 1)), endDate: ymd(now) };
+    }
+    if (dateFilter === 'custom') {
+      const range: { startDate?: string; endDate?: string } = {};
+      if (customStart) range.startDate = customStart;
+      if (customEnd) range.endDate = customEnd;
+      return range;
+    }
+    return {};
+  }, [dateFilter, customStart, customEnd]);
 
   // Fetch POs for pending section
   const fetchPOs = () => {
@@ -484,31 +522,59 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }).catch(() => {});
   };
 
-  useEffect(() => { fetchPOs(); }, []);
-
-  // Real-time: refresh PO list on socket events
-  useEffect(() => {
-    const handler = () => fetchPOs();
-    window.addEventListener("poRefetch", handler);
-    return () => window.removeEventListener("poRefetch", handler);
+  // Company-wide live stock (not limited to the paginated articles prop)
+  const fetchStockTotals = useCallback(async () => {
+    try {
+      const res = await masterCatalogService.getStockTotals();
+      const data = res?.data || res || {};
+      setTotalLivePairs(Number(data.totalLivePairs) || 0);
+    } catch {
+      /* keep last known */
+    }
   }, []);
 
-  // Filtered orders
+  const fetchDashMetrics = useCallback(async (range: { startDate?: string; endDate?: string }) => {
+    try {
+      const data = await distributorOrderService.getDashboardMetrics(range);
+      setDashMetrics({
+        totalRevenue: Number(data.totalRevenue) || 0,
+        ordersPlaced: Number(data.ordersPlaced) || 0,
+        activeParties: Number(data.activeParties) || 0,
+      });
+    } catch {
+      /* keep last known */
+    }
+  }, []);
+
+  useEffect(() => { fetchPOs(); fetchStockTotals(); }, [fetchStockTotals]);
+
+  useEffect(() => {
+    fetchDashMetrics(metricsDateRange);
+  }, [metricsDateRange, fetchDashMetrics]);
+
+  // Real-time: refresh PO list + live inventory + metrics on socket events
+  useEffect(() => {
+    const handler = () => {
+      fetchPOs();
+      fetchStockTotals();
+      fetchDashMetrics(metricsDateRange);
+    };
+    window.addEventListener("poRefetch", handler);
+    window.addEventListener("catalogRefetch", handler);
+    window.addEventListener("grnRefetch", handler);
+    window.addEventListener("billRefetch", handler);
+    return () => {
+      window.removeEventListener("poRefetch", handler);
+      window.removeEventListener("catalogRefetch", handler);
+      window.removeEventListener("grnRefetch", handler);
+      window.removeEventListener("billRefetch", handler);
+    };
+  }, [fetchStockTotals, fetchDashMetrics, metricsDateRange]);
+
+  // Filtered orders (lists/charts still use loaded page of orders)
   const filteredOrders = useMemo(() => filterByDate(orders, dateFilter, customStart, customEnd), [orders, dateFilter, customStart, customEnd]);
 
-  // Metrics — live stock from articles sizeMap (not dummy inventory)
-  const { totalLivePairs, totalLiveCtns } = useMemo(() => {
-    let pairs = 0;
-    articles.forEach(a => (a.variants || []).forEach(v =>
-      Object.values(v.sizeMap || {}).forEach((c: any) => { pairs += Number(c?.qty || 0); })
-    ));
-    return { totalLivePairs: pairs, totalLiveCtns: Math.floor(pairs / 24) };
-  }, [articles]);
-
-  const totalRevenue = useMemo(
-    () => filteredOrders.reduce((s, o) => s + ((o as any).finalAmount || o.totalAmount || 0), 0),
-    [filteredOrders]
-  );
+  const totalLiveCtns = Math.floor(totalLivePairs / 24);
 
   // Chart data — use live pairs from sizeMap per category
   const categoryData = useMemo(() => articles.reduce((acc: any[], article) => {
@@ -561,14 +627,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <MetricCard
           title="Total Revenue"
-          value={`₹${totalRevenue.toLocaleString()}`}
+          value={`₹${dashMetrics.totalRevenue.toLocaleString()}`}
           sub={dateFilter === 'all' ? 'All time' : dateFilter === 'custom' ? (customStart && customEnd ? `${customStart} → ${customEnd}` : 'Custom Range') : DATE_OPTIONS.find(d => d.value === dateFilter)?.label}
           icon={<TrendingUp size={24} className="text-emerald-600" />}
         />
         <MetricCard
           title="Active Parties"
-          value={allDistributors.length}
-          sub={`${filteredOrders.length} orders`}
+          value={dashMetrics.activeParties}
+          sub={`${dashMetrics.ordersPlaced} orders`}
           icon={<Users size={24} className="text-indigo-600" />}
         />
         <MetricCard
@@ -579,7 +645,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         />
         <MetricCard
           title="Orders Placed"
-          value={filteredOrders.length}
+          value={dashMetrics.ordersPlaced}
           sub="Live status"
           icon={<ArrowUpRight size={24} className="text-red-600" />}
         />

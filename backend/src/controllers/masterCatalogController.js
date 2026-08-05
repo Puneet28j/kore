@@ -60,6 +60,15 @@ exports.getMasterCatalogById = async (req, res) => {
   }
 };
 
+exports.getStockTotals = async (req, res) => {
+  try {
+    const data = await masterCatalogService.getStockTotals();
+    return res.json({ data });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
 exports.updateMasterCatalog = async (req, res) => {
   try {
     const doc = await masterCatalogService.update(req, req.params.id);

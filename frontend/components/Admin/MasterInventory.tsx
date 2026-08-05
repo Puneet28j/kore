@@ -54,20 +54,20 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useRef('');
 
-  // Live + Blocked totals from the current page of localArticles (header stats)
-  const { totalLivePairs, totalBlockedPairs } = useMemo(() => {
-    let live = 0;
-    let blocked = 0;
-    localArticles.forEach(a => {
-      (a.variants || []).forEach(v => {
-        Object.values(v.sizeMap || {}).forEach((cell: any) => {
-          live    += Number(cell?.qty        || 0);
-          blocked += Number(cell?.blockedQty || 0);
-        });
-      });
-    });
-    return { totalLivePairs: live, totalBlockedPairs: blocked };
-  }, [localArticles]);
+  // Company-wide Available / Blocked (not page-scoped)
+  const [totalLivePairs, setTotalLivePairs] = useState(0);
+  const [totalBlockedPairs, setTotalBlockedPairs] = useState(0);
+
+  const fetchStockTotals = useCallback(async () => {
+    try {
+      const res = await masterCatalogService.getStockTotals();
+      const data = res?.data || res || {};
+      setTotalLivePairs(Number(data.totalLivePairs) || 0);
+      setTotalBlockedPairs(Number(data.totalBlockedPairs) || 0);
+    } catch {
+      /* silent — keep last known totals */
+    }
+  }, []);
 
   // PO Pending = all active POs (SENT, not deleted) that have NOT yet been received via GRN
   const fetchPOPairs = async () => {
@@ -121,11 +121,14 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
     } catch { /* silent */ }
   };
 
-  useEffect(() => { fetchPOPairs(); }, []);
+  useEffect(() => { fetchPOPairs(); fetchStockTotals(); }, [fetchStockTotals]);
 
   // Real-time: re-fetch when PO/GRN/catalog changes affect pending stock
   useEffect(() => {
-    const handler = () => fetchPOPairs();
+    const handler = () => {
+      fetchPOPairs();
+      fetchStockTotals();
+    };
     window.addEventListener("billRefetch",   handler);
     window.addEventListener("grnRefetch",    handler);
     window.addEventListener("catalogRefetch", handler);
@@ -136,7 +139,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
       window.removeEventListener("catalogRefetch", handler);
       window.removeEventListener("poRefetch",     handler);
     };
-  }, []);
+  }, [fetchStockTotals]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -251,6 +254,8 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
       });
       toast.success(`Stock ${movementType === 'INWARD' ? 'inward' : 'outward'} recorded (${cartons} carton(s))`);
       closeModal();
+      fetchLocalInventory(currentPage, pageSize, debouncedSearch.current);
+      fetchStockTotals();
       if (onRefresh) onRefresh();
     } catch (err: any) {
       toast.error(err?.message || 'Failed to record stock movement');

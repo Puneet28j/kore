@@ -418,6 +418,16 @@ const getOrderStatsCtrl = async (req, res) => {
   }
 };
 
+const getDashboardMetricsCtrl = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const data = await OrderService.getDashboardMetrics({ startDate, endDate });
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   createOrder,
   getDistributorOrders,
@@ -433,4 +443,5 @@ module.exports = {
   getPreOrdersCtrl,
   releasePreOrderCtrl,
   getOrderStatsCtrl,
+  getDashboardMetricsCtrl,
 };

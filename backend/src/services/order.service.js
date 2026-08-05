@@ -1000,6 +1000,48 @@ const getOrderStats = async () => {
   return stats;
 };
 
+/** Full-catalog (non-paginated) metrics for admin dashboard cards */
+const getDashboardMetrics = async ({ startDate, endDate } = {}) => {
+  const match = { status: { $nin: PREORDER_STATUSES } };
+
+  // `date` is stored as YYYY-MM-DD string — lexicographic range works
+  if (startDate || endDate) {
+    match.date = {};
+    if (startDate) match.date.$gte = String(startDate).slice(0, 10);
+    if (endDate) match.date.$lte = String(endDate).slice(0, 10);
+  }
+
+  const [row] = await Order.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: null,
+        totalRevenue: {
+          $sum: {
+            $ifNull: ["$finalAmount", { $ifNull: ["$totalAmount", 0] }],
+          },
+        },
+        ordersPlaced: { $sum: 1 },
+        distributorIds: { $addToSet: "$distributorId" },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        totalRevenue: 1,
+        ordersPlaced: 1,
+        activeParties: { $size: "$distributorIds" },
+      },
+    },
+  ]);
+
+  return {
+    totalRevenue: Math.round(Number(row?.totalRevenue) || 0),
+    ordersPlaced: Number(row?.ordersPlaced) || 0,
+    activeParties: Number(row?.activeParties) || 0,
+  };
+};
+
 module.exports = {
   createOrder,
   getOrdersByDistributor,
@@ -1012,4 +1054,5 @@ module.exports = {
   getPreOrders,
   propagatePriceUpdate,
   getOrderStats,
+  getDashboardMetrics,
 };

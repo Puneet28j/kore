@@ -20,6 +20,10 @@ export const masterCatalogService = {
     return apiFetch(`/master-catalog/${id}`);
   },
 
+  async getStockTotals() {
+    return apiFetch(`/master-catalog/stock-totals`);
+  },
+
   async createMasterItem(formData: FormData) {
     const token = localStorage.getItem("kore_token");
     const API_BASE_URL =

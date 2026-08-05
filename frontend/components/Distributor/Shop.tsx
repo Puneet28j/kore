@@ -420,21 +420,14 @@ const ArticleCard: React.FC<{
         <div className="flex items-center justify-between mb-5">
           <div className="space-y-0.5">
             <p className="text-xl font-black text-indigo-700">
-              ₹{Math.round(priceView === "pair" ? discountedPricePerPair : discountedPricePerCarton).toLocaleString()}
+              ₹{Math.round(priceView === "pair" ? fullPricePerPair : fullPricePerPair * PAIRS_PER_CARTON).toLocaleString()}
               <span className="text-xs font-semibold text-slate-400 ml-1">
                 /{priceView === "pair" ? "pair" : "carton"}
               </span>
             </p>
-            {discountPercentage > 0 && (
-              <p className="text-[10px] font-bold text-slate-400 line-through">
-                MRP ₹{Math.round(priceView === "pair" ? fullPricePerPair : fullPricePerPair * PAIRS_PER_CARTON).toLocaleString()}
-              </p>
-            )}
-            {discountPercentage === 0 && (
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                MRP: ₹{variantMrp.toLocaleString()}
-              </p>
-            )}
+            {/* <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+              MRP: ₹{variantMrp.toLocaleString()}
+            </p> */}
           </div>
           <div className="bg-indigo-50 p-2 rounded-xl">
             <Package size={16} className="text-indigo-600" />
@@ -580,8 +573,8 @@ const Shop: React.FC<ShopProps> = ({
 
   // Filter & Sort state
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
-  const [sortOption, setSortOption] = useState<string>("default");
-  const [inStockOnly, setInStockOnly] = useState<boolean>(true);
+  const [sortOption, setSortOption] = useState<string>("name_asc");
+  const inStockOnly = true;
 
   // Server-side Pagination & Infinite Scroll State
   const BATCH_SIZE = 12;
@@ -732,18 +725,6 @@ const Shop: React.FC<ShopProps> = ({
               </button>
             ))}
           </div>
-
-          {/* Stock Filter Toggle */}
-          <button
-            onClick={() => setInStockOnly(!inStockOnly)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-              inStockOnly
-                ? "bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm"
-                : "bg-slate-50 text-slate-500 border-slate-200 hover:text-slate-800"
-            }`}
-          >
-            {inStockOnly ? "✓ In Stock Only" : "Show All Stock"}
-          </button>
 
           {/* Sort dropdown */}
           <select

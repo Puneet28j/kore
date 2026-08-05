@@ -449,7 +449,7 @@ const mapDocToArticle = (doc: any): Article => ({
 const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlacePreOrder }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
-  const [sortOption, setSortOption] = useState<string>("default");
+  const [sortOption, setSortOption] = useState<string>("name_asc");
 
   // Server-side Infinite Scroll state
   const BATCH_SIZE = 12;

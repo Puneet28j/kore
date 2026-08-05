@@ -16,16 +16,18 @@ const maybeUpload = (req, res, next) => {
 
 router.post("/", maybeUpload, compressImages, ctrl.createMasterCatalog);
 router.get("/", ctrl.getMasterCatalogList);
+// Must be registered before /:id so "stock-totals" is not treated as an id
+router.get("/stock-totals", ctrl.getStockTotals);
+// Stock aggregation — also before /:id
+router.get("/variants/:variantId/stock", ctrl.getVariantStock);
+router.post("/variants/:variantId/reset-stock", ctrl.resetVariantStock);
+router.post("/variants/:variantId/stock-movement", ctrl.stockMovement);
+router.patch("/variants/:variantId/sku", ctrl.updateVariantSku);
+
 router.get("/:id", ctrl.getMasterCatalogById);
 router.put("/:id", maybeUpload, compressImages, ctrl.updateMasterCatalog);
 
 router.patch("/:id/toggle-status", ctrl.toggleMasterCatalogStatus);
 router.delete("/:id", ctrl.deleteMasterCatalog);
-
-// Stock aggregation
-router.get("/variants/:variantId/stock", ctrl.getVariantStock);
-router.post("/variants/:variantId/reset-stock", ctrl.resetVariantStock);
-router.post("/variants/:variantId/stock-movement", ctrl.stockMovement);
-router.patch("/variants/:variantId/sku", ctrl.updateVariantSku);
 
 module.exports = router;

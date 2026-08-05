@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   ShoppingCart,
@@ -52,11 +58,24 @@ const PAIRS_PER_CARTON = 24;
 
 const colorToHex = (color: string): string => {
   const map: Record<string, string> = {
-    red: "#ef4444", blue: "#3b82f6", green: "#22c55e", black: "#0f172a",
-    white: "#f8fafc", grey: "#64748b", gray: "#64748b", yellow: "#eab308",
-    orange: "#f97316", pink: "#ec4899", purple: "#a855f7", indigo: "#6366f1",
-    brown: "#78350f", navy: "#1e3a8a", teal: "#14b8a6", cyan: "#06b6d4",
-    gold: "#fbbf24", silver: "#cbd5e1",
+    red: "#ef4444",
+    blue: "#3b82f6",
+    green: "#22c55e",
+    black: "#0f172a",
+    white: "#f8fafc",
+    grey: "#64748b",
+    gray: "#64748b",
+    yellow: "#eab308",
+    orange: "#f97316",
+    pink: "#ec4899",
+    purple: "#a855f7",
+    indigo: "#6366f1",
+    brown: "#78350f",
+    navy: "#1e3a8a",
+    teal: "#14b8a6",
+    cyan: "#06b6d4",
+    gold: "#fbbf24",
+    silver: "#cbd5e1",
   };
   return map[color.toLowerCase()] || "#cbd5e1";
 };
@@ -65,16 +84,18 @@ const isVariantInStock = (v: Variant): boolean => {
   const sizeMap = v.sizeMap || {};
   const baseBreakdown = v.sizeQuantities || {};
   const sizes = Object.keys(baseBreakdown);
-  
+
   if (sizes.length === 0) {
-    const entries = typeof (sizeMap as any).entries === "function"
-      ? Array.from((sizeMap as any).entries())
-      : Object.entries(sizeMap);
+    const entries =
+      typeof (sizeMap as any).entries === "function"
+        ? Array.from((sizeMap as any).entries())
+        : Object.entries(sizeMap);
     if (entries.length === 0) return false;
     return entries.some(([, val]: [string, any]) => {
       const qty = typeof val === "number" ? val : Number(val?.qty || 0);
-      const blocked = typeof val === "object" ? Number(val?.blockedQty || 0) : 0;
-      return (qty - blocked) > 0;
+      const blocked =
+        typeof val === "object" ? Number(val?.blockedQty || 0) : 0;
+      return qty - blocked > 0;
     });
   }
 
@@ -84,9 +105,15 @@ const isVariantInStock = (v: Variant): boolean => {
     const assortQty = Number(baseBreakdown[sz]) || 0;
     if (assortQty === 0) continue;
     hasValidAssort = true;
-    const stockEntry = typeof (sizeMap as any).get === "function" ? (sizeMap as any).get(sz) : sizeMap[sz];
+    const stockEntry =
+      typeof (sizeMap as any).get === "function"
+        ? (sizeMap as any).get(sz)
+        : sizeMap[sz];
     const available = stockEntry
-      ? Math.max(0, Number(stockEntry.qty || 0) - Number(stockEntry.blockedQty || 0))
+      ? Math.max(
+          0,
+          Number(stockEntry.qty || 0) - Number(stockEntry.blockedQty || 0)
+        )
       : 0;
     min = Math.min(min, Math.floor(available / assortQty));
   }
@@ -95,14 +122,15 @@ const isVariantInStock = (v: Variant): boolean => {
   return stock > 0;
 };
 
-
 // ─── Amazon-style zoom hook ─────────────────────────────────────────────────
 const ZOOM_SIZE = 300;
 
 const useAmazonZoom = () => {
   const [zoom, setZoom] = useState<{
-    pctX: number; pctY: number;
-    panelLeft: number; panelTop: number;
+    pctX: number;
+    pctY: number;
+    panelLeft: number;
+    panelTop: number;
     visible: boolean;
   }>({ pctX: 0, pctY: 0, panelLeft: 0, panelTop: 0, visible: false });
 
@@ -113,20 +141,25 @@ const useAmazonZoom = () => {
 
     // Show panel to the right; fall back to left if not enough space
     const spaceRight = window.innerWidth - rect.right;
-    const panelLeft = spaceRight >= ZOOM_SIZE + 16
-      ? rect.right + 8
-      : rect.left - ZOOM_SIZE - 8;
+    const panelLeft =
+      spaceRight >= ZOOM_SIZE + 16 ? rect.right + 8 : rect.left - ZOOM_SIZE - 8;
 
     // Center panel vertically on the card, clamped to viewport
-    const panelTop = Math.max(8, Math.min(
-      rect.top + rect.height / 2 - ZOOM_SIZE / 2,
-      window.innerHeight - ZOOM_SIZE - 8
-    ));
+    const panelTop = Math.max(
+      8,
+      Math.min(
+        rect.top + rect.height / 2 - ZOOM_SIZE / 2,
+        window.innerHeight - ZOOM_SIZE - 8
+      )
+    );
 
     setZoom({ pctX, pctY, panelLeft, panelTop, visible: true });
   }, []);
 
-  const onMouseLeave = useCallback(() => setZoom(p => ({ ...p, visible: false })), []);
+  const onMouseLeave = useCallback(
+    () => setZoom((p) => ({ ...p, visible: false })),
+    []
+  );
 
   return { zoom, onMouseMove, onMouseLeave };
 };
@@ -141,7 +174,16 @@ const ArticleCard: React.FC<{
   priceView: PriceView;
   distributorTag?: "online" | "offline";
   articleStatus?: string;
-}> = ({ group, inv, cart, addToCart, discountPercentage, priceView, distributorTag, articleStatus }) => {
+}> = ({
+  group,
+  inv,
+  cart,
+  addToCart,
+  discountPercentage,
+  priceView,
+  distributorTag,
+  articleStatus,
+}) => {
   const { article, color, variants } = group;
 
   const [selectedVariantId, setSelectedVariantId] = useState<string>(
@@ -186,7 +228,10 @@ const ArticleCard: React.FC<{
   }, [cart, article.id, selectedVariantId]);
 
   // Max additional cartons the distributor can still add
-  const maxAdditionalCartons = Math.max(0, maxCartonsFromStock - cartonsAlreadyInCart);
+  const maxAdditionalCartons = Math.max(
+    0,
+    maxCartonsFromStock - cartonsAlreadyInCart
+  );
   const isOutOfStock = maxCartonsFromStock === 0;
   const isAtMax = cartonCount >= maxAdditionalCartons;
 
@@ -195,7 +240,8 @@ const ArticleCard: React.FC<{
     const sizeMap = selectedVariant.sizeMap || {};
     return Object.values(sizeMap).reduce((sum, cell: any) => {
       const qty = typeof cell === "number" ? cell : Number(cell?.qty || 0);
-      const blocked = typeof cell === "object" ? Number(cell?.blockedQty || 0) : 0;
+      const blocked =
+        typeof cell === "object" ? Number(cell?.blockedQty || 0) : 0;
       return sum + Math.max(0, qty - blocked);
     }, 0);
   }, [selectedVariant]);
@@ -207,13 +253,15 @@ const ArticleCard: React.FC<{
 
   // Pricing
   const fullPricePerPair = article.pricePerPair;
-  const discountedPricePerPair = fullPricePerPair * (1 - discountPercentage / 100);
+  const discountedPricePerPair =
+    fullPricePerPair * (1 - discountPercentage / 100);
   const discountedPricePerCarton = discountedPricePerPair * PAIRS_PER_CARTON;
-  const variantMrp = distributorTag === "online"
-    ? (selectedVariant?.onlineMrp || article.mrp || fullPricePerPair * 2)
-    : distributorTag === "offline"
-    ? (selectedVariant?.offlineMrp || article.mrp || fullPricePerPair * 2)
-    : (article.mrp || fullPricePerPair * 2);
+  const variantMrp =
+    distributorTag === "online"
+      ? selectedVariant?.onlineMrp || article.mrp || fullPricePerPair * 2
+      : distributorTag === "offline"
+      ? selectedVariant?.offlineMrp || article.mrp || fullPricePerPair * 2
+      : article.mrp || fullPricePerPair * 2;
 
   // Images carousel
   // Priority: colorMedia[color] → primaryImage + secondaryImages (article-level flat)
@@ -269,7 +317,8 @@ const ArticleCard: React.FC<{
 
   // Amazon zoom
   const { zoom, onMouseMove, onMouseLeave } = useAmazonZoom();
-  const currentImageUrl = validImages[currentImageIndex] || validImages[0] || "";
+  const currentImageUrl =
+    validImages[currentImageIndex] || validImages[0] || "";
 
   useEffect(() => {
     setCurrentImageIndex(0);
@@ -302,8 +351,14 @@ const ArticleCard: React.FC<{
   const handlePointerMove = (e: React.PointerEvent) => {
     if (pointerStart === null) return;
     const d = pointerStart - e.clientX;
-    if (d > 50) { goNext(); setPointerStart(e.clientX); }
-    if (d < -50) { goPrev(); setPointerStart(e.clientX); }
+    if (d > 50) {
+      goNext();
+      setPointerStart(e.clientX);
+    }
+    if (d < -50) {
+      goPrev();
+      setPointerStart(e.clientX);
+    }
   };
   const handlePointerUp = (e: React.PointerEvent) => {
     if (pointerStart !== null) {
@@ -326,7 +381,9 @@ const ArticleCard: React.FC<{
       return;
     }
     if (cartonCount > maxAdditionalCartons) {
-      toast.error(`Only ${maxAdditionalCartons} carton(s) available for this variant`);
+      toast.error(
+        `Only ${maxAdditionalCartons} carton(s) available for this variant`
+      );
       return;
     }
     const finalSizeQty: Record<string, number> = {};
@@ -339,11 +396,13 @@ const ArticleCard: React.FC<{
   };
 
   return (
-    <div className={`bg-white rounded-3xl overflow-hidden border shadow-sm group transition-all duration-300 ${
-      isOutOfStock
-        ? "border-slate-200 opacity-75"
-        : "border-slate-200 hover:shadow-xl hover:border-indigo-200"
-    }`}>
+    <div
+      className={`bg-white rounded-3xl overflow-hidden border shadow-sm group transition-all duration-300 ${
+        isOutOfStock
+          ? "border-slate-200 opacity-75"
+          : "border-slate-200 hover:shadow-xl hover:border-indigo-200"
+      }`}
+    >
       {/* Image + Magnifier */}
       <div className="relative aspect-square overflow-hidden group/image">
         <div
@@ -364,7 +423,10 @@ const ArticleCard: React.FC<{
               style={{ transform: `translateX(-${currentImageIndex * 100}%)` }}
             >
               {validImages.map((img, idx) => (
-                <div key={idx} className="min-w-full w-full shrink-0 flex-[0_0_100%] h-full">
+                <div
+                  key={idx}
+                  className="min-w-full w-full shrink-0 flex-[0_0_100%] h-full"
+                >
                   <img
                     src={img}
                     alt={`${article.name} ${idx + 1}`}
@@ -381,7 +443,17 @@ const ArticleCard: React.FC<{
             // All images broken / no images — show a clean placeholder
             <div className="flex h-full w-full items-center justify-center bg-slate-100">
               <div className="flex flex-col items-center gap-2 text-slate-400">
-                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="40"
+                  height="40"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
                   <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
                   <circle cx="9" cy="9" r="2" />
                   <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
@@ -391,57 +463,61 @@ const ArticleCard: React.FC<{
             </div>
           )}
 
-        {/* Amazon zoom panel — rendered via portal so it escapes overflow:hidden */}
-        {zoom.visible && currentImageUrl && createPortal(
-          <div
-            className="pointer-events-none fixed z-9999 rounded-2xl overflow-hidden border-2 border-slate-200 shadow-2xl"
-            style={{
-              left: zoom.panelLeft,
-              top: zoom.panelTop,
-              width: ZOOM_SIZE,
-              height: ZOOM_SIZE,
-              backgroundImage: `url(${currentImageUrl})`,
-              backgroundSize: "400% 400%",
-              backgroundPosition: `${zoom.pctX}% ${zoom.pctY}%`,
-              backgroundRepeat: "no-repeat",
-            }}
-          />,
-          document.body
-        )}
+          {/* Amazon zoom panel — rendered via portal so it escapes overflow:hidden */}
+          {zoom.visible &&
+            currentImageUrl &&
+            createPortal(
+              <div
+                className="pointer-events-none fixed z-9999 rounded-2xl overflow-hidden border-2 border-slate-200 shadow-2xl"
+                style={{
+                  left: zoom.panelLeft,
+                  top: zoom.panelTop,
+                  width: ZOOM_SIZE,
+                  height: ZOOM_SIZE,
+                  backgroundImage: `url(${currentImageUrl})`,
+                  backgroundSize: "400% 400%",
+                  backgroundPosition: `${zoom.pctX}% ${zoom.pctY}%`,
+                  backgroundRepeat: "no-repeat",
+                }}
+              />,
+              document.body
+            )}
 
-        {/* Color bar */}
-        <div className="absolute bottom-0 left-0 right-0 h-1.5 z-10 flex">
-          {Array.from(new Set((article.variants || []).map((v) => v.color))).map((c, i) => (
-            <div
-              key={i}
-              className="h-full flex-1"
-              style={{ backgroundColor: colorToHex(c) }}
-              title={`Color: ${c}`}
-            />
-          ))}
-        </div>
-
-        {/* Out of Stock overlay */}
-        {isOutOfStock && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 backdrop-blur-[2px]">
-            <span className="bg-red-600 text-white text-xs font-black px-4 py-2 rounded-full shadow-lg tracking-widest uppercase">
-              Out of Stock
-            </span>
+          {/* Color bar */}
+          <div className="absolute bottom-0 left-0 right-0 h-1.5 z-10 flex">
+            {Array.from(
+              new Set((article.variants || []).map((v) => v.color))
+            ).map((c, i) => (
+              <div
+                key={i}
+                className="h-full flex-1"
+                style={{ backgroundColor: colorToHex(c) }}
+                title={`Color: ${c}`}
+              />
+            ))}
           </div>
-        )}
 
-        {/* Discount badge */}
-        {discountPercentage > 0 && !isOutOfStock && (
-          <div className="absolute top-3 right-3 z-10 bg-emerald-500 text-white text-[10px] font-black px-2 py-1 rounded-full shadow-md">
-            {discountPercentage}% OFF
-          </div>
-        )}
+          {/* Out of Stock overlay */}
+          {isOutOfStock && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 backdrop-blur-[2px]">
+              <span className="bg-red-600 text-white text-xs font-black px-4 py-2 rounded-full shadow-lg tracking-widest uppercase">
+                Out of Stock
+              </span>
+            </div>
+          )}
 
-        <div className="absolute top-4 left-4 flex flex-col gap-2 z-10">
-          <div className="bg-white/95 backdrop-blur shadow-sm px-3 py-1.5 rounded-full text-[10px] font-black text-indigo-600 uppercase tracking-widest border border-indigo-50">
-            {article.category}
+          {/* Discount badge */}
+          {discountPercentage > 0 && !isOutOfStock && (
+            <div className="absolute top-3 right-3 z-10 bg-emerald-500 text-white text-[10px] font-black px-2 py-1 rounded-full shadow-md">
+              {discountPercentage}% OFF
+            </div>
+          )}
+
+          <div className="absolute top-4 left-4 flex flex-col gap-2 z-10">
+            <div className="bg-white/95 backdrop-blur shadow-sm px-3 py-1.5 rounded-full text-[10px] font-black text-indigo-600 uppercase tracking-widest border border-indigo-50">
+              {article.category}
+            </div>
           </div>
-        </div>
         </div>
 
         {/* Manual carousel — visible on image hover only */}
@@ -484,19 +560,24 @@ const ArticleCard: React.FC<{
         <div className="flex items-center justify-between mb-5">
           <div className="space-y-1">
             <p className="text-xl font-black text-indigo-700">
-              ₹{Math.round(priceView === "pair" ? fullPricePerPair : fullPricePerPair * PAIRS_PER_CARTON).toLocaleString()}
+              ₹
+              {Math.round(
+                priceView === "pair"
+                  ? fullPricePerPair
+                  : fullPricePerPair * PAIRS_PER_CARTON
+              ).toLocaleString()}
               <span className="text-xs font-semibold text-slate-400 ml-1">
                 /{priceView === "pair" ? "pair" : "carton"}
               </span>
             </p>
             <span
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border-2 ${
-                articleStatus === "PRE_BOOK"
+                articleStatus === "WISHLIST"
                   ? "bg-amber-600 text-white border-amber-600"
                   : "bg-indigo-600 text-white border-indigo-600"
               }`}
             >
-              {articleStatus === "PRE_BOOK" ? "Available in 30 Days" : "RFD"}
+              {articleStatus === "WISHLIST" ? "Available in 30 Days" : "RFD"}
             </span>
           </div>
           <div className="bg-indigo-50 p-2 rounded-xl shrink-0">
@@ -534,8 +615,12 @@ const ArticleCard: React.FC<{
                   key={sz}
                   className="flex flex-col items-center bg-white border border-slate-200 rounded-lg px-2 py-1 min-w-[32px]"
                 >
-                  <span className="text-[10px] font-black text-indigo-600">{sz}</span>
-                  <span className="text-[10px] font-bold text-slate-400">{qty}</span>
+                  <span className="text-[10px] font-black text-indigo-600">
+                    {sz}
+                  </span>
+                  <span className="text-[10px] font-bold text-slate-400">
+                    {qty}
+                  </span>
                 </div>
               ))}
             </div>
@@ -560,10 +645,14 @@ const ArticleCard: React.FC<{
               <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter mb-0.5 leading-none">
                 Cartons
               </span>
-              <span className="text-sm font-black text-slate-900 leading-none">{isOutOfStock ? 0 : cartonCount}</span>
+              <span className="text-sm font-black text-slate-900 leading-none">
+                {isOutOfStock ? 0 : cartonCount}
+              </span>
             </div>
             <button
-              onClick={() => setCartonCount((p) => Math.min(maxAdditionalCartons, p + 1))}
+              onClick={() =>
+                setCartonCount((p) => Math.min(maxAdditionalCartons, p + 1))
+              }
               className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all disabled:opacity-20"
               disabled={isOutOfStock || isAtMax}
             >
@@ -573,10 +662,15 @@ const ArticleCard: React.FC<{
 
           <button
             onClick={handleAdd}
-            disabled={totalPairs === 0 || isOutOfStock || maxAdditionalCartons === 0}
+            disabled={
+              totalPairs === 0 || isOutOfStock || maxAdditionalCartons === 0
+            }
             className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-2xl px-6 font-black text-sm transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 group/btn active:scale-95 py-3"
           >
-            <ShoppingCart size={16} className="group-hover/btn:scale-110 transition-transform" />
+            <ShoppingCart
+              size={16}
+              className="group-hover/btn:scale-110 transition-transform"
+            />
           </button>
         </div>
       </div>
@@ -591,7 +685,8 @@ const mapDocToArticle = (doc: any): Article => ({
   name: doc.articleName,
   category: doc.gender || doc.categoryId?.name,
   assortmentId: doc._id,
-  pricePerPair: doc.mrp || doc.variants?.[0]?.sellingPrice || doc.variants?.[0]?.mrp || 0,
+  pricePerPair:
+    doc.mrp || doc.variants?.[0]?.sellingPrice || doc.variants?.[0]?.mrp || 0,
   imageUrl: doc.primaryImage?.url || doc.variants?.[0]?.images?.[0] || "",
   images: doc.secondaryImages?.map((i: any) => i.url) || [],
   secondaryImages: doc.secondaryImages || [],
@@ -619,7 +714,9 @@ const mapDocToArticle = (doc: any): Article => ({
     hsnCode: v.hsnCode,
     sizeQuantities: v.sizeQuantities || {},
     sizeMap: v.sizeMap || {},
-    images: (v.images || []).map((i: any) => typeof i === "string" ? i : i.url),
+    images: (v.images || []).map((i: any) =>
+      typeof i === "string" ? i : i.url
+    ),
     isActive: v.isActive !== false,
     tag: v.tag,
     onlineMrp: v.onlineMrp,
@@ -669,7 +766,7 @@ const Shop: React.FC<ShopProps> = ({
       let totalCount = 0;
 
       if (statusFilter === "ALL") {
-        // Fetch both AVAILABLE and PRE_BOOK items
+        // Fetch both AVAILABLE and WISHLIST (pre-book) items
         const [resAvailable, resPreBook] = await Promise.all([
           masterCatalogService.listMasterItems({
             page: 1,
@@ -682,7 +779,7 @@ const Shop: React.FC<ShopProps> = ({
           masterCatalogService.listMasterItems({
             page: 1,
             limit: 1000,
-            stage: "PRE_BOOK",
+            stage: "WISHLIST",
             q: search || undefined,
             gender: genderFilter !== "ALL" ? genderFilter : undefined,
             sort: sortOption,
@@ -748,7 +845,15 @@ const Shop: React.FC<ShopProps> = ({
     } finally {
       setLoadingMore(false);
     }
-  }, [page, hasMorePages, loadingMore, search, genderFilter, sortOption, statusFilter]);
+  }, [
+    page,
+    hasMorePages,
+    loadingMore,
+    search,
+    genderFilter,
+    sortOption,
+    statusFilter,
+  ]);
 
   useEffect(() => {
     fetchInitialPage();
@@ -781,7 +886,9 @@ const Shop: React.FC<ShopProps> = ({
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
-        if (inStockOnly && !isVariantInStock(v)) return; // Filter 0 stock items when inStockOnly is active
+        // Pre-book (WISHLIST) items are allowed with 0 stock; only filter available items by stock
+        const isPreBook = article.status === "WISHLIST";
+        if (!isPreBook && inStockOnly && !isVariantInStock(v)) return;
         if (!groups[v.color]) groups[v.color] = [];
         groups[v.color].push(v);
       });
@@ -800,7 +907,10 @@ const Shop: React.FC<ShopProps> = ({
       {/* Search + filters bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
         <div className="relative w-full md:max-w-xs">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <Search
+            className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
+            size={18}
+          />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -831,7 +941,7 @@ const Shop: React.FC<ShopProps> = ({
 
           {/* Availability Filter Pills */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
-            {["ALL", "AVAILABLE", "PRE_BOOK"].map((s) => (
+            {["ALL", "AVAILABLE", "WISHLIST"].map((s) => (
               <button
                 key={s}
                 onClick={() => setStatusFilter(s)}
@@ -914,7 +1024,9 @@ const Shop: React.FC<ShopProps> = ({
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 gap-3">
           <Loader2 size={32} className="animate-spin text-indigo-600" />
-          <p className="text-xs font-bold text-slate-500">Loading catalog from server...</p>
+          <p className="text-xs font-bold text-slate-500">
+            Loading catalog from server...
+          </p>
         </div>
       ) : (
         <>
@@ -943,7 +1055,10 @@ const Shop: React.FC<ShopProps> = ({
           {colorGroups.length > 0 && (
             <div className="flex flex-col items-center justify-center gap-3 pt-6 pb-4">
               {hasMorePages ? (
-                <div ref={observerRef} className="flex flex-col items-center gap-2 py-4">
+                <div
+                  ref={observerRef}
+                  className="flex flex-col items-center gap-2 py-4"
+                >
                   {loadingMore ? (
                     <div className="flex items-center gap-2 text-xs font-bold text-indigo-600">
                       <Loader2 size={18} className="animate-spin" />
@@ -954,14 +1069,16 @@ const Shop: React.FC<ShopProps> = ({
                       onClick={loadNextPage}
                       className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline"
                     >
-                      Load more items ({totalServerItems - backendArticles.length} remaining)
+                      Load more items (
+                      {totalServerItems - backendArticles.length} remaining)
                     </button>
                   )}
                 </div>
               ) : (
                 <div className="text-center py-4 border-t border-slate-100 w-full">
                   <p className="text-xs font-bold text-slate-400">
-                    🎉 You've reached the end of the catalogue ({colorGroups.length} items shown)
+                    🎉 You've reached the end of the catalogue (
+                    {colorGroups.length} items shown)
                   </p>
                 </div>
               )}

@@ -140,7 +140,8 @@ const ArticleCard: React.FC<{
   discountPercentage: number;
   priceView: PriceView;
   distributorTag?: "online" | "offline";
-}> = ({ group, inv, cart, addToCart, discountPercentage, priceView, distributorTag }) => {
+  articleStatus?: string;
+}> = ({ group, inv, cart, addToCart, discountPercentage, priceView, distributorTag, articleStatus }) => {
   const { article, color, variants } = group;
 
   const [selectedVariantId, setSelectedVariantId] = useState<string>(
@@ -489,9 +490,13 @@ const ArticleCard: React.FC<{
               </span>
             </p>
             <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider  bg-indigo-600 text-white border-2 border-indigo-600`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border-2 ${
+                articleStatus === "PRE_BOOK"
+                  ? "bg-amber-600 text-white border-amber-600"
+                  : "bg-indigo-600 text-white border-indigo-600"
+              }`}
             >
-              RFD
+              {articleStatus === "PRE_BOOK" ? "Available in 30 Days" : "RFD"}
             </span>
           </div>
           <div className="bg-indigo-50 p-2 rounded-xl shrink-0">
@@ -641,6 +646,7 @@ const Shop: React.FC<ShopProps> = ({
   // Filter & Sort state
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
   const [sortOption, setSortOption] = useState<string>("name_asc");
+  const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const inStockOnly = true;
 
   // Server-side Pagination & Infinite Scroll State
@@ -654,46 +660,76 @@ const Shop: React.FC<ShopProps> = ({
   const [backendArticles, setBackendArticles] = useState<Article[]>([]);
   const observerRef = useRef<HTMLDivElement | null>(null);
 
-  // Fetch Page 1 whenever search, gender, or sort changes
+  // Fetch Page 1 whenever search, gender, sort, or status changes
   const fetchInitialPage = useCallback(async () => {
     setLoading(true);
     setPage(1);
     try {
-      const res = await masterCatalogService.listMasterItems({
-        page: 1,
-        limit: BATCH_SIZE,
-        stage: "AVAILABLE",
-        q: search || undefined,
-        gender: genderFilter !== "ALL" ? genderFilter : undefined,
-        sort: sortOption,
-      });
+      let docs: any[] = [];
+      let totalCount = 0;
 
-      const docs = res.data || res.items || [];
+      if (statusFilter === "ALL") {
+        // Fetch both AVAILABLE and PRE_BOOK items
+        const [resAvailable, resPreBook] = await Promise.all([
+          masterCatalogService.listMasterItems({
+            page: 1,
+            limit: 1000,
+            stage: "AVAILABLE",
+            q: search || undefined,
+            gender: genderFilter !== "ALL" ? genderFilter : undefined,
+            sort: sortOption,
+          }),
+          masterCatalogService.listMasterItems({
+            page: 1,
+            limit: 1000,
+            stage: "PRE_BOOK",
+            q: search || undefined,
+            gender: genderFilter !== "ALL" ? genderFilter : undefined,
+            sort: sortOption,
+          }),
+        ]);
+
+        const docsAvailable = resAvailable.data || resAvailable.items || [];
+        const docsPreBook = resPreBook.data || resPreBook.items || [];
+        docs = [...docsAvailable, ...docsPreBook];
+        totalCount = docs.length;
+      } else {
+        // Fetch single stage
+        const res = await masterCatalogService.listMasterItems({
+          page: 1,
+          limit: BATCH_SIZE,
+          stage: statusFilter,
+          q: search || undefined,
+          gender: genderFilter !== "ALL" ? genderFilter : undefined,
+          sort: sortOption,
+        });
+
+        docs = res.data || res.items || [];
+        const meta = res.meta || {};
+        totalCount = meta.total || docs.length;
+      }
+
       const fetchedArticles = docs.map(mapDocToArticle);
       setBackendArticles(fetchedArticles);
-
-      const meta = res.meta || {};
-      const totalPages = meta.totalPages || 1;
-      const totalCount = meta.total || fetchedArticles.length;
       setTotalServerItems(totalCount);
-      setHasMorePages(1 < totalPages);
+      setHasMorePages(false); // Disable pagination for now with full fetch
     } catch {
       toast.error("Failed to load catalog");
     } finally {
       setLoading(false);
     }
-  }, [search, genderFilter, sortOption]);
+  }, [search, genderFilter, sortOption, statusFilter]);
 
   // Load Next Page for Infinite Scroll
   const loadNextPage = useCallback(async () => {
-    if (loadingMore || !hasMorePages) return;
+    if (loadingMore || !hasMorePages || statusFilter === "ALL") return;
     setLoadingMore(true);
     const nextPage = page + 1;
     try {
       const res = await masterCatalogService.listMasterItems({
         page: nextPage,
         limit: BATCH_SIZE,
-        stage: "AVAILABLE",
+        stage: statusFilter,
         q: search || undefined,
         gender: genderFilter !== "ALL" ? genderFilter : undefined,
         sort: sortOption,
@@ -712,7 +748,7 @@ const Shop: React.FC<ShopProps> = ({
     } finally {
       setLoadingMore(false);
     }
-  }, [page, hasMorePages, loadingMore, search, genderFilter, sortOption]);
+  }, [page, hasMorePages, loadingMore, search, genderFilter, sortOption, statusFilter]);
 
   useEffect(() => {
     fetchInitialPage();
@@ -789,6 +825,23 @@ const Shop: React.FC<ShopProps> = ({
                 }`}
               >
                 {g === "ALL" ? "All" : g.charAt(0) + g.slice(1).toLowerCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* Availability Filter Pills */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
+            {["ALL", "AVAILABLE", "PRE_BOOK"].map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  statusFilter === s
+                    ? "bg-white text-indigo-600 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {s === "ALL" ? "All" : s === "AVAILABLE" ? "RFD" : "30 Days"}
               </button>
             ))}
           </div>
@@ -880,6 +933,7 @@ const Shop: React.FC<ShopProps> = ({
                   discountPercentage={discountPercentage}
                   priceView={priceView}
                   distributorTag={distributorTag}
+                  articleStatus={article.status}
                 />
               );
             })}

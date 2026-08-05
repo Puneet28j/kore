@@ -8,7 +8,6 @@ import {
   Boxes,
   BookOpen,
   Database,
-  ClipboardList,
   ShoppingCart,
   RotateCcw,
   Users,
@@ -27,7 +26,6 @@ import {
   Receipt,
   Shield,
   User,
-  Star,
   Activity,
   AlertTriangle,
   IndianRupee,
@@ -457,20 +455,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                   label="Catalogue"
                   active={activeTab === "shop"}
                   onClick={() => go("shop")}
-                  isCollapsed={isCollapsed}
-                />
-                <NavItem
-                  icon={<Star size={20} />}
-                  label="Pre-Order"
-                  active={activeTab === "preorder"}
-                  onClick={() => go("preorder")}
-                  isCollapsed={isCollapsed}
-                />
-                <NavItem
-                  icon={<ClipboardList size={20} />}
-                  label="My Pre-Orders"
-                  active={activeTab === "my_preorders"}
-                  onClick={() => go("my_preorders")}
                   isCollapsed={isCollapsed}
                 />
                 <NavItem

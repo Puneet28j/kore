@@ -16,3 +16,9 @@ logs
 
 # mac
 .DS_Store
+
+# uploaded images — never commit these to git.
+# Images uploaded in dev stay on dev; images uploaded in production stay on production.
+# Use persistent server storage or a cloud storage service (S3, Cloudinary, etc.)
+backend/uploads/
+uploads/

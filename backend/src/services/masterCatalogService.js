@@ -39,7 +39,10 @@ const normalizePage = (page) => {
 };
 
 const makeFileUrl = (req, filePath) => {
-  return filePath.replace(/\\/g, "/");
+  // Normalise to forward slashes (Windows compatibility)
+  const forwardSlash = filePath.replace(/\\/g, "/");
+  // Ensure it starts with / so it is a proper server-relative URL
+  return forwardSlash.startsWith("/") ? forwardSlash : `/${forwardSlash}`;
 };
 
 const buildColorMediaFromUrls = (colorImageUrlsRaw, productColors = []) => {

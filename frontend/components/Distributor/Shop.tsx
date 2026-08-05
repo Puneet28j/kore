@@ -215,43 +215,68 @@ const ArticleCard: React.FC<{
     : (article.mrp || fullPricePerPair * 2);
 
   // Images carousel
+  // Priority: colorMedia[color] → primaryImage + secondaryImages (article-level flat)
+  // Variant.images is not a stored field in the schema, so we skip that path.
   const images = useMemo(() => {
     const colorMedia = (article as any).colorMedia || [];
     const targetColor = (color || "").toLowerCase().trim();
     const mediaMatch = colorMedia.find(
       (m: any) => (m.color || "").toLowerCase().trim() === targetColor
     );
+
     let gallery: string[] = [];
+
     if (mediaMatch?.images?.length > 0) {
+      // Color-specific images from colorMedia
       gallery = mediaMatch.images.map((img: any) =>
         getImageUrl(typeof img === "object" ? img.url : img)
       );
     } else {
-      const variantImages = variants.flatMap((v) => v.images || []);
-      gallery = variantImages.length > 0
-        ? variantImages.map((img) => getImageUrl(img))
-        : ([
-            getImageUrl(article.imageUrl),
-            ...(article.secondaryImages || []).map((s: any) => getImageUrl(s.url)),
-          ].filter(Boolean) as string[]);
+      // Flat article-level images — primaryImage first, then secondaryImages
+      gallery = [
+        getImageUrl(article.imageUrl),
+        ...(article.secondaryImages || []).map((s: any) =>
+          getImageUrl(typeof s === "object" ? s.url : s)
+        ),
+      ];
     }
-    return gallery;
+
+    // Strip empty strings and deduplicate — prevents blank broken-image slots
+    const seen = new Set<string>();
+    return gallery.filter((url) => {
+      if (!url) return false;
+      if (seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    });
   }, [article, color, variants]);
 
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const carouselRef = useRef<HTMLDivElement>(null);
   const [pointerStart, setPointerStart] = useState<number | null>(null);
+  const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set());
+
+  // Only show images that have not failed to load
+  const validImages = useMemo(
+    () => images.filter((img) => img && !brokenImages.has(img)),
+    [images, brokenImages]
+  );
+
+  const handleImageError = useCallback((url: string) => {
+    setBrokenImages((prev) => new Set(prev).add(url));
+  }, []);
 
   // Amazon zoom
   const { zoom, onMouseMove, onMouseLeave } = useAmazonZoom();
-  const currentImageUrl = images[currentImageIndex] || images[0] || "";
+  const currentImageUrl = validImages[currentImageIndex] || validImages[0] || "";
 
   useEffect(() => {
     setCurrentImageIndex(0);
+    setBrokenImages(new Set());
   }, [images]);
 
   const canGoPrev = currentImageIndex > 0;
-  const canGoNext = currentImageIndex < images.length - 1;
+  const canGoNext = currentImageIndex < validImages.length - 1;
 
   const goNext = () => {
     if (!canGoNext) return;
@@ -331,24 +356,39 @@ const ArticleCard: React.FC<{
           onMouseLeave={onMouseLeave}
           style={{ userSelect: "none", touchAction: "pan-y" }}
         >
-          {/* Carousel strip — each slide is exactly one viewport width */}
-          <div
-            className="flex h-full w-full transition-transform duration-300 ease-out"
-            style={{ transform: `translateX(-${currentImageIndex * 100}%)` }}
-          >
-            {images.map((img, idx) => (
-              <div key={idx} className="min-w-full w-full shrink-0 flex-[0_0_100%] h-full">
-                <img
-                  src={img}
-                  alt={`${article.name} ${idx + 1}`}
-                  loading="lazy"
-                  decoding="async"
-                  draggable={false}
-                  className="w-full h-full object-cover pointer-events-none"
-                />
+          {/* Carousel strip — only valid (non-broken) images are rendered */}
+          {validImages.length > 0 ? (
+            <div
+              className="flex h-full w-full transition-transform duration-300 ease-out"
+              style={{ transform: `translateX(-${currentImageIndex * 100}%)` }}
+            >
+              {validImages.map((img, idx) => (
+                <div key={idx} className="min-w-full w-full shrink-0 flex-[0_0_100%] h-full">
+                  <img
+                    src={img}
+                    alt={`${article.name} ${idx + 1}`}
+                    loading="lazy"
+                    decoding="async"
+                    draggable={false}
+                    className="w-full h-full object-cover pointer-events-none"
+                    onError={() => handleImageError(img)}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            // All images broken / no images — show a clean placeholder
+            <div className="flex h-full w-full items-center justify-center bg-slate-100">
+              <div className="flex flex-col items-center gap-2 text-slate-400">
+                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+                  <circle cx="9" cy="9" r="2" />
+                  <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+                </svg>
+                <span className="text-xs font-semibold">{article.name}</span>
               </div>
-            ))}
-          </div>
+            </div>
+          )}
 
         {/* Amazon zoom panel — rendered via portal so it escapes overflow:hidden */}
         {zoom.visible && currentImageUrl && createPortal(
@@ -404,7 +444,7 @@ const ArticleCard: React.FC<{
         </div>
 
         {/* Manual carousel — visible on image hover only */}
-        {images.length > 1 && (
+        {validImages.length > 1 && (
           <div className="absolute bottom-3 left-3 z-30 flex items-center gap-1 opacity-0 group-hover/image:opacity-100 transition-opacity duration-200 pointer-events-none group-hover/image:pointer-events-auto">
             <button
               type="button"
@@ -449,17 +489,9 @@ const ArticleCard: React.FC<{
               </span>
             </p>
             <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
-                isOutOfStock
-                  ? "bg-red-50 text-red-600 border-red-100"
-                  : maxCartonsFromStock <= 5
-                  ? "bg-amber-50 text-amber-700 border-amber-100"
-                  : "bg-emerald-50 text-emerald-700 border-emerald-100"
-              }`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider  bg-indigo-600 text-white border-2 border-indigo-600`}
             >
-              RFD · {priceView === "carton"
-                ? `${maxCartonsFromStock} Ctns`
-                : `${liveStockPairs.toLocaleString()} Prs`}
+              RFD
             </span>
           </div>
           <div className="bg-indigo-50 p-2 rounded-xl shrink-0">

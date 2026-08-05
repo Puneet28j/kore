@@ -11,6 +11,8 @@ import {
   Tag,
   Layers,
   Loader2,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { Article, Inventory, Variant, User } from "../../types";
 import { toast } from "sonner";
@@ -187,6 +189,16 @@ const ArticleCard: React.FC<{
   const isOutOfStock = maxCartonsFromStock === 0;
   const isAtMax = cartonCount >= maxAdditionalCartons;
 
+  const liveStockPairs = useMemo(() => {
+    if (!selectedVariant) return 0;
+    const sizeMap = selectedVariant.sizeMap || {};
+    return Object.values(sizeMap).reduce((sum, cell: any) => {
+      const qty = typeof cell === "number" ? cell : Number(cell?.qty || 0);
+      const blocked = typeof cell === "object" ? Number(cell?.blockedQty || 0) : 0;
+      return sum + Math.max(0, qty - blocked);
+    }, 0);
+  }, [selectedVariant]);
+
   // Reset carton count if selected variant or stock max changes
   useEffect(() => {
     setCartonCount(1);
@@ -223,12 +235,10 @@ const ArticleCard: React.FC<{
             ...(article.secondaryImages || []).map((s: any) => getImageUrl(s.url)),
           ].filter(Boolean) as string[]);
     }
-    if (gallery.length > 1) return [gallery[gallery.length - 1], ...gallery, gallery[0]];
     return gallery;
   }, [article, color, variants]);
 
-  const [currentImageIndex, setCurrentImageIndex] = useState(images.length > 1 ? 1 : 0);
-  const [transitionEnabled, setTransitionEnabled] = useState(true);
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const carouselRef = useRef<HTMLDivElement>(null);
   const [pointerStart, setPointerStart] = useState<number | null>(null);
 
@@ -236,33 +246,28 @@ const ArticleCard: React.FC<{
   const { zoom, onMouseMove, onMouseLeave } = useAmazonZoom();
   const currentImageUrl = images[currentImageIndex] || images[0] || "";
 
-  useEffect(() => { setCurrentImageIndex(images.length > 1 ? 1 : 0); }, [images.length]);
-
   useEffect(() => {
-    if (images.length <= 1) return;
-    const interval = setInterval(() => setCurrentImageIndex((p) => p + 1), 3000);
-    return () => clearInterval(interval);
-  }, [images.length]);
+    setCurrentImageIndex(0);
+  }, [images]);
 
-  useEffect(() => {
-    if (images.length <= 1) return;
-    if (currentImageIndex === images.length - 1) {
-      setTimeout(() => { setTransitionEnabled(false); setCurrentImageIndex(1); }, 500);
-    }
-    if (currentImageIndex === 0) {
-      setTimeout(() => { setTransitionEnabled(false); setCurrentImageIndex(images.length - 2); }, 500);
-    }
-  }, [currentImageIndex, images.length]);
+  const canGoPrev = currentImageIndex > 0;
+  const canGoNext = currentImageIndex < images.length - 1;
 
-  useEffect(() => {
-    if (!transitionEnabled) {
-      const id = requestAnimationFrame(() => setTransitionEnabled(true));
-      return () => cancelAnimationFrame(id);
-    }
-  }, [transitionEnabled]);
+  const goNext = () => {
+    if (!canGoNext) return;
+    setCurrentImageIndex((p) => p + 1);
+  };
+  const goPrev = () => {
+    if (!canGoPrev) return;
+    setCurrentImageIndex((p) => p - 1);
+  };
 
-  const goNext = () => setCurrentImageIndex((p) => p + 1);
-  const goPrev = () => setCurrentImageIndex((p) => p - 1);
+  const carouselBtnClass = (enabled: boolean) =>
+    `p-1.5 rounded-lg border backdrop-blur-md shadow-lg transition-all ${
+      enabled
+        ? "bg-black/60 border-white/30 text-white hover:bg-black/75 hover:scale-105 cursor-pointer"
+        : "bg-black/30 border-white/10 text-white/40 cursor-not-allowed"
+    }`;
 
   const handlePointerDown = (e: React.PointerEvent) => {
     setPointerStart(e.clientX);
@@ -314,36 +319,36 @@ const ArticleCard: React.FC<{
         : "border-slate-200 hover:shadow-xl hover:border-indigo-200"
     }`}>
       {/* Image + Magnifier */}
-      <div
-        ref={carouselRef}
-        className="relative aspect-square overflow-hidden cursor-crosshair"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
-        onMouseMove={onMouseMove}
-        onMouseLeave={onMouseLeave}
-        style={{ userSelect: "none", touchAction: "pan-y" }}
-      >
-        {/* Carousel strip */}
+      <div className="relative aspect-square overflow-hidden group/image">
         <div
-          className="flex h-full"
-          style={{
-            transform: `translateX(-${currentImageIndex * 100}%)`,
-            transition: transitionEnabled ? "transform 500ms ease" : "none",
-          }}
+          ref={carouselRef}
+          className="relative h-full w-full cursor-crosshair"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          onMouseMove={onMouseMove}
+          onMouseLeave={onMouseLeave}
+          style={{ userSelect: "none", touchAction: "pan-y" }}
         >
-          {images.map((img, idx) => (
-            <img
-              key={idx}
-              src={img}
-              alt={`${article.name} ${idx + 1}`}
-              loading="lazy"
-              decoding="async"
-              className="w-full h-full object-cover shrink-0"
-            />
-          ))}
-        </div>
+          {/* Carousel strip — each slide is exactly one viewport width */}
+          <div
+            className="flex h-full w-full transition-transform duration-300 ease-out"
+            style={{ transform: `translateX(-${currentImageIndex * 100}%)` }}
+          >
+            {images.map((img, idx) => (
+              <div key={idx} className="min-w-full w-full shrink-0 flex-[0_0_100%] h-full">
+                <img
+                  src={img}
+                  alt={`${article.name} ${idx + 1}`}
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                  className="w-full h-full object-cover pointer-events-none"
+                />
+              </div>
+            ))}
+          </div>
 
         {/* Amazon zoom panel — rendered via portal so it escapes overflow:hidden */}
         {zoom.visible && currentImageUrl && createPortal(
@@ -391,18 +396,36 @@ const ArticleCard: React.FC<{
           </div>
         )}
 
-        {/* Stock badge commented out as per request */}
-        {/* {!isOutOfStock && maxCartonsFromStock <= 10 && (
-          <div className="absolute top-3 right-3 z-10 bg-amber-500 text-white text-[10px] font-black px-2 py-1 rounded-full shadow-md">
-            Only {maxCartonsFromStock} CTN left
-          </div>
-        )} */}
-
         <div className="absolute top-4 left-4 flex flex-col gap-2 z-10">
           <div className="bg-white/95 backdrop-blur shadow-sm px-3 py-1.5 rounded-full text-[10px] font-black text-indigo-600 uppercase tracking-widest border border-indigo-50">
             {article.category}
           </div>
         </div>
+        </div>
+
+        {/* Manual carousel — visible on image hover only */}
+        {images.length > 1 && (
+          <div className="absolute bottom-3 left-3 z-30 flex items-center gap-1 opacity-0 group-hover/image:opacity-100 transition-opacity duration-200 pointer-events-none group-hover/image:pointer-events-auto">
+            <button
+              type="button"
+              onClick={goPrev}
+              disabled={!canGoPrev}
+              className={carouselBtnClass(canGoPrev)}
+              aria-label="Previous image"
+            >
+              <ChevronLeft size={16} strokeWidth={2.5} />
+            </button>
+            <button
+              type="button"
+              onClick={goNext}
+              disabled={!canGoNext}
+              className={carouselBtnClass(canGoNext)}
+              aria-label="Next image"
+            >
+              <ChevronRight size={16} strokeWidth={2.5} />
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="p-5">
@@ -418,18 +441,28 @@ const ArticleCard: React.FC<{
 
         {/* Price section */}
         <div className="flex items-center justify-between mb-5">
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             <p className="text-xl font-black text-indigo-700">
               ₹{Math.round(priceView === "pair" ? fullPricePerPair : fullPricePerPair * PAIRS_PER_CARTON).toLocaleString()}
               <span className="text-xs font-semibold text-slate-400 ml-1">
                 /{priceView === "pair" ? "pair" : "carton"}
               </span>
             </p>
-            {/* <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              MRP: ₹{variantMrp.toLocaleString()}
-            </p> */}
+            <span
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
+                isOutOfStock
+                  ? "bg-red-50 text-red-600 border-red-100"
+                  : maxCartonsFromStock <= 5
+                  ? "bg-amber-50 text-amber-700 border-amber-100"
+                  : "bg-emerald-50 text-emerald-700 border-emerald-100"
+              }`}
+            >
+              RFD · {priceView === "carton"
+                ? `${maxCartonsFromStock} Ctns`
+                : `${liveStockPairs.toLocaleString()} Prs`}
+            </span>
           </div>
-          <div className="bg-indigo-50 p-2 rounded-xl">
+          <div className="bg-indigo-50 p-2 rounded-xl shrink-0">
             <Package size={16} className="text-indigo-600" />
           </div>
         </div>

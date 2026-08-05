@@ -886,9 +886,7 @@ const Shop: React.FC<ShopProps> = ({
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
-        // Pre-book (WISHLIST) items are allowed with 0 stock; only filter available items by stock
-        const isPreBook = article.status === "WISHLIST";
-        if (!isPreBook && inStockOnly && !isVariantInStock(v)) return;
+        if (inStockOnly && !isVariantInStock(v)) return;
         if (!groups[v.color]) groups[v.color] = [];
         groups[v.color].push(v);
       });

@@ -287,6 +287,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<CatalogStatus>("AVAILABLE");
   const [searchTerm, setSearchTerm] = useState("");
+  const [genderFilter, setGenderFilter] = useState<string>("ALL");
+  const [sortOption, setSortOption] = useState<string>("name_asc");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingArticle, setEditingArticle] = useState<Article | null>(null);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
@@ -967,7 +969,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   };
 
   // ---------- Backend-paginated data fetch ----------
-  const fetchLocalArticles = useCallback(async (page: number, q: string, tab: CatalogStatus, append = false) => {
+  const fetchLocalArticles = useCallback(async (
+    page: number,
+    q: string,
+    tab: CatalogStatus,
+    append = false,
+    gender = genderFilter,
+    sort = sortOption,
+  ) => {
     if (page === 1) setPageLoading(true);
     else setLoadingMore(true);
     try {
@@ -977,6 +986,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         limit: BATCH_SIZE,
         q: q || undefined,
         stage: tab,
+        gender: gender !== "ALL" ? gender : undefined,
+        sort,
       });
       
       const mapped: Article[] = (res.data || []).map(mapItem);
@@ -995,14 +1006,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       setLoadingMore(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [genderFilter, sortOption]);
 
-  // Trigger fresh fetch when tab changes
+  // Trigger fresh fetch when tab / gender / sort changes
   useEffect(() => {
     setCurrentPage(1);
-    fetchLocalArticles(1, debouncedSearch.current, activeTab, false);
+    fetchLocalArticles(1, debouncedSearch.current, activeTab, false, genderFilter, sortOption);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  }, [activeTab, genderFilter, sortOption]);
 
   // Debounced search: 400ms delay, resets to page 1
   useEffect(() => {
@@ -1010,7 +1021,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     searchDebounceRef.current = setTimeout(() => {
       debouncedSearch.current = searchTerm.trim();
       setCurrentPage(1);
-      fetchLocalArticles(1, searchTerm.trim(), activeTab, false);
+      fetchLocalArticles(1, searchTerm.trim(), activeTab, false, genderFilter, sortOption);
     }, 400);
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1018,11 +1029,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
   // Real-time refresh on catalogRefetch socket event
   useEffect(() => {
-    const handler = () => fetchLocalArticles(1, debouncedSearch.current, activeTab, false);
+    const handler = () => fetchLocalArticles(1, debouncedSearch.current, activeTab, false, genderFilter, sortOption);
     window.addEventListener("catalogRefetch", handler);
     return () => window.removeEventListener("catalogRefetch", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  }, [activeTab, genderFilter, sortOption]);
 
   // Load Next Page for Infinite Scroll (reactive pattern matching Shop.tsx)
   const loadNextPage = useCallback(() => {
@@ -1030,8 +1041,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     const nextPage = currentPage + 1;
     setCurrentPage(nextPage);
     console.log(`[Catalogue Scroll] Loading page ${nextPage}`);
-    fetchLocalArticles(nextPage, debouncedSearch.current, activeTab, true);
-  }, [currentPage, hasMorePages, loadingMore, pageLoading, activeTab, fetchLocalArticles]);
+    fetchLocalArticles(nextPage, debouncedSearch.current, activeTab, true, genderFilter, sortOption);
+  }, [currentPage, hasMorePages, loadingMore, pageLoading, activeTab, genderFilter, sortOption, fetchLocalArticles]);
 
   // Observer matches Shop.tsx precisely, re-binding on loading/page transitions
   useEffect(() => {
@@ -1225,16 +1236,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         </div>
 
         <div className="flex flex-wrap gap-2 w-full lg:w-auto">
-          <div className="relative flex-1 min-w-[180px] lg:w-64">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input
-              type="text"
-              placeholder="Search master, variant or SKU..."
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
           <button
             onClick={openCsvModal}
             className="flex items-center gap-2 px-4 py-2 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl font-semibold text-sm hover:bg-emerald-100 transition-all"
@@ -1276,6 +1277,53 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           <Clock size={16} />
           Pre-Order
         </button>
+      </div>
+
+      {/* Search + filters bar (same as distributor Shop) */}
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
+        <div className="relative w-full md:max-w-xs">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            type="text"
+            placeholder="Search article or SKU..."
+            className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-sm font-medium"
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-2 w-full md:w-auto items-center justify-between md:justify-end">
+          {/* Gender Filter Pills */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
+            {["ALL", "MEN", "WOMEN", "KIDS"].map((g) => (
+              <button
+                key={g}
+                onClick={() => setGenderFilter(g)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  genderFilter === g
+                    ? "bg-white text-indigo-600 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {g === "ALL" ? "All" : g.charAt(0) + g.slice(1).toLowerCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* Sort dropdown */}
+          <select
+            value={sortOption}
+            onChange={(e) => setSortOption(e.target.value)}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+          >
+            <option value="default">Sort: Featured</option>
+            <option value="price_asc">Price: Low to High</option>
+            <option value="price_desc">Price: High to Low</option>
+            <option value="name_asc">Name: A to Z</option>
+            <option value="newest">Newest First</option>
+            <option value="oldest">Oldest First</option>
+          </select>
+        </div>
       </div>
 
       {/* Master Articles List */}

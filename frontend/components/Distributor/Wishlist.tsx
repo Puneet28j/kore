@@ -415,6 +415,8 @@ const mapDocToArticle = (doc: any): Article => ({
   pricePerPair: doc.mrp || doc.variants?.[0]?.sellingPrice || doc.variants?.[0]?.mrp || 0,
   imageUrl: doc.primaryImage?.url || doc.variants?.[0]?.images?.[0] || "",
   images: doc.secondaryImages?.map((i: any) => i.url) || [],
+  secondaryImages: doc.secondaryImages || [],
+  colorMedia: doc.colorMedia || [],
   mrp: doc.mrp,
   soleColor: doc.soleColor,
   productCategory: doc.categoryId?.name,

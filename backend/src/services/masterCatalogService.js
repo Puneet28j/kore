@@ -534,28 +534,26 @@ exports.update = async (req, id) => {
   if (hasNewColorImages) {
     const incomingColorMedia = buildColorMediaPayload(req, doc.productColors);
 
-    if (replaceColorMedia) {
-      doc.colorMedia = incomingColorMedia;
-    } else {
-      const existingMap = new Map(
-        (doc.colorMedia || []).map((cm) => [cm.color, cm.images || []])
-      );
+    const existingMap = new Map(
+      (doc.colorMedia || []).map((cm) => [cm.color, cm.images || []])
+    );
 
-      incomingColorMedia.forEach((cm) => {
-        const oldImages = existingMap.get(cm.color) || [];
-        existingMap.set(cm.color, [...oldImages, ...cm.images]);
-      });
+    incomingColorMedia.forEach((cm) => {
+      // replaceColorMedia only replaces images for the color(s) actually
+      // re-uploaded — colors not present in this request keep their existing media.
+      const oldImages = replaceColorMedia ? [] : existingMap.get(cm.color) || [];
+      existingMap.set(cm.color, [...oldImages, ...cm.images]);
+    });
 
-      doc.colorMedia = Array.from(existingMap.entries()).map(
-        ([color, images]) => ({
-          color,
-          images: images.map((img, idx) => ({
-            ...img,
-            isCover: idx === 0,
-          })),
-        })
-      );
-    }
+    doc.colorMedia = Array.from(existingMap.entries()).map(
+      ([color, images]) => ({
+        color,
+        images: images.map((img, idx) => ({
+          ...img,
+          isCover: idx === 0,
+        })),
+      })
+    );
 
     const { primaryImage, secondaryImages } = buildFlatImagesFromColorMedia(
       doc.colorMedia

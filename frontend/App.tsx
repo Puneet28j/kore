@@ -165,7 +165,7 @@ const App: React.FC = () => {
   const fetchArticles = async () => {
     try {
       setLoadingArticles(true);
-      const res = await masterCatalogService.listMasterItems();
+      const res = await masterCatalogService.listMasterItems({ limit: 1000 });
       const mapped = res.data.map((item: any) => {
         // Normalize variants: convert sizeMap -> sizeSkus/sizeQuantities
         const normalizedVariants = (item.variants || []).map((v: any) => {

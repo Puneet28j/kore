@@ -1691,7 +1691,11 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                 )}
                               </td>
                               <td className="px-4 py-4 text-center">
-                                <p className="text-sm font-black text-emerald-600 leading-none">{item.fulfilledCartonCount || 0}</p>
+                                <p className="text-sm font-black text-emerald-600 leading-none">
+                                  {[OrderStatus.PFD, OrderStatus.RFD, OrderStatus.OFD].includes(currentOrder.status)
+                                    ? (item.allocatedCartonCount || 0)
+                                    : (item.fulfilledCartonCount || 0)}
+                                </p>
                               </td>
                               <td className="px-4 py-4 text-center">
                                 <p className="text-sm font-black text-rose-600 leading-none">{item.returnedCartonCount || 0}</p>

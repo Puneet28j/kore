@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Search, Plus, Minus, Database, ArrowUpCircle, ArrowDownCircle, AlertTriangle, X, ChevronDown, ImageIcon, Package, TrendingUp, Lock, ShoppingCart, ChevronRight, CheckCircle, Loader2 } from 'lucide-react';
+import { Search, Plus, Minus, Database, ArrowUpCircle, ArrowDownCircle, AlertTriangle, X, ChevronDown, ImageIcon, Package, TrendingUp, Lock, ShoppingCart, ChevronRight, CheckCircle, Loader2, CheckCircle2, Clock } from 'lucide-react';
 import { Inventory, Article } from '../../types';
 import { getImageUrl } from '../../utils/imageUtils';
 import { formatAssortment } from '../../utils/assortmentUtils';
@@ -290,25 +290,27 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
   return (
     <div className="space-y-6">
       {/* Tab Switcher */}
-      <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
+      <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
         <button
           onClick={() => { setStockTab('RFD'); setCurrentPage(1); }}
-          className={`px-5 py-2 rounded-lg text-sm font-bold transition-all ${
+          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
             stockTab === 'RFD'
-              ? 'bg-white text-indigo-700 shadow-sm border border-slate-200'
-              : 'text-slate-500 hover:text-slate-700'
+              ? 'bg-emerald-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-50'
           }`}
         >
+          <CheckCircle2 size={16} />
           RFD
         </button>
         <button
           onClick={() => { setStockTab('PREORDER'); setCurrentPage(1); }}
-          className={`px-5 py-2 rounded-lg text-sm font-bold transition-all ${
+          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
             stockTab === 'PREORDER'
-              ? 'bg-white text-amber-700 shadow-sm border border-slate-200'
-              : 'text-slate-500 hover:text-slate-700'
+              ? 'bg-amber-500 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-50'
           }`}
         >
+          <Clock size={16} />
           Pre-Order
         </button>
       </div>

@@ -171,7 +171,7 @@ const App: React.FC = () => {
         const normalizedVariants = (item.variants || []).map((v: any) => {
           const sizeSkus: Record<string, string> = v.sizeSkus || {};
           const sizeQuantities: Record<string, number> = v.sizeQuantities || {};
-          
+
           // Legacy Fallback: If new dedicated fields are missing, try to restore from sizeMap
           if (Object.keys(sizeQuantities).length === 0 && v.sizeMap) {
             Object.entries(v.sizeMap).forEach(([sz, cell]: [string, any]) => {
@@ -231,19 +231,24 @@ const App: React.FC = () => {
   }, []);
 
   const [orders, setOrders] = useState<Order[]>([]);
+  const [distributorDashStats, setDistributorDashStats] = useState<any>(null);
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
   // ── Refs to avoid stale closures inside socket handlers ──
   const userRef = React.useRef(user);
-  userRef.current = user;  // always the latest user
+  userRef.current = user; // always the latest user
 
   const checkAuthRef = React.useRef(checkAuth);
   checkAuthRef.current = checkAuth;
 
   // Fetch orders (defined outside useEffect so it can be referenced)
-  const fetchOrdersRef = React.useRef<((silent?: boolean) => Promise<void>) | undefined>(undefined);
-  const fetchArticlesRef = React.useRef<(() => Promise<void>) | undefined>(undefined);
+  const fetchOrdersRef = React.useRef<
+    ((silent?: boolean) => Promise<void>) | undefined
+  >(undefined);
+  const fetchArticlesRef = React.useRef<(() => Promise<void>) | undefined>(
+    undefined
+  );
 
   // Fetch orders with socket.io for real-time updates
   useEffect(() => {
@@ -254,10 +259,16 @@ const App: React.FC = () => {
       try {
         let items: Order[] = [];
         if (user.role === UserRole.DISTRIBUTOR) {
-          const res = await distributorOrderService.getOrdersByDistributor(user.id, { limit: 1000 });
+          const res = await distributorOrderService.getOrdersByDistributor(
+            user.id,
+            { limit: 100 }
+          );
           items = res.items;
+          if (res.meta?.stats) setDistributorDashStats(res.meta.stats);
         } else {
-          const res = await distributorOrderService.getAllOrders({ limit: 1000 });
+          const res = await distributorOrderService.getAllOrders({
+            limit: 1000,
+          });
           items = res.items;
         }
         setOrders(items);
@@ -297,7 +308,9 @@ const App: React.FC = () => {
       const isDistributor = u.role === UserRole.DISTRIBUTOR;
       const orderId = String(data.orderId);
       const distributorId = String(data.distributorId);
-      const isMyOrder = distributorId === String(u.id) || distributorId === String(u.distributorId);
+      const isMyOrder =
+        distributorId === String(u.id) ||
+        distributorId === String(u.distributorId);
 
       if (isDistributor && !isMyOrder) return;
 
@@ -305,12 +318,16 @@ const App: React.FC = () => {
       if (!isPriceOnly) {
         if (data.status === "PRE_BOOKED" && !isDistributor) {
           toast.info(`New Pre-Order received`, {
-            description: `Order #${orderId.slice(-6).toUpperCase()} — check Pre-Orders tab`,
+            description: `Order #${orderId
+              .slice(-6)
+              .toUpperCase()} — check Pre-Orders tab`,
             duration: 4000,
           });
         } else if (data.status !== "PRE_BOOKED") {
           toast.success(`Order Update: ${orderId.slice(-6).toUpperCase()}`, {
-            description: `Status changed to ${data.status?.replace(/_/g, " ") || "updated"}`,
+            description: `Status changed to ${
+              data.status?.replace(/_/g, " ") || "updated"
+            }`,
             duration: 3000,
           });
         }
@@ -320,7 +337,9 @@ const App: React.FC = () => {
       if (isDistributor) checkAuthRef.current?.(true);
 
       // Notify open OrderDetail to refresh itself
-      window.dispatchEvent(new CustomEvent("orderUpdatedSocket", { detail: data }));
+      window.dispatchEvent(
+        new CustomEvent("orderUpdatedSocket", { detail: data })
+      );
     };
 
     const onDistributorUpdated = (data: any) => {
@@ -354,7 +373,9 @@ const App: React.FC = () => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
       toast.info(`GRN #${data.grnNumber} submitted`, {
-        description: `Vendor: ${data.vendorName || ""} · ${data.totalPairs || ""} pairs`,
+        description: `Vendor: ${data.vendorName || ""} · ${
+          data.totalPairs || ""
+        } pairs`,
         duration: 4000,
       });
       if (fetchArticlesRef.current) fetchArticlesRef.current();
@@ -364,14 +385,17 @@ const App: React.FC = () => {
     const onPoCreated = (data: any) => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
-      toast.info(data.poNumber ? `PO #${data.poNumber} created` : "PO created", { description: `Vendor: ${data.vendorName}`, duration: 4000 });
+      toast.info(`PO #${data.poNumber} created`, {
+        description: `Vendor: ${data.vendorName}`,
+        duration: 4000,
+      });
       window.dispatchEvent(new CustomEvent("poRefetch"));
     };
 
     const onPoUpdated = (data: any) => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
-      toast.info(data.poNumber ? `PO #${data.poNumber} updated` : "PO updated", { duration: 3000 });
+      toast.info(`PO #${data.poNumber} updated`, { duration: 3000 });
       window.dispatchEvent(new CustomEvent("poRefetch"));
     };
 
@@ -385,14 +409,20 @@ const App: React.FC = () => {
     const onBillApproved = (data: any) => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
-      toast.success(`Bill Approved: PO #${data.poNumber}`, { description: data.vendorName, duration: 4000 });
+      toast.success(`Bill Approved: PO #${data.poNumber}`, {
+        description: data.vendorName,
+        duration: 4000,
+      });
       window.dispatchEvent(new CustomEvent("billRefetch"));
     };
 
     const onBillRejected = (data: any) => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
-      toast.error(`Bill Rejected: PO #${data.poNumber}`, { description: data.reason || "", duration: 4000 });
+      toast.error(`Bill Rejected: PO #${data.poNumber}`, {
+        description: data.reason || "",
+        duration: 4000,
+      });
       window.dispatchEvent(new CustomEvent("billRefetch"));
     };
 
@@ -414,7 +444,9 @@ const App: React.FC = () => {
         if (data.name || data.email || data.phone) {
           store.setCurrentUser({ ...u, ...data });
         }
-        window.dispatchEvent(new CustomEvent("userProfileRefetch", { detail: data }));
+        window.dispatchEvent(
+          new CustomEvent("userProfileRefetch", { detail: data })
+        );
       }
     };
 
@@ -450,47 +482,48 @@ const App: React.FC = () => {
       if (String(data.userId) !== String(u.id)) return;
       store.logout();
       toast.error("Session expired", {
-        description: "Admin ne aapka password change kar diya. Please login karein.",
+        description:
+          "Admin ne aapka password change kar diya. Please login karein.",
         duration: 6000,
       });
     };
 
-    socket.on("connect",             onConnect);
-    socket.on("connect_error",       onConnectError);
-    socket.on("orderUpdated",        onOrderUpdated);
-    socket.on("distributorUpdated",  onDistributorUpdated);
-    socket.on("activityLog",         onActivityLog);
-    socket.on("grnSubmitted",        onGrnSubmitted);
-    socket.on("poCreated",           onPoCreated);
-    socket.on("poUpdated",           onPoUpdated);
-    socket.on("poDeleted",           onPoDeleted);
-    socket.on("billApproved",        onBillApproved);
-    socket.on("billRejected",        onBillRejected);
-    socket.on("catalogUpdated",      onCatalogUpdated);
-    socket.on("returnCreated",       onReturnCreated);
-    socket.on("sessionInvalidated",  onSessionInvalidated);
-    socket.on("userUpdated",         onUserUpdated);
-    socket.on("userProfileUpdated",  onUserProfileUpdated);
-    socket.on("vendorUpdated",       onVendorUpdated);
+    socket.on("connect", onConnect);
+    socket.on("connect_error", onConnectError);
+    socket.on("orderUpdated", onOrderUpdated);
+    socket.on("distributorUpdated", onDistributorUpdated);
+    socket.on("activityLog", onActivityLog);
+    socket.on("grnSubmitted", onGrnSubmitted);
+    socket.on("poCreated", onPoCreated);
+    socket.on("poUpdated", onPoUpdated);
+    socket.on("poDeleted", onPoDeleted);
+    socket.on("billApproved", onBillApproved);
+    socket.on("billRejected", onBillRejected);
+    socket.on("catalogUpdated", onCatalogUpdated);
+    socket.on("returnCreated", onReturnCreated);
+    socket.on("sessionInvalidated", onSessionInvalidated);
+    socket.on("userUpdated", onUserUpdated);
+    socket.on("userProfileUpdated", onUserProfileUpdated);
+    socket.on("vendorUpdated", onVendorUpdated);
 
     return () => {
-      socket.off("connect",             onConnect);
-      socket.off("connect_error",       onConnectError);
-      socket.off("orderUpdated",        onOrderUpdated);
-      socket.off("distributorUpdated",  onDistributorUpdated);
-      socket.off("activityLog",         onActivityLog);
-      socket.off("grnSubmitted",        onGrnSubmitted);
-      socket.off("poCreated",           onPoCreated);
-      socket.off("poUpdated",           onPoUpdated);
-      socket.off("poDeleted",           onPoDeleted);
-      socket.off("billApproved",        onBillApproved);
-      socket.off("billRejected",        onBillRejected);
-      socket.off("catalogUpdated",      onCatalogUpdated);
-      socket.off("returnCreated",       onReturnCreated);
-      socket.off("sessionInvalidated",  onSessionInvalidated);
-      socket.off("userUpdated",         onUserUpdated);
-      socket.off("userProfileUpdated",  onUserProfileUpdated);
-      socket.off("vendorUpdated",       onVendorUpdated);
+      socket.off("connect", onConnect);
+      socket.off("connect_error", onConnectError);
+      socket.off("orderUpdated", onOrderUpdated);
+      socket.off("distributorUpdated", onDistributorUpdated);
+      socket.off("activityLog", onActivityLog);
+      socket.off("grnSubmitted", onGrnSubmitted);
+      socket.off("poCreated", onPoCreated);
+      socket.off("poUpdated", onPoUpdated);
+      socket.off("poDeleted", onPoDeleted);
+      socket.off("billApproved", onBillApproved);
+      socket.off("billRejected", onBillRejected);
+      socket.off("catalogUpdated", onCatalogUpdated);
+      socket.off("returnCreated", onReturnCreated);
+      socket.off("sessionInvalidated", onSessionInvalidated);
+      socket.off("userUpdated", onUserUpdated);
+      socket.off("userProfileUpdated", onUserProfileUpdated);
+      socket.off("vendorUpdated", onVendorUpdated);
     };
   }, [socket]); // Re-bind only if socket instance changes
 
@@ -751,14 +784,23 @@ const App: React.FC = () => {
       distributorName: user.name,
       date: new Date().toISOString().split("T")[0],
       orderType: "PREORDER",
-      items: [{ articleId, variantId, sizeQuantities, cartonCount, pairCount: pairCount, price }],
+      items: [
+        {
+          articleId,
+          variantId,
+          sizeQuantities,
+          cartonCount,
+          pairCount: pairCount,
+          price,
+        },
+      ],
       totalAmount: price,
       totalCartons: cartonCount,
       totalPairs: pairCount,
       gstRate: 5,
     };
     const res = await distributorOrderService.placeOrder(payload as any);
-    setOrders(prev => [{ ...res, id: (res as any)._id || res.id }, ...prev]);
+    setOrders((prev) => [{ ...res, id: (res as any)._id || res.id }, ...prev]);
     setLastUpdated(new Date());
     toast.success("Pre-Order placed!", {
       description: "Check 'My Pre-Orders' tab to track it.",
@@ -769,8 +811,8 @@ const App: React.FC = () => {
   const placeOrder = async (gstPercent: number = 5) => {
     if (!user || cart.length === 0) return;
 
-    const availableItems = cart.filter(i => {
-      const art = articles.find(a => a.id === i.articleId);
+    const availableItems = cart.filter((i) => {
+      const art = articles.find((a) => a.id === i.articleId);
       return art?.status === "AVAILABLE";
     });
 
@@ -779,14 +821,21 @@ const App: React.FC = () => {
       const freshUser = store.currentUser;
 
       // ── Credit check (only for AVAILABLE items) ──
-      if (freshUser?.role === UserRole.DISTRIBUTOR && availableItems.length > 0) {
+      if (
+        freshUser?.role === UserRole.DISTRIBUTOR &&
+        availableItems.length > 0
+      ) {
         const availCredit = freshUser.availableCredit ?? 0;
         const discPct = freshUser.discountPercentage || 0;
         const orderTotal = availableItems.reduce((sum, i) => sum + i.price, 0);
         const finalAmt = orderTotal - (orderTotal * discPct) / 100;
 
-        if (availCredit === 0) throw new Error("No credit limit available. Contact administrator.");
-        if (finalAmt > availCredit) throw new Error(`Credit limit exceeded. Available: ₹${availCredit.toLocaleString()}, Required: ₹${finalAmt.toLocaleString()}`);
+        if (availCredit === 0)
+          throw new Error("No credit limit available. Contact administrator.");
+        if (finalAmt > availCredit)
+          throw new Error(
+            `Credit limit exceeded. Available: ₹${availCredit.toLocaleString()}, Required: ₹${finalAmt.toLocaleString()}`
+          );
       }
 
       const placed: Order[] = [];
@@ -799,10 +848,13 @@ const App: React.FC = () => {
           date: new Date().toISOString().split("T")[0],
           status: OrderStatus.PENDING,
           orderType: "REGULAR",
-          items: availableItems.map(item => ({
-            articleId: item.articleId, variantId: item.variantId,
+          items: availableItems.map((item) => ({
+            articleId: item.articleId,
+            variantId: item.variantId,
             sizeQuantities: item.sizeQuantities,
-            cartonCount: item.cartonCount, pairCount: item.pairCount, price: item.price,
+            cartonCount: item.cartonCount,
+            pairCount: item.pairCount,
+            price: item.price,
           })),
           totalAmount: availableItems.reduce((s, i) => s + i.price, 0),
           totalCartons: availableItems.reduce((s, i) => s + i.cartonCount, 0),
@@ -813,7 +865,7 @@ const App: React.FC = () => {
         placed.push({ ...res, id: (res as any)._id || res.id });
       }
 
-      setOrders(prev => [...placed, ...prev]);
+      setOrders((prev) => [...placed, ...prev]);
       setCart([]);
       setActiveTab("orders");
       await checkAuth(true);
@@ -824,22 +876,23 @@ const App: React.FC = () => {
     toast.promise(placePromise(), {
       loading: "Placing order...",
       success: (msg) => msg as string,
-      error: (err: any) => err?.response?.data?.message || err?.message || "Failed to place order",
+      error: (err: any) =>
+        err?.response?.data?.message || err?.message || "Failed to place order",
     });
   };
 
   const updateOrderStatus = (orderId: string, status: OrderStatus) => {
     const updatePromise = async () => {
-      const updatedOrder = await distributorOrderService.updateOrderStatus(orderId, status);
+      const updatedOrder = await distributorOrderService.updateOrderStatus(
+        orderId,
+        status
+      );
 
       setOrders((prev) =>
         prev.map((o) => {
           if (o.id === orderId || (o as any)._id === orderId) {
             // dispatch: deduct actual + release reserved (only once)
-            if (
-              status === OrderStatus.OFD &&
-              o.status !== OrderStatus.OFD
-            ) {
+            if (status === OrderStatus.OFD && o.status !== OrderStatus.OFD) {
               setInventory((invs) =>
                 invs.map((inv) => {
                   const item = o.items.find(
@@ -935,18 +988,20 @@ const App: React.FC = () => {
             <DistributorDashboard
               user={user}
               orders={orders}
+              dashboardStats={distributorDashStats}
               cartCount={cartItemsCount}
               goToCart={() => setActiveTab("cart")}
             />
           ))}
 
-        {activeTab === "catalogue" && user.role !== UserRole.DISTRIBUTOR && (
-          showMasterForm ? (
+        {activeTab === "catalogue" &&
+          user.role !== UserRole.DISTRIBUTOR &&
+          (showMasterForm ? (
             <ProductMaster
               addArticle={addArticle}
               updateArticle={updateArticle}
               editingId={editingArticleId}
-              initialArticle={articles.find(a => a.id === editingArticleId)}
+              initialArticle={articles.find((a) => a.id === editingArticleId)}
               onSuccess={() => {
                 fetchArticles();
                 if (!editingArticleId) setShowMasterForm(false);
@@ -954,7 +1009,8 @@ const App: React.FC = () => {
               onCancelEdit={() => {
                 setEditingArticleId(null);
                 setShowMasterForm(false);
-                if (previousTab === "variant_details") setActiveTab("variant_details");
+                if (previousTab === "variant_details")
+                  setActiveTab("variant_details");
               }}
             />
           ) : (
@@ -970,8 +1026,7 @@ const App: React.FC = () => {
               onSuccess={fetchArticles}
               onAddNewMaster={handleAddNewMaster}
             />
-          )
-        )}
+          ))}
 
         {activeTab === "variant_details" &&
           viewingVariant &&
@@ -1066,7 +1121,12 @@ const App: React.FC = () => {
         )}
 
         {activeTab === "returns" && user.role !== UserRole.DISTRIBUTOR && (
-          <Returns orders={orders} articles={articles} onSuccess={handleReturnSuccess} onInward={handleInwardStock} />
+          <Returns
+            orders={orders}
+            articles={articles}
+            onSuccess={handleReturnSuccess}
+            onInward={handleInwardStock}
+          />
         )}
 
         {activeTab === "shop" && user.role === UserRole.DISTRIBUTOR && (
@@ -1125,21 +1185,23 @@ const App: React.FC = () => {
           <ActivityLogPage />
         )}
 
-        {activeTab === "report_stock"    && user.role !== UserRole.DISTRIBUTOR && <StockReport />}
-        {activeTab === "report_dispatch" && user.role !== UserRole.DISTRIBUTOR && <DispatchReport />}
-        {activeTab === "report_return"   && user.role !== UserRole.DISTRIBUTOR && <ReturnReport />}
-
-        {activeTab === "overdue_payments" && user.role !== UserRole.DISTRIBUTOR && (
-          <AccountantPage />
+        {activeTab === "report_stock" && user.role !== UserRole.DISTRIBUTOR && (
+          <StockReport />
         )}
+        {activeTab === "report_dispatch" &&
+          user.role !== UserRole.DISTRIBUTOR && <DispatchReport />}
+        {activeTab === "report_return" &&
+          user.role !== UserRole.DISTRIBUTOR && <ReturnReport />}
+
+        {activeTab === "overdue_payments" &&
+          user.role !== UserRole.DISTRIBUTOR && <AccountantPage />}
 
         {activeTab === "terms_page" && user.role !== UserRole.DISTRIBUTOR && (
           <TermsPage />
         )}
 
-        {activeTab === "notification_settings" && user.role === UserRole.SUPERADMIN && (
-          <NotificationSettings />
-        )}
+        {activeTab === "notification_settings" &&
+          user.role === UserRole.SUPERADMIN && <NotificationSettings />}
 
         {activeTab === "integrations" && user.role === UserRole.SUPERADMIN && (
           <IntegrationsPage />
@@ -1155,57 +1217,112 @@ const App: React.FC = () => {
 
 const STATUS_CHIP: Record<string, { label: string; color: string }> = {
   PRE_BOOKED: { label: "Pre-Booked", color: "bg-violet-100 text-violet-700" },
-  CONFIRMED:  { label: "Confirmed",  color: "bg-blue-100 text-blue-700" },
-  PENDING:    { label: "Pending",    color: "bg-slate-100 text-slate-600" },
-  BOOKED:     { label: "Booked",     color: "bg-indigo-100 text-indigo-700" },
-  PFD:        { label: "PFD",        color: "bg-purple-100 text-purple-700" },
-  RFD:        { label: "RFD",        color: "bg-sky-100 text-sky-700" },
-  OFD:        { label: "In Transit", color: "bg-amber-100 text-amber-700" },
-  RECEIVED:   { label: "Received",   color: "bg-emerald-100 text-emerald-700" },
-  PARTIAL:    { label: "Partial",    color: "bg-orange-100 text-orange-700" },
-  CANCELLED:  { label: "Cancelled",  color: "bg-rose-100 text-rose-700" },
+  CONFIRMED: { label: "Confirmed", color: "bg-blue-100 text-blue-700" },
+  PENDING: { label: "Pending", color: "bg-slate-100 text-slate-600" },
+  BOOKED: { label: "Booked", color: "bg-indigo-100 text-indigo-700" },
+  PFD: { label: "PFD", color: "bg-purple-100 text-purple-700" },
+  RFD: { label: "RFD", color: "bg-sky-100 text-sky-700" },
+  OFD: { label: "In Transit", color: "bg-amber-100 text-amber-700" },
+  RECEIVED: { label: "Received", color: "bg-emerald-100 text-emerald-700" },
+  PARTIAL: { label: "Partial", color: "bg-orange-100 text-orange-700" },
+  CANCELLED: { label: "Cancelled", color: "bg-rose-100 text-rose-700" },
 };
 
 const DistributorDashboard: React.FC<{
   user: User;
   orders: Order[];
+  dashboardStats: any;
   cartCount: number;
   goToCart: () => void;
-}> = ({ user, orders, cartCount, goToCart }) => {
+}> = ({ user, orders, dashboardStats, cartCount, goToCart }) => {
   const userOrders = orders.filter((o) => o.distributorId === user.id);
 
-  // Computed stats
-  const totalValue = userOrders.reduce((s, o) => s + (o.finalAmount || o.totalAmount || 0), 0);
-  const totalPairs = userOrders.reduce((s, o) => s + (o.totalPairs || 0), 0);
-  const paidAmount = userOrders.filter(o => (o as any).paymentStatus === "PAID").reduce((s, o) => s + (o.finalAmount || o.totalAmount || 0), 0);
+  // Use server-side aggregated stats when available (avoids limit-cap undercount)
+  const sc: Record<string, number> = dashboardStats?.statusCounts || {};
+  const totalValue =
+    dashboardStats?.totalSpent ??
+    userOrders.reduce((s, o) => s + (o.finalAmount || o.totalAmount || 0), 0);
+  const totalPairs =
+    dashboardStats?.totalPairs ??
+    userOrders.reduce((s, o) => s + (o.totalPairs || 0), 0);
+  const totalOrders = dashboardStats ? sc.total || 0 : userOrders.length;
+  const activeCount =
+    dashboardStats?.activeOrders ??
+    userOrders.filter(
+      (o) =>
+        o.status === OrderStatus.BOOKED ||
+        o.status === OrderStatus.PFD ||
+        o.status === OrderStatus.RFD ||
+        o.status === OrderStatus.OFD
+    ).length;
+  const preOrderCount =
+    dashboardStats?.preOrderCount ??
+    userOrders.filter(
+      (o) =>
+        o.status === OrderStatus.PRE_BOOKED ||
+        (o as any).orderType === "PREORDER"
+    ).length;
+  const statusCounts: Record<string, number> = dashboardStats
+    ? sc
+    : (() => {
+        const counts: Record<string, number> = {};
+        userOrders.forEach((o) => {
+          counts[o.status] = (counts[o.status] || 0) + 1;
+        });
+        return counts;
+      })();
+
+  const paidAmount =
+    dashboardStats?.totalPaid ??
+    userOrders
+      .filter((o) => (o as any).paymentStatus === "PAID")
+      .reduce((s, o) => s + (o.finalAmount || o.totalAmount || 0), 0);
   const pendingPayment = totalValue - paidAmount;
-  const preOrders = userOrders.filter(o => o.status === OrderStatus.PRE_BOOKED || (o as any).orderType === "PREORDER");
-  const activeOrders = userOrders.filter(o =>
-    o.status === OrderStatus.BOOKED || o.status === OrderStatus.PFD ||
-    o.status === OrderStatus.RFD || o.status === OrderStatus.OFD
-  );
 
-  const statusCounts: Record<string, number> = {};
-  userOrders.forEach(o => { statusCounts[o.status] = (statusCounts[o.status] || 0) + 1; });
-
-  const recentOrders = [...userOrders].sort((a, b) =>
-    new Date(b.date).getTime() - new Date(a.date).getTime()
-  ).slice(0, 5);
+  const recentOrders = [...userOrders]
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .slice(0, 5);
 
   return (
     <div className="space-y-5">
       {/* Top stat cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
-          { label: "Total Orders",  value: userOrders.length.toLocaleString(),      icon: <ShoppingBag size={16} />, color: "text-indigo-600",  bg: "bg-indigo-50" },
-          { label: "Total Value",   value: `₹${totalValue.toLocaleString()}`,        icon: <IndianRupee size={16} />, color: "text-emerald-600", bg: "bg-emerald-50" },
-          { label: "Total Pairs",   value: totalPairs.toLocaleString(),              icon: <Package size={16} />,     color: "text-blue-600",    bg: "bg-blue-50" },
-          { label: "Pre-Orders",    value: preOrders.length.toLocaleString(),        icon: <Star size={16} />,        color: "text-amber-600",   bg: "bg-amber-50" },
-        ].map(s => (
+          {
+            label: "Total Orders",
+            value: totalOrders.toLocaleString(),
+            icon: <ShoppingBag size={16} />,
+            color: "text-indigo-600",
+            bg: "bg-indigo-50",
+          },
+          {
+            label: "Total Value",
+            value: `₹${totalValue.toLocaleString()}`,
+            icon: <IndianRupee size={16} />,
+            color: "text-emerald-600",
+            bg: "bg-emerald-50",
+          },
+          {
+            label: "Total Pairs",
+            value: totalPairs.toLocaleString(),
+            icon: <Package size={16} />,
+            color: "text-blue-600",
+            bg: "bg-blue-50",
+          },
+          {
+            label: "Pre-Orders",
+            value: preOrderCount.toLocaleString(),
+            icon: <Star size={16} />,
+            color: "text-amber-600",
+            bg: "bg-amber-50",
+          },
+        ].map((s) => (
           <div key={s.label} className={`${s.bg} rounded-2xl p-4`}>
             <div className={`${s.color} mb-1.5`}>{s.icon}</div>
             <p className={`text-2xl font-black ${s.color}`}>{s.value}</p>
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mt-0.5">{s.label}</p>
+            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mt-0.5">
+              {s.label}
+            </p>
           </div>
         ))}
       </div>
@@ -1222,14 +1339,20 @@ const DistributorDashboard: React.FC<{
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
             <div>
               <p className="text-xs text-slate-500 font-medium">Paid</p>
-              <p className="text-sm font-black text-emerald-700">₹{paidAmount.toLocaleString()}</p>
+              <p className="text-sm font-black text-emerald-700">
+                ₹{paidAmount.toLocaleString()}
+              </p>
             </div>
           </div>
           <div className="bg-rose-50 rounded-xl p-3 flex items-center gap-3">
             <div className="w-2.5 h-2.5 rounded-full bg-rose-500 shrink-0" />
             <div>
-              <p className="text-xs text-slate-500 font-medium">Pending Payment</p>
-              <p className="text-sm font-black text-rose-700">₹{pendingPayment.toLocaleString()}</p>
+              <p className="text-xs text-slate-500 font-medium">
+                Pending Payment
+              </p>
+              <p className="text-sm font-black text-rose-700">
+                ₹{pendingPayment.toLocaleString()}
+              </p>
             </div>
           </div>
         </div>
@@ -1241,8 +1364,10 @@ const DistributorDashboard: React.FC<{
               <Clock size={13} className="text-indigo-600" />
             </div>
             <div>
-              <p className="text-xs text-slate-500 font-medium">Active Orders</p>
-              <p className="text-sm font-black text-slate-800">{activeOrders.length}</p>
+              <p className="text-xs text-slate-500 font-medium">
+                Active Orders
+              </p>
+              <p className="text-sm font-black text-slate-800">{activeCount}</p>
             </div>
           </div>
           <div
@@ -1262,14 +1387,22 @@ const DistributorDashboard: React.FC<{
         {/* Status chips */}
         {Object.keys(statusCounts).length > 0 && (
           <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
-            {Object.entries(statusCounts).map(([status, count]) => {
-              const meta = STATUS_CHIP[status] || { label: status, color: "bg-slate-100 text-slate-600" };
-              return (
-                <span key={status} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold ${meta.color}`}>
-                  {meta.label} <span className="opacity-70">× {count}</span>
-                </span>
-              );
-            })}
+            {Object.entries(statusCounts)
+              .filter(([s]) => s !== "total")
+              .map(([status, count]) => {
+                const meta = STATUS_CHIP[status] || {
+                  label: status,
+                  color: "bg-slate-100 text-slate-600",
+                };
+                return (
+                  <span
+                    key={status}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold ${meta.color}`}
+                  >
+                    {meta.label} <span className="opacity-70">× {count}</span>
+                  </span>
+                );
+              })}
           </div>
         )}
       </div>
@@ -1279,7 +1412,9 @@ const DistributorDashboard: React.FC<{
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2">
             <Clock size={13} className="text-slate-400" />
-            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Recent Orders</h4>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+              Recent Orders
+            </h4>
             <span className="ml-auto text-[10px] text-slate-400">Last 5</span>
           </div>
           {recentOrders.length === 0 ? (
@@ -1290,23 +1425,50 @@ const DistributorDashboard: React.FC<{
           ) : (
             <div className="divide-y divide-slate-50">
               {recentOrders.map((order) => {
-                const isTransit = order.status === OrderStatus.OFD || order.status === OrderStatus.RECEIVED;
+                const isTransit =
+                  order.status === OrderStatus.OFD ||
+                  order.status === OrderStatus.RECEIVED;
                 const chip = STATUS_CHIP[order.status];
                 return (
-                  <div key={order.id} className="flex items-center justify-between px-5 py-3 hover:bg-slate-50 transition-colors">
+                  <div
+                    key={order.id}
+                    className="flex items-center justify-between px-5 py-3 hover:bg-slate-50 transition-colors"
+                  >
                     <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-xl ${isTransit ? "bg-emerald-100 text-emerald-600" : "bg-indigo-100 text-indigo-600"}`}>
+                      <div
+                        className={`p-2 rounded-xl ${
+                          isTransit
+                            ? "bg-emerald-100 text-emerald-600"
+                            : "bg-indigo-100 text-indigo-600"
+                        }`}
+                      >
                         {isTransit ? <Truck size={14} /> : <Clock size={14} />}
                       </div>
                       <div>
-                        <p className="text-sm font-bold text-slate-900">{order.orderNumber || `#${order.id.slice(-6).toUpperCase()}`}</p>
-                        <p className="text-[10px] text-slate-400 font-medium">{order.date}</p>
+                        <p className="text-sm font-bold text-slate-900">
+                          {order.orderNumber ||
+                            `#${order.id.slice(-6).toUpperCase()}`}
+                        </p>
+                        <p className="text-[10px] text-slate-400 font-medium">
+                          {order.date}
+                        </p>
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-black text-slate-800">₹{(order.finalAmount || order.totalAmount || 0).toLocaleString()}</p>
+                      <p className="text-sm font-black text-slate-800">
+                        ₹
+                        {(
+                          order.finalAmount ||
+                          order.totalAmount ||
+                          0
+                        ).toLocaleString()}
+                      </p>
                       {chip && (
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${chip.color}`}>{chip.label}</span>
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${chip.color}`}
+                        >
+                          {chip.label}
+                        </span>
                       )}
                     </div>
                   </div>

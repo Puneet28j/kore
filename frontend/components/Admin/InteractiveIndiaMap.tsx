@@ -117,8 +117,16 @@ const InteractiveIndiaMap: React.FC<InteractiveIndiaMapProps> = ({ orders }) => 
   const stateDataMap = React.useMemo(() => {
     const map = new Map<string, StateData>();
     orders.forEach((order) => {
-      // Try to resolve state from distributor name or location
-      const code = resolveStateCode(order.distributorName);
+      // Prefer actual address fields from the populated distributorId object
+      const distObj = typeof order.distributorId === 'object' && order.distributorId !== null
+        ? (order.distributorId as any)
+        : null;
+      const addrState = distObj?.distributorId?.shippingAddress?.state
+        || distObj?.distributorId?.billingAddress?.state;
+      const addrCity = distObj?.distributorId?.shippingAddress?.city
+        || distObj?.distributorId?.billingAddress?.city;
+      const locationText = addrState || addrCity || order.distributorName;
+      const code = resolveStateCode(locationText);
       if (code) {
         const existing = map.get(code) || { orders: 0, revenue: 0, distributors: new Set<string>() };
         existing.orders += 1;

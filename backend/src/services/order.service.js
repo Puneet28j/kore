@@ -19,7 +19,9 @@ const getCompanyPrefix = (companyName) => {
 
 const generateNextOrderNumber = async (prefix = "OR") => {
   // Find last order with any prefix to keep global sequence
-  const lastOrder = await Order.findOne({ orderNumber: { $exists: true, $ne: null } })
+  const lastOrder = await Order.findOne({
+    orderNumber: { $exists: true, $ne: null },
+  })
     .sort({ createdAt: -1 })
     .select("orderNumber")
     .lean();
@@ -62,62 +64,109 @@ const createOrder = async (distributorId, orderData) => {
     }
 
     const { items, totalAmount, totalCartons, totalPairs, date } = orderData;
-    const gstRate = typeof orderData.gstRate === 'number' ? orderData.gstRate : 5;
+    const gstRate =
+      typeof orderData.gstRate === "number" ? orderData.gstRate : 5;
 
     let discountPercentage = 0;
     let creditLimit = 0;
     if (distributor.distributorId) {
       const Distributor = require("../models/Distributor");
-      const distProfile = await Distributor.findById(distributor.distributorId).lean();
+      const distProfile = await Distributor.findById(
+        distributor.distributorId
+      ).lean();
       if (distProfile) {
         discountPercentage = distProfile.discountPercentage || 0;
-        creditLimit = typeof distProfile.creditLimit === 'number' ? distProfile.creditLimit : 0;
+        creditLimit =
+          typeof distProfile.creditLimit === "number"
+            ? distProfile.creditLimit
+            : 0;
       }
     }
 
     const discountAmount = (totalAmount * discountPercentage) / 100;
     const finalAmount = totalAmount - discountAmount;
-    const gstAmount = Math.round((finalAmount * gstRate) / 100 * 100) / 100;
+    const gstAmount = Math.round(((finalAmount * gstRate) / 100) * 100) / 100;
 
     // Credit limit validation — skip for pre-orders (not confirmed yet)
     const isPreOrder = orderData.orderType === "PREORDER";
     if (!isPreOrder) {
       if (creditLimit === 0) {
-        throw new Error("You have no credit limit to book an order. Please contact administrator.");
+        throw new Error(
+          "You have no credit limit to book an order. Please contact administrator."
+        );
       }
       const pendingOrders = await Order.aggregate([
-        { $match: { distributorId: distributor._id, status: { $nin: ["RECEIVED", "CANCELLED", "PRE_BOOKED", "CONFIRMED"] } } },
-        { $group: { _id: null, totalPending: { $sum: { $ifNull: ["$finalAmount", "$totalAmount"] } } } }
+        {
+          $match: {
+            distributorId: distributor._id,
+            status: {
+              $nin: ["RECEIVED", "CANCELLED", "PRE_BOOKED", "CONFIRMED"],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalPending: {
+              $sum: { $ifNull: ["$finalAmount", "$totalAmount"] },
+            },
+          },
+        },
       ]);
       const pendingValue = pendingOrders[0]?.totalPending || 0;
       if (pendingValue + finalAmount > creditLimit) {
         const available = creditLimit - pendingValue;
-        throw new Error(`Credit limit exceeded. Available credit: ₹${available > 0 ? available.toLocaleString() : 0}. Required: ₹${finalAmount.toLocaleString()}`);
+        throw new Error(
+          `Credit limit exceeded. Available credit: ₹${
+            available > 0 ? available.toLocaleString() : 0
+          }. Required: ₹${finalAmount.toLocaleString()}`
+        );
       }
     }
 
     // Use provided date or fallback to today
-    const orderDate =
-      date || new Date().toISOString().split("T")[0];
+    const orderDate = date || new Date().toISOString().split("T")[0];
 
     const orderType = orderData.orderType || "REGULAR";
-    const initialStatus = orderType === "PREORDER" ? "PRE_BOOKED" : "PENDING";
+    const initialStatus = orderType === "PREORDER" ? "PRE_BOOKED" : "BOOKED";
 
-    // orderNumber is generated only when admin BOOKs the order
-    // (prevents sequence gaps from cancelled/rejected pre-orders)
     // Sanitize items: ensure articleId/variantId are valid ObjectId strings
-    const sanitizedItems = (items || []).map(item => {
+    const sanitizedItems = (items || []).map((item) => {
       const sanitized = { ...item };
       // If variantId is not a valid 24-char hex ObjectId, strip it
-      if (sanitized.variantId && !mongoose.Types.ObjectId.isValid(sanitized.variantId)) {
+      if (
+        sanitized.variantId &&
+        !mongoose.Types.ObjectId.isValid(sanitized.variantId)
+      ) {
         delete sanitized.variantId;
       }
       // Ensure numeric fields are valid numbers
       sanitized.cartonCount = Number(sanitized.cartonCount) || 0;
-      sanitized.pairCount   = Number(sanitized.pairCount)   || 0;
-      sanitized.price       = Number(sanitized.price)       || 0;
+      sanitized.pairCount = Number(sanitized.pairCount) || 0;
+      sanitized.price = Number(sanitized.price) || 0;
       return sanitized;
     });
+
+    // Generate order number immediately for BOOKED orders
+    let orderNumber;
+    if (initialStatus === "BOOKED") {
+      try {
+        const distUser = await User.findById(distributorId)
+          .select("distributorId")
+          .lean();
+        let prefix = "OR";
+        if (distUser?.distributorId) {
+          const Distributor = require("../models/Distributor");
+          const dist = await Distributor.findById(distUser.distributorId)
+            .select("companyName")
+            .lean();
+          if (dist?.companyName) prefix = getCompanyPrefix(dist.companyName);
+        }
+        orderNumber = await generateNextOrderNumber(prefix);
+      } catch {
+        orderNumber = await generateNextOrderNumber("OR");
+      }
+    }
 
     const order = new Order({
       orderType,
@@ -125,6 +174,7 @@ const createOrder = async (distributorId, orderData) => {
       distributorName: distrName,
       date: orderDate,
       status: initialStatus,
+      ...(orderNumber ? { orderNumber } : {}),
       items: sanitizedItems,
       totalAmount: Number(totalAmount) || 0,
       totalCartons: Number(totalCartons) || 0,
@@ -139,9 +189,16 @@ const createOrder = async (distributorId, orderData) => {
     const savedOrder = await order.save();
 
     // Notify: new order placed
-    const distUser = await User.findById(savedOrder.distributorId).select("email phone").lean();
+    const distUser = await User.findById(savedOrder.distributorId)
+      .select("email phone")
+      .lean();
     notification.dispatch("ORDER_PLACED", {
-      data: { "Order": `#${savedOrder.orderNumber || savedOrder._id}`, "Distributor": savedOrder.distributorName, "Total CTN": savedOrder.totalCartons, "Amount": `₹${savedOrder.finalAmount || savedOrder.totalAmount}` },
+      data: {
+        Order: `#${savedOrder.orderNumber || savedOrder._id}`,
+        Distributor: savedOrder.distributorName,
+        "Total CTN": savedOrder.totalCartons,
+        Amount: `₹${savedOrder.finalAmount || savedOrder.totalAmount}`,
+      },
       distributorEmail: distUser?.email,
       distributorPhone: distUser?.phone,
       subject: `[Kore] New Order from ${savedOrder.distributorName}`,
@@ -150,17 +207,35 @@ const createOrder = async (distributorId, orderData) => {
     return savedOrder;
   } catch (error) {
     console.error("[createOrder] Error:", error.name, error.message);
-    if (error.errors) console.error("[createOrder] Validation errors:", JSON.stringify(error.errors, null, 2));
+    if (error.errors)
+      console.error(
+        "[createOrder] Validation errors:",
+        JSON.stringify(error.errors, null, 2)
+      );
     throw new Error(`Failed to create order: ${error.message}`);
   }
 };
 
 const normalizePage = (page) => Math.max(parseInt(page, 10) || 1, 1);
-const normalizeLimit = (limit) => Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+const normalizeLimit = (limit) =>
+  Math.min(Math.max(parseInt(limit, 10) || 10, 1), 2000);
 
 const PREORDER_STATUSES = ["PRE_BOOKED", "CONFIRMED"];
 
-const getOrdersByDistributor = async (distributorId, { page = 1, limit = 10, search = "", status = "", startDate, endDate, sortBy = "createdAt", sortDesc = "true", orderType = "" } = {}) => {
+const getOrdersByDistributor = async (
+  distributorId,
+  {
+    page = 1,
+    limit = 10,
+    search = "",
+    status = "",
+    startDate,
+    endDate,
+    sortBy = "createdAt",
+    sortDesc = "true",
+    orderType = "",
+  } = {}
+) => {
   try {
     const p = normalizePage(page);
     const l = normalizeLimit(limit);
@@ -186,49 +261,85 @@ const getOrdersByDistributor = async (distributorId, { page = 1, limit = 10, sea
       }
     }
     if (search) {
-      const cleanSearch = search.startsWith('#') ? search.slice(1) : search;
+      const cleanSearch = search.startsWith("#") ? search.slice(1) : search;
       q.$or = [
         { orderNumber: { $regex: cleanSearch, $options: "i" } },
         { distributorName: { $regex: cleanSearch, $options: "i" } },
       ];
     }
-    
-    const sortObj = { [sortBy]: (sortDesc === "true" || sortDesc === true) ? -1 : 1 };
+
+    const sortObj = {
+      [sortBy]: sortDesc === "true" || sortDesc === true ? -1 : 1,
+    };
 
     // Base query without search/status for global stats sidebar
-    const baseQ = { distributorId, status: { $nin: PREORDER_STATUSES } };
+    // Use ObjectId cast so the aggregate $match works correctly (Mongoose find() auto-casts, aggregate() does not)
+    const distObjId = new mongoose.Types.ObjectId(distributorId);
+    const baseQ = { distributorId: distObjId, status: { $nin: PREORDER_STATUSES } };
+    const preOrderQ = { distributorId: distObjId, status: { $in: PREORDER_STATUSES } };
 
-    const [items, total, allStats, statusAgg] = await Promise.all([
-      Order.find(q)
-        .sort(sortObj)
-        .skip(skip)
-        .limit(l)
-        .populate({
-          path: 'distributorId',
-          populate: { path: 'distributorId' }
-        })
-        .lean(),
-      Order.countDocuments(q),
-      Order.aggregate([
-        { $match: baseQ },
-        {
-          $group: {
-            _id: null,
-            totalSpent: { $sum: "$totalAmount" },
-            activeOrders: {
-              $sum: { $cond: [{ $ne: ["$status", "RECEIVED"] }, 1, 0] },
+    const [items, total, allStats, statusAgg, preOrderCount] =
+      await Promise.all([
+        Order.find(q)
+          .sort(sortObj)
+          .skip(skip)
+          .limit(l)
+          .populate({
+            path: "distributorId",
+            populate: { path: "distributorId" },
+          })
+          .lean(),
+        Order.countDocuments(q),
+        Order.aggregate([
+          { $match: baseQ },
+          {
+            $group: {
+              _id: null,
+              totalSpent: {
+                $sum: { $ifNull: ["$finalAmount", "$totalAmount"] },
+              },
+              totalPairs: { $sum: { $ifNull: ["$totalPairs", 0] } },
+              totalPaid: {
+                $sum: {
+                  $cond: [
+                    { $eq: ["$paymentStatus", "PAID"] },
+                    { $ifNull: ["$finalAmount", "$totalAmount"] },
+                    0,
+                  ],
+                },
+              },
+              activeOrders: {
+                $sum: {
+                  $cond: [
+                    {
+                      $in: [
+                        "$status",
+                        ["BOOKED", "PFD", "RFD", "OFD", "PARTIAL"],
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              total: { $sum: 1 },
             },
-            total: { $sum: 1 },
           },
-        },
-      ]),
-      Order.aggregate([
-        { $match: baseQ },
-        { $group: { _id: "$status", count: { $sum: 1 } } },
-      ]),
-    ]);
+        ]),
+        Order.aggregate([
+          { $match: baseQ },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ]),
+        Order.countDocuments(preOrderQ),
+      ]);
 
-    const stats = allStats[0] || { totalSpent: 0, activeOrders: 0, total: 0 };
+    const stats = allStats[0] || {
+      totalSpent: 0,
+      totalPairs: 0,
+      totalPaid: 0,
+      activeOrders: 0,
+      total: 0,
+    };
     const statusCounts = { total: stats.total || 0 };
     for (const s of statusAgg) statusCounts[s._id] = s.count;
 
@@ -241,7 +352,10 @@ const getOrdersByDistributor = async (distributorId, { page = 1, limit = 10, sea
         totalPages: Math.ceil(total / l),
         stats: {
           totalSpent: stats.totalSpent,
+          totalPairs: stats.totalPairs,
+          totalPaid: stats.totalPaid || 0,
           activeOrders: stats.activeOrders,
+          preOrderCount,
           statusCounts,
         },
       },
@@ -251,7 +365,16 @@ const getOrdersByDistributor = async (distributorId, { page = 1, limit = 10, sea
   }
 };
 
-const getAllOrders = async ({ page = 1, limit = 10, search = "", status = "", startDate, endDate, sortBy = "createdAt", sortDesc = "true" } = {}) => {
+const getAllOrders = async ({
+  page = 1,
+  limit = 10,
+  search = "",
+  status = "",
+  startDate,
+  endDate,
+  sortBy = "createdAt",
+  sortDesc = "true",
+} = {}) => {
   try {
     const p = normalizePage(page);
     const l = normalizeLimit(limit);
@@ -270,14 +393,16 @@ const getAllOrders = async ({ page = 1, limit = 10, search = "", status = "", st
       }
     }
     if (search) {
-      const cleanSearch = search.startsWith('#') ? search.slice(1) : search;
+      const cleanSearch = search.startsWith("#") ? search.slice(1) : search;
       q.$or = [
         { orderNumber: { $regex: cleanSearch, $options: "i" } },
         { distributorName: { $regex: cleanSearch, $options: "i" } },
       ];
     }
-    
-    const sortObj = { [sortBy]: (sortDesc === "true" || sortDesc === true) ? -1 : 1 };
+
+    const sortObj = {
+      [sortBy]: sortDesc === "true" || sortDesc === true ? -1 : 1,
+    };
 
     const [items, total, allStats] = await Promise.all([
       Order.find(q)
@@ -285,8 +410,8 @@ const getAllOrders = async ({ page = 1, limit = 10, search = "", status = "", st
         .skip(skip)
         .limit(l)
         .populate({
-          path: 'distributorId',
-          populate: { path: 'distributorId' }
+          path: "distributorId",
+          populate: { path: "distributorId" },
         })
         .lean(),
       Order.countDocuments(q),
@@ -324,39 +449,51 @@ const getAllOrders = async ({ page = 1, limit = 10, search = "", status = "", st
   }
 };
 
-const updateOrderStatus = async (orderId, status, {
-  billUrl = null,
-  invoiceUrl = null,
-  ewayBillUrl = null,
-  transportBillUrl = null,
-  receivingNoteUrl = null,
-  receiverName = null,
-  receiverMobile = null,
-  deliveryAgentName = null,
-  deliveryAgentMobile = null,
-  deliveryNote = null,
-  allocatedItems = null,
-  blockedItems = null,
-  // Booking commitment fields
-  expectedDispatchDate = null,
-  bookingPriority = null,
-  adminNote = null,
-  stockStatus = null,
-  blockReason = null,
-  // Dispatch fields — filled at BOOKED → PFD (CTN out-scan step)
-  vehicleNo = null,
-  lrNo = null,
-  transporterName = null,
-  eWayBillNo = null,
-  driverName = null,
-  driverMobile = null,
-  grossWeightKg = null,
-  outScannedCartons = null,
-} = {}) => {
+const updateOrderStatus = async (
+  orderId,
+  status,
+  {
+    billUrl = null,
+    invoiceUrl = null,
+    ewayBillUrl = null,
+    transportBillUrl = null,
+    receivingNoteUrl = null,
+    receiverName = null,
+    receiverMobile = null,
+    deliveryAgentName = null,
+    deliveryAgentMobile = null,
+    deliveryNote = null,
+    allocatedItems = null,
+    blockedItems = null,
+    // Booking commitment fields
+    expectedDispatchDate = null,
+    bookingPriority = null,
+    adminNote = null,
+    stockStatus = null,
+    blockReason = null,
+    // Dispatch fields — filled at BOOKED → PFD (CTN out-scan step)
+    vehicleNo = null,
+    lrNo = null,
+    transporterName = null,
+    eWayBillNo = null,
+    driverName = null,
+    driverMobile = null,
+    grossWeightKg = null,
+    outScannedCartons = null,
+  } = {}
+) => {
   try {
     const validStatuses = [
-      "PRE_BOOKED", "CONFIRMED",
-      "PENDING", "BOOKED", "PFD", "RFD", "OFD", "RECEIVED", "PARTIAL", "CANCELLED"
+      "PRE_BOOKED",
+      "CONFIRMED",
+      "PENDING",
+      "BOOKED",
+      "PFD",
+      "RFD",
+      "OFD",
+      "RECEIVED",
+      "PARTIAL",
+      "CANCELLED",
     ];
 
     if (!validStatuses.includes(status)) {
@@ -377,40 +514,46 @@ const updateOrderStatus = async (orderId, status, {
     if (receiverName) updateData.receiverName = receiverName;
     if (receiverMobile) updateData.receiverMobile = receiverMobile;
     // Delivery agent — filled at OFD step
-    if (deliveryAgentName)   updateData.deliveryAgentName   = deliveryAgentName;
-    if (deliveryAgentMobile) updateData.deliveryAgentMobile = deliveryAgentMobile;
-    if (deliveryNote)        updateData.deliveryNote        = deliveryNote;
+    if (deliveryAgentName) updateData.deliveryAgentName = deliveryAgentName;
+    if (deliveryAgentMobile)
+      updateData.deliveryAgentMobile = deliveryAgentMobile;
+    if (deliveryNote) updateData.deliveryNote = deliveryNote;
 
     // Dispatch fields — saved when BOOKED → PFD
     if (status === "PFD") {
-      if (vehicleNo)            updateData.vehicleNo            = vehicleNo;
-      if (lrNo)                 updateData.lrNo                 = lrNo;
-      if (transporterName)      updateData.transporterName      = transporterName;
-      if (eWayBillNo)           updateData.eWayBillNo           = eWayBillNo;
-      if (driverName)           updateData.driverName           = driverName;
-      if (driverMobile)         updateData.driverMobile         = driverMobile;
-      if (grossWeightKg)        updateData.grossWeightKg        = grossWeightKg;
-      if (outScannedCartons)    updateData.outScannedCartons    = outScannedCartons;
+      if (vehicleNo) updateData.vehicleNo = vehicleNo;
+      if (lrNo) updateData.lrNo = lrNo;
+      if (transporterName) updateData.transporterName = transporterName;
+      if (eWayBillNo) updateData.eWayBillNo = eWayBillNo;
+      if (driverName) updateData.driverName = driverName;
+      if (driverMobile) updateData.driverMobile = driverMobile;
+      if (grossWeightKg) updateData.grossWeightKg = grossWeightKg;
+      if (outScannedCartons) updateData.outScannedCartons = outScannedCartons;
       updateData.dispatchedAt = new Date();
     }
 
     // Booking commitment fields — saved when admin confirms (PENDING → BOOKED)
     if (status === "BOOKED") {
-      if (expectedDispatchDate) updateData.expectedDispatchDate = new Date(expectedDispatchDate);
-      if (bookingPriority)      updateData.bookingPriority      = bookingPriority;
-      if (adminNote !== null)   updateData.adminNote            = adminNote;
-      if (stockStatus)          updateData.stockStatus          = stockStatus;
-      if (blockReason !== null) updateData.blockReason          = blockReason;
+      if (expectedDispatchDate)
+        updateData.expectedDispatchDate = new Date(expectedDispatchDate);
+      if (bookingPriority) updateData.bookingPriority = bookingPriority;
+      if (adminNote !== null) updateData.adminNote = adminNote;
+      if (stockStatus) updateData.stockStatus = stockStatus;
+      if (blockReason !== null) updateData.blockReason = blockReason;
     }
 
     // Generate orderNumber when admin confirms (BOOKED) — keeps sequence clean
     if (status === "BOOKED" && !order.orderNumber) {
       try {
-        const distUser = await User.findById(order.distributorId).select("distributorId").lean();
+        const distUser = await User.findById(order.distributorId)
+          .select("distributorId")
+          .lean();
         let prefix = "OR";
         if (distUser?.distributorId) {
           const Distributor = require("../models/Distributor");
-          const dist = await Distributor.findById(distUser.distributorId).select("companyName").lean();
+          const dist = await Distributor.findById(distUser.distributorId)
+            .select("companyName")
+            .lean();
           if (dist?.companyName) prefix = getCompanyPrefix(dist.companyName);
         }
         updateData.orderNumber = await generateNextOrderNumber(prefix);
@@ -424,19 +567,25 @@ const updateOrderStatus = async (orderId, status, {
     if (isBlockingUpdate) {
       for (const blockedEntry of blockedItems) {
         const orderItem = order.items.find(
-          (item) => item.variantId.toString() === blockedEntry.variantId.toString()
+          (item) =>
+            item.variantId.toString() === blockedEntry.variantId.toString()
         );
 
         if (orderItem) {
-          const oldBlockedSizes = orderItem.blockedSizeQuantities ? Object.fromEntries(orderItem.blockedSizeQuantities) : {};
+          const oldBlockedSizes = orderItem.blockedSizeQuantities
+            ? Object.fromEntries(orderItem.blockedSizeQuantities)
+            : {};
           const newBlockedSizes = blockedEntry.blockedSizeQuantities || {};
 
           const catalogItem = await MasterCatalog.findById(orderItem.articleId);
           if (catalogItem) {
             const variant = catalogItem.variants.id(orderItem.variantId);
             if (variant && variant.sizeMap) {
-              const allSizes = new Set([...Object.keys(oldBlockedSizes), ...Object.keys(newBlockedSizes)]);
-              
+              const allSizes = new Set([
+                ...Object.keys(oldBlockedSizes),
+                ...Object.keys(newBlockedSizes),
+              ]);
+
               for (const size of allSizes) {
                 const oldVal = Number(oldBlockedSizes[size] || 0);
                 const newVal = Number(newBlockedSizes[size] || 0);
@@ -445,8 +594,14 @@ const updateOrderStatus = async (orderId, status, {
                 if (delta !== 0 && variant.sizeMap.has(size)) {
                   const currentSizeCell = variant.sizeMap.get(size);
                   // Deduct from Live Qty, Add to Blocked Qty
-                  currentSizeCell.qty = Math.max(0, (currentSizeCell.qty || 0) - delta);
-                  currentSizeCell.blockedQty = Math.max(0, (currentSizeCell.blockedQty || 0) + delta);
+                  currentSizeCell.qty = Math.max(
+                    0,
+                    (currentSizeCell.qty || 0) - delta
+                  );
+                  currentSizeCell.blockedQty = Math.max(
+                    0,
+                    (currentSizeCell.blockedQty || 0) + delta
+                  );
                   variant.sizeMap.set(size, currentSizeCell);
                 }
               }
@@ -454,8 +609,14 @@ const updateOrderStatus = async (orderId, status, {
             }
           }
 
-          orderItem.blockedCartonCount = Math.max(0, Number(blockedEntry.blockedCartonCount) || 0);
-          orderItem.blockedPairCount = Math.max(0, Number(blockedEntry.blockedPairCount) || 0);
+          orderItem.blockedCartonCount = Math.max(
+            0,
+            Number(blockedEntry.blockedCartonCount) || 0
+          );
+          orderItem.blockedPairCount = Math.max(
+            0,
+            Number(blockedEntry.blockedPairCount) || 0
+          );
           orderItem.blockedSizeQuantities = newBlockedSizes;
         }
       }
@@ -464,16 +625,21 @@ const updateOrderStatus = async (orderId, status, {
     }
 
     // Handle manual allocation when moving to / updating PFD or RFD
-    const isAllocationUpdate = ["PFD", "RFD", "BOOKED", "PARTIAL"].includes(status) || ["PFD", "RFD"].includes(order.status);
-    
+    const isAllocationUpdate =
+      ["PFD", "RFD", "BOOKED", "PARTIAL"].includes(status) ||
+      ["PFD", "RFD"].includes(order.status);
+
     if (isAllocationUpdate && allocatedItems && Array.isArray(allocatedItems)) {
       for (const allocatedItem of allocatedItems) {
         const orderItem = order.items.find(
-          (item) => item.variantId.toString() === allocatedItem.variantId.toString()
+          (item) =>
+            item.variantId.toString() === allocatedItem.variantId.toString()
         );
 
         if (orderItem) {
-          const oldBlockedSizes = orderItem.blockedSizeQuantities ? Object.fromEntries(orderItem.blockedSizeQuantities) : {};
+          const oldBlockedSizes = orderItem.blockedSizeQuantities
+            ? Object.fromEntries(orderItem.blockedSizeQuantities)
+            : {};
           const newAllocSizes = allocatedItem.allocatedSizeQuantities || {};
           const updatedBlockedSizes = { ...oldBlockedSizes };
 
@@ -489,23 +655,32 @@ const updateOrderStatus = async (orderId, status, {
 
             if (additionalNeeded > 0) {
               if (!catalogItem) {
-                throw new Error(`Cannot allocate ${req} pairs for size ${size}: catalog item not found.`);
+                throw new Error(
+                  `Cannot allocate ${req} pairs for size ${size}: catalog item not found.`
+                );
               }
               const variant = catalogItem.variants.id(orderItem.variantId);
               if (!variant || !variant.sizeMap || !variant.sizeMap.has(size)) {
-                throw new Error(`Cannot allocate ${req} pairs for size ${size}: size not found in catalog.`);
+                throw new Error(
+                  `Cannot allocate ${req} pairs for size ${size}: size not found in catalog.`
+                );
               }
               const cell = variant.sizeMap.get(size);
               const liveQty = Number(cell.qty || 0);
               if (additionalNeeded > liveQty) {
                 throw new Error(
                   `Cannot allocate ${req} pairs for size ${size}. ` +
-                  `Only ${alreadyBlocked + liveQty} pairs available (${alreadyBlocked} reserved + ${liveQty} in stock).`
+                    `Only ${
+                      alreadyBlocked + liveQty
+                    } pairs available (${alreadyBlocked} reserved + ${liveQty} in stock).`
                 );
               }
               // Move the needed qty from live → blocked in the catalog
               cell.qty = Math.max(0, liveQty - additionalNeeded);
-              cell.blockedQty = Math.max(0, (cell.blockedQty || 0) + additionalNeeded);
+              cell.blockedQty = Math.max(
+                0,
+                (cell.blockedQty || 0) + additionalNeeded
+              );
               variant.sizeMap.set(size, cell);
               updatedBlockedSizes[size] = alreadyBlocked + additionalNeeded;
               autoBlockApplied = true;
@@ -515,7 +690,9 @@ const updateOrderStatus = async (orderId, status, {
           if (autoBlockApplied && catalogItem) {
             await catalogItem.save();
             orderItem.blockedSizeQuantities = updatedBlockedSizes;
-            orderItem.blockedPairCount = Object.values(updatedBlockedSizes).reduce((s, v) => s + Number(v || 0), 0);
+            orderItem.blockedPairCount = Object.values(
+              updatedBlockedSizes
+            ).reduce((s, v) => s + Number(v || 0), 0);
             orderItem.blockedCartonCount = Math.max(
               orderItem.blockedCartonCount || 0,
               Number(allocatedItem.allocatedCartonCount) || 0
@@ -523,8 +700,14 @@ const updateOrderStatus = async (orderId, status, {
           }
 
           // Update allocated counts for the current batch
-          orderItem.allocatedCartonCount = Math.max(0, Number(allocatedItem.allocatedCartonCount) || 0);
-          orderItem.allocatedPairCount = Math.max(0, Number(allocatedItem.allocatedPairCount) || 0);
+          orderItem.allocatedCartonCount = Math.max(
+            0,
+            Number(allocatedItem.allocatedCartonCount) || 0
+          );
+          orderItem.allocatedPairCount = Math.max(
+            0,
+            Number(allocatedItem.allocatedPairCount) || 0
+          );
           orderItem.allocatedSizeQuantities = newAllocSizes;
         }
       }
@@ -549,7 +732,7 @@ const updateOrderStatus = async (orderId, status, {
             articleId: item.articleId,
             cartonCount: item.allocatedCartonCount,
             pairCount: item.allocatedPairCount,
-            sizeQuantities: item.allocatedSizeQuantities
+            sizeQuantities: item.allocatedSizeQuantities,
           });
 
           const perPairPrice = item.price / (item.pairCount || 1);
@@ -558,12 +741,18 @@ const updateOrderStatus = async (orderId, status, {
           batchPairs += item.allocatedPairCount;
 
           // update fulfilled counts
-          item.fulfilledCartonCount = (item.fulfilledCartonCount || 0) + item.allocatedCartonCount;
-          item.fulfilledPairCount = (item.fulfilledPairCount || 0) + item.allocatedPairCount;
-          
-          const fulfilledSizes = item.fulfilledSizeQuantities ? Object.fromEntries(item.fulfilledSizeQuantities) : {};
-          const currentAllocSizes = item.allocatedSizeQuantities ? Object.fromEntries(item.allocatedSizeQuantities) : {};
-          
+          item.fulfilledCartonCount =
+            (item.fulfilledCartonCount || 0) + item.allocatedCartonCount;
+          item.fulfilledPairCount =
+            (item.fulfilledPairCount || 0) + item.allocatedPairCount;
+
+          const fulfilledSizes = item.fulfilledSizeQuantities
+            ? Object.fromEntries(item.fulfilledSizeQuantities)
+            : {};
+          const currentAllocSizes = item.allocatedSizeQuantities
+            ? Object.fromEntries(item.allocatedSizeQuantities)
+            : {};
+
           for (const [size, qty] of Object.entries(currentAllocSizes)) {
             fulfilledSizes[size] = (fulfilledSizes[size] || 0) + qty;
           }
@@ -577,24 +766,38 @@ const updateOrderStatus = async (orderId, status, {
               for (const [size, qty] of Object.entries(currentAllocSizes)) {
                 if (variant.sizeMap.has(size)) {
                   const currentSizeCell = variant.sizeMap.get(size);
-                  currentSizeCell.blockedQty = Math.max(0, (currentSizeCell.blockedQty || 0) - Number(qty));
+                  currentSizeCell.blockedQty = Math.max(
+                    0,
+                    (currentSizeCell.blockedQty || 0) - Number(qty)
+                  );
                   variant.sizeMap.set(size, currentSizeCell);
                 }
               }
-              catalogItem.markModified('variants');
+              catalogItem.markModified("variants");
               await catalogItem.save();
             }
           }
 
           // Also reduce the order level blocked counts
-          const blockedSizes = item.blockedSizeQuantities ? Object.fromEntries(item.blockedSizeQuantities) : {};
+          const blockedSizes = item.blockedSizeQuantities
+            ? Object.fromEntries(item.blockedSizeQuantities)
+            : {};
           for (const [size, qty] of Object.entries(currentAllocSizes)) {
-            blockedSizes[size] = Math.max(0, (blockedSizes[size] || 0) - Number(qty));
+            blockedSizes[size] = Math.max(
+              0,
+              (blockedSizes[size] || 0) - Number(qty)
+            );
           }
-          
+
           item.blockedSizeQuantities = blockedSizes;
-          item.blockedCartonCount = Math.max(0, (item.blockedCartonCount || 0) - item.allocatedCartonCount);
-          item.blockedPairCount = Math.max(0, (item.blockedPairCount || 0) - item.allocatedPairCount);
+          item.blockedCartonCount = Math.max(
+            0,
+            (item.blockedCartonCount || 0) - item.allocatedCartonCount
+          );
+          item.blockedPairCount = Math.max(
+            0,
+            (item.blockedPairCount || 0) - item.allocatedPairCount
+          );
 
           // reset allocated counts for next batch AFTER using them for subtraction
           item.allocatedCartonCount = 0;
@@ -621,7 +824,7 @@ const updateOrderStatus = async (orderId, status, {
         transportBillUrl: order.transportBillUrl || transportBillUrl,
         receivingNoteUrl: receivingNoteUrl,
         receiverName: receiverName,
-        receiverMobile: receiverMobile
+        receiverMobile: receiverMobile,
       };
 
       if (!order.fulfillmentHistory) order.fulfillmentHistory = [];
@@ -634,7 +837,7 @@ const updateOrderStatus = async (orderId, status, {
       updateData.fulfillmentHistory = order.fulfillmentHistory;
       order.markModified("items");
       order.markModified("fulfillmentHistory");
-      
+
       // Clear current batch docs from main order fields after archive
       updateData.billUrl = null;
       updateData.invoiceUrl = null;
@@ -651,17 +854,19 @@ const updateOrderStatus = async (orderId, status, {
 
     // Re-populate for consistency
     const updatedOrder = await Order.findById(orderId).populate({
-      path: 'distributorId',
-      populate: { path: 'distributorId' }
+      path: "distributorId",
+      populate: { path: "distributorId" },
     });
 
     // ── Fire notification based on new status ──────────────────────────
-    const distUser = await User.findById(order.distributorId).select("email phone").lean();
+    const distUser = await User.findById(order.distributorId)
+      .select("email phone")
+      .lean();
     const notifData = {
       "Order #": updatedOrder.orderNumber || String(orderId),
-      "Distributor": updatedOrder.distributorName,
+      Distributor: updatedOrder.distributorName,
       "Total CTN": updatedOrder.totalCartons,
-      "Amount": `₹${updatedOrder.finalAmount || updatedOrder.totalAmount}`,
+      Amount: `₹${updatedOrder.finalAmount || updatedOrder.totalAmount}`,
     };
     const notifOpts = {
       data: notifData,
@@ -670,17 +875,18 @@ const updateOrderStatus = async (orderId, status, {
     };
 
     const statusEventMap = {
-      BOOKED:    "ORDER_BOOKED",
-      PFD:       "ORDER_DISPATCHED",
-      RFD:       "ORDER_IN_TRANSIT",
-      OFD:       "ORDER_OUT_FOR_DELIVERY",
-      RECEIVED:  "ORDER_DELIVERED",
+      BOOKED: "ORDER_BOOKED",
+      PFD: "ORDER_DISPATCHED",
+      RFD: "ORDER_IN_TRANSIT",
+      OFD: "ORDER_OUT_FOR_DELIVERY",
+      RECEIVED: "ORDER_DELIVERED",
     };
     const notifEvent = statusEventMap[status];
     if (notifEvent) {
       if (status === "OFD" && deliveryAgentName) {
         notifData["Delivery Agent"] = deliveryAgentName;
-        if (deliveryAgentMobile) notifData["Agent Mobile"] = deliveryAgentMobile;
+        if (deliveryAgentMobile)
+          notifData["Agent Mobile"] = deliveryAgentMobile;
       }
       notification.dispatch(notifEvent, notifOpts);
     }
@@ -696,7 +902,7 @@ const processReturn = async (orderId, returnData) => {
     const { items: returnItems, reason, batchNumber } = returnData;
     const order = await Order.findById(orderId);
     if (!order) throw new Error("Order not found");
-    
+
     const validStatuses = ["RECEIVED", "PARTIAL", "OFD"];
     if (!validStatuses.includes(order.status)) {
       throw new Error("Only orders with delivered items can be returned");
@@ -708,21 +914,27 @@ const processReturn = async (orderId, returnData) => {
 
     for (const retItem of returnItems) {
       const { variantId, cartons } = retItem;
-      const orderItem = order.items.find(item => item.variantId.toString() === variantId.toString());
-      if (!orderItem) throw new Error(`Item ${variantId} not found in this order`);
+      const orderItem = order.items.find(
+        (item) => item.variantId.toString() === variantId.toString()
+      );
+      if (!orderItem)
+        throw new Error(`Item ${variantId} not found in this order`);
 
       // Find the specific batch if provided
       let targetBatch = null;
       if (batchNumber) {
-        targetBatch = order.fulfillmentHistory.find(b => b.batchNumber === Number(batchNumber));
-        if (!targetBatch) throw new Error(`Batch #${batchNumber} not found in order history`);
-        
+        targetBatch = order.fulfillmentHistory.find(
+          (b) => b.batchNumber === Number(batchNumber)
+        );
+        if (!targetBatch)
+          throw new Error(`Batch #${batchNumber} not found in order history`);
+
         // Update batch-level returned count safely
-        const updatedItems = targetBatch.items.map(bi => {
+        const updatedItems = targetBatch.items.map((bi) => {
           if (bi.variantId.toString() === variantId.toString()) {
             return {
               ...bi.toObject(),
-              returnedCartonCount: (bi.returnedCartonCount || 0) + cartons
+              returnedCartonCount: (bi.returnedCartonCount || 0) + cartons,
             };
           }
           return bi;
@@ -732,8 +944,10 @@ const processReturn = async (orderId, returnData) => {
 
       // Proportional calculation for size restoration (based on this return's carton count)
       const ratio = cartons / (orderItem.cartonCount || 1);
-      const originalSizes = orderItem.sizeQuantities ? Object.fromEntries(orderItem.sizeQuantities) : {};
-      
+      const originalSizes = orderItem.sizeQuantities
+        ? Object.fromEntries(orderItem.sizeQuantities)
+        : {};
+
       const catalogItem = await MasterCatalog.findById(orderItem.articleId);
       if (!catalogItem) throw new Error("Article not found in catalog");
 
@@ -757,24 +971,32 @@ const processReturn = async (orderId, returnData) => {
             }
           }
         }
-        catalogItem.markModified('variants');
+        catalogItem.markModified("variants");
         await catalogItem.save();
       }
 
       // Update Order-level counts
-      orderItem.returnedCartonCount = (orderItem.returnedCartonCount || 0) + cartons;
-      orderItem.returnedPairCount = (orderItem.returnedPairCount || 0) + itemPairs;
-      
+      orderItem.returnedCartonCount =
+        (orderItem.returnedCartonCount || 0) + cartons;
+      orderItem.returnedPairCount =
+        (orderItem.returnedPairCount || 0) + itemPairs;
+
       // OPTIONAL: "Remove from fulfilled" as requested
-      orderItem.fulfilledCartonCount = Math.max(0, (orderItem.fulfilledCartonCount || 0) - cartons);
-      orderItem.fulfilledPairCount = Math.max(0, (orderItem.fulfilledPairCount || 0) - itemPairs);
+      orderItem.fulfilledCartonCount = Math.max(
+        0,
+        (orderItem.fulfilledCartonCount || 0) - cartons
+      );
+      orderItem.fulfilledPairCount = Math.max(
+        0,
+        (orderItem.fulfilledPairCount || 0) - itemPairs
+      );
 
       processedItems.push({
         variantId: orderItem.variantId,
         articleId: orderItem.articleId,
         cartonCount: cartons,
         pairCount: itemPairs,
-        sizeQuantities: returnSizeQuantities
+        sizeQuantities: returnSizeQuantities,
       });
 
       totalCartons += cartons;
@@ -793,7 +1015,7 @@ const processReturn = async (orderId, returnData) => {
       totalCartons,
       totalPairs,
       reason,
-      batchNumber // Store which batch this return belongs to
+      batchNumber, // Store which batch this return belongs to
     });
 
     // Finalize order updates
@@ -803,15 +1025,25 @@ const processReturn = async (orderId, returnData) => {
     order.markModified("items");
     order.markModified("fulfillmentHistory");
     await order.save();
-    
+
     await newReturn.save();
 
     activityLog.createLog({
       action: "RETURN_PROCESSED",
       entityType: "ORDER",
       entityId: String(orderId),
-      description: `Return ${returnNumber}: ${totalCartons} carton(s) / ${totalPairs} pairs returned from order ${order.orderNumber} (${order.distributorName})${reason ? ` — ${reason}` : ""}`,
-      metadata: { returnId: String(newReturn._id), returnNumber, orderId: String(orderId), orderNumber: order.orderNumber, totalCartons, totalPairs, reason },
+      description: `Return ${returnNumber}: ${totalCartons} carton(s) / ${totalPairs} pairs returned from order ${
+        order.orderNumber
+      } (${order.distributorName})${reason ? ` — ${reason}` : ""}`,
+      metadata: {
+        returnId: String(newReturn._id),
+        returnNumber,
+        orderId: String(orderId),
+        orderNumber: order.orderNumber,
+        totalCartons,
+        totalPairs,
+        reason,
+      },
     });
 
     return newReturn;
@@ -828,17 +1060,13 @@ const getReturnHistory = async ({ page = 1, limit = 10, search = "" } = {}) => {
       query.$or = [
         { returnNumber: { $regex: search, $options: "i" } },
         { distributorName: { $regex: search, $options: "i" } },
-        { orderNumber: { $regex: search, $options: "i" } }
+        { orderNumber: { $regex: search, $options: "i" } },
       ];
     }
 
     const [items, total] = await Promise.all([
-      Return.find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Return.countDocuments(query)
+      Return.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Return.countDocuments(query),
     ]);
 
     return {
@@ -847,8 +1075,8 @@ const getReturnHistory = async ({ page = 1, limit = 10, search = "" } = {}) => {
         total,
         page,
         limit,
-        totalPages: Math.ceil(total / limit)
-      }
+        totalPages: Math.ceil(total / limit),
+      },
     };
   } catch (error) {
     throw new Error(`Failed to fetch return history: ${error.message}`);
@@ -861,10 +1089,14 @@ const deleteOrder = async (orderId, requesterId, requesterRole) => {
   if (!order) throw new Error("Order not found");
 
   const canDelete = ["PENDING", "PRE_BOOKED"].includes(order.status);
-  if (!canDelete) throw new Error("Only PENDING or PRE_BOOKED orders can be deleted");
+  if (!canDelete)
+    throw new Error("Only PENDING or PRE_BOOKED orders can be deleted");
 
   // Distributors can only delete their own orders
-  if (requesterRole === "distributor" && String(order.distributorId) !== String(requesterId)) {
+  if (
+    requesterRole === "distributor" &&
+    String(order.distributorId) !== String(requesterId)
+  ) {
     throw new Error("Not authorized to delete this order");
   }
 
@@ -878,9 +1110,13 @@ const editOrder = async (orderId, requesterId, requesterRole, { items }) => {
   if (!order) throw new Error("Order not found");
 
   const canEdit = ["PENDING", "PRE_BOOKED"].includes(order.status);
-  if (!canEdit) throw new Error("Only PENDING or PRE_BOOKED orders can be edited");
+  if (!canEdit)
+    throw new Error("Only PENDING or PRE_BOOKED orders can be edited");
 
-  if (requesterRole === "distributor" && String(order.distributorId) !== String(requesterId)) {
+  if (
+    requesterRole === "distributor" &&
+    String(order.distributorId) !== String(requesterId)
+  ) {
     throw new Error("Not authorized to edit this order");
   }
 
@@ -888,38 +1124,45 @@ const editOrder = async (orderId, requesterId, requesterRole, { items }) => {
     throw new Error("At least one item required");
   }
 
-  const totalCartons   = items.reduce((s, i) => s + (i.cartonCount || 0), 0);
-  const totalPairs     = items.reduce((s, i) => s + (i.pairCount   || 0), 0);
-  const totalAmount    = items.reduce((s, i) => s + (i.price       || 0), 0);
+  const totalCartons = items.reduce((s, i) => s + (i.cartonCount || 0), 0);
+  const totalPairs = items.reduce((s, i) => s + (i.pairCount || 0), 0);
+  const totalAmount = items.reduce((s, i) => s + (i.price || 0), 0);
   const discountAmount = order.discountPercentage
-    ? Math.round(totalAmount * order.discountPercentage / 100 * 100) / 100
-    : (order.discountAmount || 0);
-  const finalAmount    = totalAmount - discountAmount;
-  const gstRate        = order.gstRate || 0;
-  const gstAmount      = gstRate > 0
-    ? Math.round(finalAmount * gstRate / 100 * 100) / 100
-    : (order.gstAmount || 0);
+    ? Math.round(((totalAmount * order.discountPercentage) / 100) * 100) / 100
+    : order.discountAmount || 0;
+  const finalAmount = totalAmount - discountAmount;
+  const gstRate = order.gstRate || 0;
+  const gstAmount =
+    gstRate > 0
+      ? Math.round(((finalAmount * gstRate) / 100) * 100) / 100
+      : order.gstAmount || 0;
 
-  order.items          = items;
-  order.totalCartons   = totalCartons;
-  order.totalPairs     = totalPairs;
-  order.totalAmount    = totalAmount;
+  order.items = items;
+  order.totalCartons = totalCartons;
+  order.totalPairs = totalPairs;
+  order.totalAmount = totalAmount;
   order.discountAmount = discountAmount;
-  order.finalAmount    = finalAmount;
-  order.gstAmount      = gstAmount;
+  order.finalAmount = finalAmount;
+  order.gstAmount = gstAmount;
   await order.save();
   return order;
 };
 
 // ── Pre-order: get all PRE_BOOKED / CONFIRMED ─────────────────────────────
-const getPreOrders = async ({ page = 1, limit = 20, search = "", status = "" } = {}) => {
+const getPreOrders = async ({
+  page = 1,
+  limit = 20,
+  search = "",
+  status = "",
+} = {}) => {
   const q = { orderType: "PREORDER" };
   if (status) q.status = status;
   else q.status = { $in: ["PRE_BOOKED", "CONFIRMED"] };
-  if (search) q.$or = [
-    { orderNumber: { $regex: search, $options: "i" } },
-    { distributorName: { $regex: search, $options: "i" } },
-  ];
+  if (search)
+    q.$or = [
+      { orderNumber: { $regex: search, $options: "i" } },
+      { distributorName: { $regex: search, $options: "i" } },
+    ];
 
   const total = await Order.countDocuments(q);
   const items = await Order.find(q)
@@ -928,7 +1171,10 @@ const getPreOrders = async ({ page = 1, limit = 20, search = "", status = "" } =
     .limit(limit)
     .lean();
 
-  return { items, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
+  return {
+    items,
+    meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+  };
 };
 
 // ── MRP / price propagation to PENDING + PRE_BOOKED orders ───────────────
@@ -946,22 +1192,25 @@ const propagatePriceUpdate = async (articleId, newPricePerPair) => {
 
   for (const order of orders) {
     let changed = false;
-    order.items.forEach(item => {
+    order.items.forEach((item) => {
       if (String(item.articleId) === String(articleId)) {
         item.price = newPricePerPair * item.pairCount;
         changed = true;
       }
     });
     if (changed) {
-      order.totalAmount    = order.items.reduce((s, i) => s + i.price, 0);
-      const disc           = order.discountPercentage
-        ? Math.round(order.totalAmount * order.discountPercentage / 100 * 100) / 100
-        : (order.discountAmount || 0);
+      order.totalAmount = order.items.reduce((s, i) => s + i.price, 0);
+      const disc = order.discountPercentage
+        ? Math.round(
+            ((order.totalAmount * order.discountPercentage) / 100) * 100
+          ) / 100
+        : order.discountAmount || 0;
       order.discountAmount = disc;
-      order.finalAmount    = order.totalAmount - disc;
+      order.finalAmount = order.totalAmount - disc;
       // Only recalculate gstAmount if this order has a gstRate stored
       if ((order.gstRate || 0) > 0) {
-        order.gstAmount = Math.round(order.finalAmount * order.gstRate / 100 * 100) / 100;
+        order.gstAmount =
+          Math.round(((order.finalAmount * order.gstRate) / 100) * 100) / 100;
       }
       order.markModified("items");
       await order.save();
@@ -976,18 +1225,19 @@ const getOrderStats = async () => {
     { $match: { status: { $nin: PREORDER_STATUSES } } },
     {
       $facet: {
-        byStatus: [
-          { $group: { _id: "$status", count: { $sum: 1 } } }
-        ],
-        byType: [
-          { $group: { _id: "$orderType", count: { $sum: 1 } } }
-        ],
+        byStatus: [{ $group: { _id: "$status", count: { $sum: 1 } } }],
+        byType: [{ $group: { _id: "$orderType", count: { $sum: 1 } } }],
         urgent: [
-          { $match: { bookingPriority: "URGENT", status: { $nin: ["RECEIVED", "CANCELLED"] } } },
-          { $count: "count" }
-        ]
-      }
-    }
+          {
+            $match: {
+              bookingPriority: "URGENT",
+              status: { $nin: ["RECEIVED", "CANCELLED"] },
+            },
+          },
+          { $count: "count" },
+        ],
+      },
+    },
   ]);
 
   const stats = { total: 0, urgent: 0 };

@@ -323,12 +323,13 @@ const getOrdersByDistributor = async (
                 },
               },
               total: { $sum: 1 },
+              totalCartons: { $sum: { $ifNull: ["$totalCartons", 0] } },
             },
           },
         ]),
         Order.aggregate([
           { $match: baseQ },
-          { $group: { _id: "$status", count: { $sum: 1 } } },
+          { $group: { _id: "$status", count: { $sum: 1 }, cartons: { $sum: "$totalCartons" } } },
         ]),
         Order.countDocuments(preOrderQ),
       ]);
@@ -339,9 +340,10 @@ const getOrdersByDistributor = async (
       totalPaid: 0,
       activeOrders: 0,
       total: 0,
+      totalCartons: 0,
     };
-    const statusCounts = { total: stats.total || 0 };
-    for (const s of statusAgg) statusCounts[s._id] = s.count;
+    const statusCounts = { total: stats.totalCartons || 0 };
+    for (const s of statusAgg) statusCounts[s._id] = s.cartons || 0;
 
     return {
       items,
@@ -1225,7 +1227,7 @@ const getOrderStats = async () => {
     { $match: { status: { $nin: PREORDER_STATUSES } } },
     {
       $facet: {
-        byStatus: [{ $group: { _id: "$status", count: { $sum: 1 } } }],
+        byStatus: [{ $group: { _id: "$status", count: { $sum: 1 }, cartons: { $sum: "$totalCartons" } } }],
         byType: [{ $group: { _id: "$orderType", count: { $sum: 1 } } }],
         urgent: [
           {
@@ -1240,11 +1242,15 @@ const getOrderStats = async () => {
     },
   ]);
 
-  const stats = { total: 0, urgent: 0 };
+  const stats = { total: 0, totalCartons: 0, urgent: 0 };
   const statusCounts = result[0]?.byStatus || [];
   for (const s of statusCounts) {
-    stats[s._id] = s.count;
-    if (!["CANCELLED"].includes(s._id)) stats.total += s.count;
+    stats[s._id] = s.cartons || 0;
+    stats[`${s._id}_orders`] = s.count;
+    if (!["CANCELLED"].includes(s._id)) {
+      stats.total += s.count;
+      stats.totalCartons += s.cartons || 0;
+    }
   }
   stats.urgent = result[0]?.urgent?.[0]?.count || 0;
   return stats;

@@ -135,7 +135,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
   const isAnyLoading = loading || globalLoading;
 
   const statCards = [
-    { label: 'Total',      val: statusCounts.total    || 0, color: 'text-slate-700',   bg: 'bg-slate-50',   border: 'border-slate-200', filter: 'ALL' as const },
+    { label: 'Total CTN',  val: statusCounts.total    || 0, color: 'text-slate-700',   bg: 'bg-slate-50',   border: 'border-slate-200', filter: 'ALL' as const },
     { label: 'Pending',    val: statusCounts.PENDING   || 0, color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-100',  filter: OrderStatus.PENDING   },
     { label: 'Booked',     val: statusCounts.BOOKED    || 0, color: 'text-indigo-600',  bg: 'bg-indigo-50',  border: 'border-indigo-100',filter: OrderStatus.BOOKED    },
     { label: 'Dispatched', val: statusCounts.PFD       || 0, color: 'text-amber-600',   bg: 'bg-amber-50',   border: 'border-amber-100', filter: OrderStatus.PFD       },

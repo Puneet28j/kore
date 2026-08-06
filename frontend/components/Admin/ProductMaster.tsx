@@ -77,6 +77,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   const [sizeRangeInput, setSizeRangeInput] = useState("");
   const [sizeRanges, setSizeRanges] = useState<SizeRangeEntry[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [excludedCombinations, setExcludedCombinations] = useState<Set<string>>(new Set());
 
   const [categories, setCategories] = useState<any[]>([]);
   const [brands, setBrands] = useState<any[]>([]);
@@ -144,10 +145,21 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       setSizeRanges(normalizedSizeRanges);
 
       if (item.variants) {
-        setVariants(item.variants.map((v: any) => ({
+        const mappedVariants = item.variants.map((v: any) => ({
           ...v,
           id: v.id || v._id,
-        })));
+        }));
+        setVariants(mappedVariants);
+
+        const existingCombos = new Set(mappedVariants.map((v: any) => `${v.color}|||${v.sizeRange}`));
+        const excludedSet = new Set<string>();
+        (item.selectedColors || []).forEach((color: string) => {
+          normalizedSizeRanges.forEach((rangeEntry) => {
+            const key = `${color}|||${rangeEntry.label}`;
+            if (!existingCombos.has(key)) excludedSet.add(key);
+          });
+        });
+        setExcludedCombinations(excludedSet);
       }
     };
 
@@ -258,6 +270,16 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           });
 
           setVariants(mappedVariants);
+
+          const existingCombos = new Set(mappedVariants.map((v) => `${v.color}|||${v.sizeRange}`));
+          const excludedSet = new Set<string>();
+          (item.productColors as string[]).forEach((color) => {
+            normalizedSizeRanges.forEach((rangeEntry) => {
+              const key = `${color}|||${rangeEntry.label}`;
+              if (!existingCombos.has(key)) excludedSet.add(key);
+            });
+          });
+          setExcludedCombinations(excludedSet);
         }
 
         isEditingDataLoaded.current = true;
@@ -328,14 +350,10 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           );
 
           if (existing) {
-            // Always keep itemName in sync with the current article name
-            newVariants.push({
-              ...existing,
-              itemName: formData.artname
-                ? `${formData.artname}-${color}-${rangeEntry.label}-${idx + 1}`
-                : existing.itemName,
-            });
+            newVariants.push({ ...existing }); // preserve user-edited itemName
           } else {
+            const comboKey = `${color}|||${rangeEntry.label}`;
+            if (excludedCombinations.has(comboKey)) return; // intentionally absent
             newVariants.push({
               id: `var-${color}-${rangeEntry.id}`,
               sizeRangeId: rangeEntry.id,
@@ -358,7 +376,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
       return newVariants;
     });
-  }, [editingId, selectedColors, sizeRanges, formData.artname, formData.mrp, formData.hsnCode]);
+  }, [editingId, selectedColors, sizeRanges, formData.artname, formData.mrp, formData.hsnCode, excludedCombinations]);
 
   const updateVariantField = (id: string, field: keyof Variant, value: any) => {
     setVariants((prev) =>
@@ -420,6 +438,12 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   };
 
   const removeVariant = (id: string) => {
+    const target = variants.find((v) => v.id === id);
+    if (target) {
+      setExcludedCombinations((prev) =>
+        new Set([...prev, `${target.color}|||${target.sizeRange}`])
+      );
+    }
     setVariants((prev) => prev.filter((v) => v.id !== id));
   };
 
@@ -529,7 +553,34 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     }
   };
 
+  const addRangeForColor = (color: string, rangeLabel: string) => {
+    if (!rangeLabel || !/^\d+-\d+$/.test(rangeLabel)) {
+      toast.error("Invalid range format. Use e.g. 2-4");
+      return;
+    }
+    const newEntry: SizeRangeEntry = { id: makeRangeId(), label: rangeLabel };
+    setSizeRanges((prev) => [...prev, newEntry]);
+    const otherColors = selectedColors.filter((c) => c !== color);
+    if (otherColors.length > 0) {
+      setExcludedCombinations((prev) => {
+        const next = new Set(prev);
+        otherColors.forEach((c) => next.add(`${c}|||${rangeLabel}`));
+        return next;
+      });
+    }
+  };
+
   const removeSizeRange = (id: string) => {
+    const toRemove = sizeRanges.find((r) => r.id === id);
+    if (toRemove) {
+      setExcludedCombinations((prev) => {
+        const next = new Set(prev);
+        for (const key of next) {
+          if (key.endsWith(`|||${toRemove.label}`)) next.delete(key);
+        }
+        return next;
+      });
+    }
     setSizeRanges((prev) => prev.filter((r) => r.id !== id));
   };
 
@@ -651,6 +702,13 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     setColorMedia((prev) => {
       const next = { ...prev };
       delete next[color];
+      return next;
+    });
+    setExcludedCombinations((prev) => {
+      const next = new Set(prev);
+      for (const key of next) {
+        if (key.startsWith(`${color}|||`)) next.delete(key);
+      }
       return next;
     });
   };
@@ -816,6 +874,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         setSizeRanges([]);
         setVariants([]);
         setColorMedia({});
+        setExcludedCombinations(new Set());
       }
     };
 
@@ -1635,6 +1694,23 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                             })}
                           </tbody>
                         </table>
+                      </div>
+
+                      {/* Add range only for this color */}
+                      <div className="flex items-center gap-2 mt-2">
+                        <input
+                          type="text"
+                          placeholder={`Add size range only for ${color} (e.g. 2-4)`}
+                          className="flex-1 p-2 text-xs border border-dashed border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-indigo-400 bg-slate-50"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              addRangeForColor(color, (e.target as HTMLInputElement).value.trim());
+                              (e.target as HTMLInputElement).value = "";
+                            }
+                          }}
+                        />
+                        <span className="text-[10px] text-slate-400 whitespace-nowrap">Press Enter</span>
                       </div>
                     </div>
                   );

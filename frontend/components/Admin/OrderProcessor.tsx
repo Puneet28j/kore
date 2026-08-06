@@ -147,14 +147,14 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({ articles, inventory, up
       {/* Stats Bar */}
       {(() => {
         const statCards = [
-          { label: 'Total',       val: stats.total      || 0, color: 'text-slate-700',   bg: 'bg-slate-50',   border: 'border-slate-200', filter: 'ALL'      as const },
-          { label: 'Pending',     val: stats.PENDING     || 0, color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-100',  filter: OrderStatus.PENDING   },
-          { label: 'Booked',      val: stats.BOOKED      || 0, color: 'text-indigo-600',  bg: 'bg-indigo-50',  border: 'border-indigo-100',filter: OrderStatus.BOOKED    },
-          { label: 'Dispatched',  val: stats.PFD         || 0, color: 'text-amber-600',   bg: 'bg-amber-50',   border: 'border-amber-100', filter: OrderStatus.PFD       },
-          { label: 'In Transit',  val: stats.RFD         || 0, color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-100',  filter: OrderStatus.RFD       },
-          { label: 'Out for Del', val: stats.OFD         || 0, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100',filter: OrderStatus.OFD      },
-          { label: 'Delivered',   val: stats.RECEIVED    || 0, color: 'text-green-700',   bg: 'bg-green-50',   border: 'border-green-100', filter: OrderStatus.RECEIVED  },
-          { label: 'Urgent',      val: stats.urgent      || 0, color: 'text-orange-600',  bg: 'bg-orange-50',  border: 'border-orange-100',filter: null },
+          { label: 'Total CTN',   val: stats.totalCartons || 0, color: 'text-slate-700',   bg: 'bg-slate-50',   border: 'border-slate-200', filter: 'ALL'      as const },
+          { label: 'Pending',     val: stats.PENDING      || 0, color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-100',  filter: OrderStatus.PENDING   },
+          { label: 'Booked',      val: stats.BOOKED       || 0, color: 'text-indigo-600',  bg: 'bg-indigo-50',  border: 'border-indigo-100',filter: OrderStatus.BOOKED    },
+          { label: 'Dispatched',  val: stats.PFD          || 0, color: 'text-amber-600',   bg: 'bg-amber-50',   border: 'border-amber-100', filter: OrderStatus.PFD       },
+          { label: 'In Transit',  val: stats.RFD          || 0, color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-100',  filter: OrderStatus.RFD       },
+          { label: 'Out for Del', val: stats.OFD          || 0, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100',filter: OrderStatus.OFD      },
+          { label: 'Delivered',   val: stats.RECEIVED     || 0, color: 'text-green-700',   bg: 'bg-green-50',   border: 'border-green-100', filter: OrderStatus.RECEIVED  },
+          { label: 'Urgent',      val: stats.urgent       || 0, color: 'text-orange-600',  bg: 'bg-orange-50',  border: 'border-orange-100',filter: null },
         ];
         return (
           <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">

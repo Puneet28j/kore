@@ -43,9 +43,9 @@ const BillDetails: React.FC<BillDetailsProps> = ({
   let recalculatedTotalTax = 0;
   po.items.forEach((item) => {
     const cartons = item.cartonCount || Math.floor((item.quantity || 0) / 24) || 0;
-    const totalPairs = cartons * 24;
-    const itemSubTotal = totalPairs * item.basePrice;
-    const itemTax = totalPairs * (item.taxRate || 0);
+    // basePrice/mrp are per carton — total is cartons × price/carton.
+    const itemSubTotal = cartons * item.basePrice;
+    const itemTax = itemSubTotal * ((item.taxRate || 0) / 100);
     recalculatedSubTotal += itemSubTotal;
     recalculatedTotalTax += itemTax;
   });
@@ -119,7 +119,7 @@ const BillDetails: React.FC<BillDetailsProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-                Bill - {po.poNumber}
+                Bill - {po.poNumber || "Pending Approval"}
               </h2>
               {po.isRevised && (
                 <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-indigo-600 text-white shadow-sm uppercase">
@@ -152,7 +152,7 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                 } catch {
                   v = undefined;
                 }
-                exportPOToPDF(bill, v, { isBill: true });
+                await exportPOToPDF(bill, v, { isBill: true });
               }}
               className="flex items-center gap-1 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-xl text-xs font-semibold hover:bg-emerald-100 transition-all"
             >
@@ -185,7 +185,7 @@ const BillDetails: React.FC<BillDetailsProps> = ({
             <div>
               <label className={labelClass}>PO Number</label>
               <div className={`${inputClass} bg-white cursor-text`}>
-                {po.poNumber}
+                {po.poNumber || "Pending Approval"}
               </div>
             </div>
             <div>
@@ -268,10 +268,10 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                     Tax Rate %
                   </th>
                   <th className="px-2 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider text-right">
-                    MRP (₹)
+                    MRP / Pair (₹)
                   </th>
                   <th className="px-2 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider text-right">
-                    Unit Price (₹)
+                    Unit Price / Pair (₹)
                   </th>
                   <th className="px-2 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider text-right">
                     Tax
@@ -284,9 +284,9 @@ const BillDetails: React.FC<BillDetailsProps> = ({
               <tbody className="divide-y divide-slate-100">
                 {po.items.map((item) => {
                   const cartons = item.cartonCount || Math.floor((item.quantity || 0) / 24) || 0;
-                  const totalPairs = cartons * 24;
-                  const calculatedTax = totalPairs * (item.taxRate || 0);
-                  const calculatedUnitTotal = totalPairs * item.basePrice;
+                  // basePrice/mrp are per carton — total is cartons × price/carton.
+                  const calculatedUnitTotal = cartons * item.basePrice;
+                  const calculatedTax = calculatedUnitTotal * ((item.taxRate || 0) / 100);
 
                   return (
                     <tr
@@ -339,17 +339,23 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                         </div>
                       </td>
 
-                      {/* MRP */}
+                      {/* MRP / Pair */}
                       <td className="px-2 py-3 text-right">
                         <div className="text-sm font-semibold text-slate-900">
-                          ₹{item.mrp?.toFixed(2) || "0.00"}
+                          ₹{((item.mrp || 0) / 24).toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          ₹{(item.mrp || 0).toFixed(2)}/ctn
                         </div>
                       </td>
 
-                      {/* Unit Price */}
+                      {/* Unit Price / Pair */}
                       <td className="px-2 py-3 text-right">
                         <div className="text-sm font-semibold text-slate-900">
-                          ₹{item.basePrice?.toFixed(2) || "0.00"}
+                          ₹{((item.basePrice || 0) / 24).toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          ₹{(item.basePrice || 0).toFixed(2)}/ctn
                         </div>
                       </td>
 

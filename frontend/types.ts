@@ -364,6 +364,7 @@ export interface PurchaseOrderItem {
   articleId: string;
   variantId: string;
   itemName: string;
+  color?: string;
   image: string;
   sku: string;
   skuCompany: string; // brand
@@ -387,7 +388,8 @@ export interface PurchaseOrder {
   id: string;
   vendorId: string;
   vendorName: string;
-  poNumber: string;
+  // Allocated only on bill approval — absent until then.
+  poNumber?: string;
   referenceNumber: string;
   date: string;
   deliveryDate: string;

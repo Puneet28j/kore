@@ -13,6 +13,7 @@ const PurchaseOrderItemSchema = new mongoose.Schema(
     variantId: { type: String, trim: true, default: "" },
 
     itemName: { type: String, trim: true, default: "" },
+    color: { type: String, trim: true, default: "" },
     image: { type: String, trim: true, default: "" },
 
     sku: { type: String, trim: true, default: "" },
@@ -53,7 +54,8 @@ const PurchaseOrderSchema = new mongoose.Schema(
     },
     vendorName: { type: String, trim: true, default: "", index: true },
 
-    poNumber: { type: String, required: true, trim: true },
+    // Allocated only on bill approval — absent (not "") until then.
+    poNumber: { type: String, trim: true },
     referenceNumber: { type: String, trim: true, default: "" },
 
     date: { type: Date, required: true, index: true },
@@ -99,7 +101,10 @@ const PurchaseOrderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-PurchaseOrderSchema.index({ poNumber: 1, isDeleted: 1 }, { unique: true });
+PurchaseOrderSchema.index(
+  { poNumber: 1, isDeleted: 1 },
+  { unique: true, partialFilterExpression: { poNumber: { $exists: true } } }
+);
 PurchaseOrderSchema.index({ isDeleted: 1, createdAt: -1 });
 PurchaseOrderSchema.index({ isDeleted: 1, status: 1, createdAt: -1 });
 PurchaseOrderSchema.index({ isDeleted: 1, vendorId: 1, createdAt: -1 });

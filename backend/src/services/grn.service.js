@@ -10,8 +10,14 @@ const todayYYMMDD = () => {
   return `${yy}${mm}${dd}`;
 };
 
-const makeCartonBarcode = (refType, refNo, serial) => {
-  // refNo: "1023" from "PO-1023"
+// Primary carton barcode: <Carton SKU>-CT<serial>, e.g. "Riv-blk-04-08-CT001".
+// Serial restarts at 1 for every new GRN draft (draft.cartonSerial / cartonIndex).
+const makeCartonBarcode = (cartonSku, serial) =>
+  `${cartonSku}-CT${String(serial).padStart(3, "0")}`;
+
+// Legacy format, kept only for the unused-by-UI single-pair scanPair path,
+// which has no catalog/variant context to derive a Carton SKU from.
+const makeLegacyCartonBarcode = (refType, refNo, serial) => {
   const dateStr = todayYYMMDD();
   return `CTN-${dateStr}-${refType}-${refNo}-${String(serial).padStart(
     3,
@@ -160,7 +166,7 @@ exports.scanPair = async (draftId, pairBarcodeRaw) => {
   // auto lock at 24
   if (draft.currentPairs.length === PAIRS_PER_CARTON) {
     const refNo = String(draft.refId).split("-")[1] || draft.refId; // "1023"
-    const cartonBarcode = makeCartonBarcode(
+    const cartonBarcode = makeLegacyCartonBarcode(
       draft.refType,
       refNo,
       draft.cartonSerial
@@ -193,7 +199,7 @@ exports.bulkScan = async (draftId, cartonsPayload) => {
 
   let modified = false;
   for (const carton of cartonsPayload) {
-    const { cartonIndex, pairBarcodes, itemName, variantId } = carton;
+    const { cartonIndex, pairBarcodes, itemName, variantId, cartonSku } = carton;
     if (!pairBarcodes || pairBarcodes.length === 0) continue;
 
     // Check for duplicates
@@ -201,9 +207,9 @@ exports.bulkScan = async (draftId, cartonsPayload) => {
       throw new Error(`Carton ${cartonIndex} for "${itemName}" has already been received in a previous GRN.`);
     }
 
-    // Use the explicit cartonIndex for the serial number
-    const refNo = String(draft.refId).split("-")[1] || draft.refId;
-    const cartonBarcode = makeCartonBarcode(draft.refType, refNo, cartonIndex || draft.cartonSerial);
+    // Carton SKU comes from the Master Catalog's "Carton SKU" (Channel & SKU) field,
+    // threaded through by the frontend; itemName is a defensive fallback only.
+    const cartonBarcode = makeCartonBarcode(cartonSku || itemName || "CTN", cartonIndex || draft.cartonSerial);
 
     draft.cartons.unshift({
       cartonBarcode,
@@ -468,11 +474,12 @@ exports.getReceivedCartons = async (refId) => {
       const key = c.variantId || c.itemName || (grn.articleName.includes(",") ? grn.articleName.split(",")[0].trim() : grn.articleName);
       if (!doneMap[key]) doneMap[key] = [];
       
-      // Extract serial from barcode e.g. CTN-260422-PO-1023-001 -> 0
-      const parts = (c.cartonBarcode || "").split("-");
-      const serialStr = parts[parts.length - 1]; // "001"
-      const serial = parseInt(serialStr, 10);
-      
+      // Extract serial from barcode e.g. "Riv-blk-04-08-CT001" -> 0.
+      // Match the trailing CT<digits> rather than splitting on "-", since the
+      // Carton SKU portion itself commonly contains dashes.
+      const match = (c.cartonBarcode || "").match(/CT(\d+)$/);
+      const serial = match ? parseInt(match[1], 10) : NaN;
+
       if (!isNaN(serial) && !doneMap[key].includes(serial - 1)) {
         doneMap[key].push(serial - 1);
       }
@@ -486,7 +493,7 @@ exports.getHistory = async (params = {}) => {
   const { search, dateFrom, dateTo, refId, vendor, sortBy, sortOrder } = params;
   const filter = { status: "SUBMITTED" };
 
-  // Text search across multiple fields
+  // Text search across multiple fields, including carton barcodes (e.g. "Riv-rog-04-08-CT001")
   if (search) {
     const regex = makeRegex(search);
     filter.$or = [
@@ -494,6 +501,7 @@ exports.getHistory = async (params = {}) => {
       { refId: regex },
       { articleName: regex },
       { vendorName: regex },
+      { "cartons.cartonBarcode": regex },
     ];
   }
 
@@ -545,6 +553,7 @@ exports.getHistoryForExport = async (params = {}) => {
       { refId: regex },
       { articleName: regex },
       { vendorName: regex },
+      { "cartons.cartonBarcode": regex },
     ];
   }
 

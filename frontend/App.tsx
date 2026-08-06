@@ -364,14 +364,14 @@ const App: React.FC = () => {
     const onPoCreated = (data: any) => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
-      toast.info(`PO #${data.poNumber} created`, { description: `Vendor: ${data.vendorName}`, duration: 4000 });
+      toast.info(data.poNumber ? `PO #${data.poNumber} created` : "PO created", { description: `Vendor: ${data.vendorName}`, duration: 4000 });
       window.dispatchEvent(new CustomEvent("poRefetch"));
     };
 
     const onPoUpdated = (data: any) => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
-      toast.info(`PO #${data.poNumber} updated`, { duration: 3000 });
+      toast.info(data.poNumber ? `PO #${data.poNumber} updated` : "PO updated", { duration: 3000 });
       window.dispatchEvent(new CustomEvent("poRefetch"));
     };
 

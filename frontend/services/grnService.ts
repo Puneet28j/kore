@@ -22,6 +22,9 @@ export type MockPOItem = {
   sizeRange: string;
   cartonCount: number;
   sizeMap: Record<string, MockSizeData>;
+  // Carton-level SKU (Master Catalog's "Channel & SKU" field), used to build
+  // the carton barcode as "<sku>CT001".
+  sku: string;
 };
 
 export type MockPODetail = {
@@ -95,6 +98,7 @@ export const grnService = {
         sizeRange: "Variable",
         cartonCount: itemCartons,
         sizeMap: sizeMapData,
+        sku: it.sku || "",
       };
     });
 
@@ -173,7 +177,7 @@ export const grnService = {
     if (!draftRes.data || !draftRes.data._id) throw new Error("Failed to create GRN Draft");
     const draftId = draftRes.data._id;
 
-    const scannedCartons: { cartonIndex: number; itemName: string; variantId: string; pairBarcodes: string[] }[] = [];
+    const scannedCartons: { cartonIndex: number; itemName: string; variantId: string; cartonSku: string; pairBarcodes: string[] }[] = [];
     const scannedItemNames: string[] = [];
 
     Object.keys(scanState).forEach((scanKey) => {
@@ -197,6 +201,7 @@ export const grnService = {
             cartonIndex: cIdx + 1,
             itemName: poItem.itemName,
             variantId: poItem.variantId,
+            cartonSku: poItem.sku || poItem.itemName,
             pairBarcodes: cartonPairs,
           });
         }

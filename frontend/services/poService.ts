@@ -12,10 +12,6 @@ export const poService = {
     return apiFetch(`/purchase-orders${queryString}`);
   },
 
-  async getNextPONumber() {
-    return apiFetch("/purchase-orders/next-number");
-  },
-
   async createPO(data: Partial<PurchaseOrder>) {
     return apiFetch("/purchase-orders", {
       method: "POST",

@@ -61,7 +61,7 @@ const Bill: React.FC = () => {
     const q = searchTerm.toLowerCase().trim();
     if (!q) return true;
     return (
-      bill.poNumber.toLowerCase().includes(q) ||
+      (bill.poNumber || "").toLowerCase().includes(q) ||
       bill.vendorName.toLowerCase().includes(q)
     );
   });
@@ -73,7 +73,7 @@ const Bill: React.FC = () => {
     list.forEach((b) => {
       rows.push([
         new Date(b.date).toLocaleDateString("en-IN"),
-        b.poNumber,
+        b.poNumber || "Pending Approval",
         b.vendorName,
         b.total?.toString() || "",
         b.billStatus,
@@ -138,7 +138,7 @@ const Bill: React.FC = () => {
     // Table
     const body = list.map((b) => [
       new Date(b.date).toLocaleDateString("en-IN"),
-      b.poNumber,
+      b.poNumber || "Pending Approval",
       b.vendorName,
       b.total?.toLocaleString("en-IN", {
         minimumFractionDigits: 2,
@@ -308,9 +308,15 @@ const Bill: React.FC = () => {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-col gap-1">
-                        <span className="font-bold text-slate-900 text-sm group-hover:text-emerald-600 transition-colors">
-                          {bill.poNumber}
-                        </span>
+                        {bill.poNumber ? (
+                          <span className="font-bold text-slate-900 text-sm group-hover:text-emerald-600 transition-colors">
+                            {bill.poNumber}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center w-fit px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 uppercase tracking-tight">
+                            Pending Approval
+                          </span>
+                        )}
                         {bill.isRevised && (
                           <span className="inline-flex items-center w-fit px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-700 border border-indigo-200 uppercase tracking-tight">
                             Revised {bill.revisionCount ? `(v${bill.revisionCount})` : ""}
@@ -360,7 +366,7 @@ const Bill: React.FC = () => {
                             } catch {
                               v = undefined;
                             }
-                            exportPOToPDF(bill, v, { isBill: true });
+                            await exportPOToPDF(bill, v, { isBill: true });
                           }}
                           className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-xl transition-all inline-flex items-center gap-1 font-semibold text-xs"
                           title="Download PDF"

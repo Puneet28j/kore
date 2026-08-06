@@ -106,7 +106,9 @@ interface CsvConflict {
     | "auto-rename"         // Name was auto-suffixed due to assortment collision
     | "duplicate-sku"       // Same sku_ctn used in multiple articles
     | "zero-mrp"            // Online/offline row has MRP = 0
-    | "csv-duplicate-row";  // Exact duplicate rows in CSV (auto-merged)
+    | "csv-duplicate-row"   // Exact duplicate rows in CSV (auto-merged)
+    | "db-full-duplicate"   // Every color+sizeRange+assortment in group already exists in DB — nothing to import
+    | "db-partial-duplicate"; // Some color+sizeRange+assortment combos already exist in DB — those rows are skipped
   detail: string;
   resolution: ConflictResolution;
 }
@@ -153,6 +155,17 @@ function extractSizeQty(row: CsvRow): Record<string, number> {
     }
   });
   return result;
+}
+
+// Variant uniqueness key: color + sizeRange + assortment + tag
+// Tag included so "Black 5-10 online" and "Black 5-10 offline" are treated as distinct variants
+function makeVariantKey(r: CsvRow): string {
+  return `${(r.color || "").toLowerCase().trim()}|||${(r.size || "").trim()}|||${assortFp(extractSizeQty(r))}|||${(r.tag || "online").toLowerCase().trim()}`;
+}
+
+// Same composite key, built from an existing DB variant instead of a CSV row
+function existingVariantKey(v: { color?: string; sizeRange?: string; sizeQuantities?: Record<string, number>; tag?: string }): string {
+  return `${(v.color || "").toLowerCase().trim()}|||${(v.sizeRange || "").trim()}|||${assortFp(v.sizeQuantities || {})}|||${(v.tag || "online").toLowerCase()}`;
 }
 
 // Kids-aware size sort: zero-padded junior sizes (01, 02) sort AFTER 13
@@ -405,6 +418,49 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       }
     });
 
+    // ── DB duplicate check: 100% match on name + color + size range + size assortment ──
+    Object.entries(groups).forEach(([key, groupRows]) => {
+      const [name, stage] = key.split("|||");
+      const existingMaster = articles.find(
+        a =>
+          a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
+          (a.status || "AVAILABLE") === stage
+      );
+      if (!existingMaster) return; // brand new article — nothing in DB to compare against
+
+      const existingVariantKeys = new Set(
+        (existingMaster.variants || []).map(existingVariantKey)
+      );
+
+      const rowsWithVariant = groupRows.filter(r => r.color && r.size);
+      const duplicateRows = rowsWithVariant.filter(r => existingVariantKeys.has(makeVariantKey(r)));
+      const newRows = rowsWithVariant.filter(r => !existingVariantKeys.has(makeVariantKey(r)));
+      if (!duplicateRows.length) return; // no overlap with existing variants
+
+      const duplicateLabels = Array.from(new Set(duplicateRows.map(r => `${r.color} ${r.size}`)));
+
+      if (newRows.length === 0) {
+        // Every row in this group is an exact match (name + color + size range + assortment) → 100% duplicate
+        if (!conflicts.find(c => c.key === key)) {
+          conflicts.push({
+            key, name,
+            csvStage: stage as "AVAILABLE" | "WISHLIST",
+            type: "db-full-duplicate",
+            detail: `"${name}" is a 100% duplicate — every color+size combo (${duplicateLabels.join(", ")}) already exists in the catalogue with the same assortment. Nothing new to import.`,
+            resolution: "skip",
+          });
+        }
+      } else {
+        conflicts.push({
+          key: `⚠dbdup:${key}`, name,
+          csvStage: stage as "AVAILABLE" | "WISHLIST",
+          type: "db-partial-duplicate",
+          detail: `"${name}" — ${duplicateLabels.length} variant(s) already exist and will be skipped on import: ${duplicateLabels.join(", ")}.`,
+          resolution: "info",
+        });
+      }
+    });
+
     // ── D1/D2: Zero MRP → info warning ────────────────────────────────────
     const zeroMrpByArticle: Record<string, string[]> = {};
     processedRows.forEach(r => {
@@ -614,11 +670,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           };
         };
 
-        // Variant uniqueness key: color + sizeRange + assortment + tag
-        // Tag included so "Black 5-10 online" and "Black 5-10 offline" are treated as distinct variants
-        const makeVariantKey = (r: CsvRow) =>
-          `${(r.color || "").toLowerCase().trim()}|||${(r.size || "").trim()}|||${assortFp(extractSizeQty(r))}|||${(r.tag || "online").toLowerCase().trim()}`;
-
         // Deduplicate CSV rows before building variants (prevents duplicate variants in DB on new article create)
         const seenVariantKeys = new Set<string>();
         const variants = rows.filter(r => {
@@ -663,9 +714,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           // Same color + same sizeRange + same assortment + DIFFERENT tag → new variant (OK, online vs offline)
           // Same color + same sizeRange + same assortment + same tag → true duplicate (skip)
           const existingVariantKeys = new Set(
-            (existingMaster.variants || []).map(v =>
-              `${(v.color || "").toLowerCase().trim()}|||${(v.sizeRange || "").trim()}|||${assortFp(v.sizeQuantities || {})}|||${(v.tag || "online").toLowerCase()}`
-            )
+            (existingMaster.variants || []).map(existingVariantKey)
           );
 
           const duplicateRows = rows.filter(r => r.color && existingVariantKeys.has(makeVariantKey(r)));
@@ -688,7 +737,27 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           }
 
           // ── Build variants ONLY for new color+sizeRange combos ──────
-          const newVariantsOnly = newRows.filter(r => r.color && r.size).map(buildVariant);
+          // A new row can share color+sizeRange with an existing variant while having a
+          // DIFFERENT assortment — that's not a duplicate (handled above), but its default
+          // itemName (`${name}-${color}-${size}`) would collide with the existing variant's.
+          // Disambiguate by suffixing -A, -B, -C... based on how many variants already
+          // occupy that color+sizeRange slot (existing DB variants + earlier rows in this batch).
+          const colorSizeOccurrences: Record<string, number> = {};
+          (existingMaster.variants || []).forEach(v => {
+            const csKey = `${(v.color || "").toLowerCase().trim()}|||${(v.sizeRange || "").trim()}`;
+            colorSizeOccurrences[csKey] = (colorSizeOccurrences[csKey] || 0) + 1;
+          });
+          const SUFFIX_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+          const newVariantsOnly = newRows.filter(r => r.color && r.size).map(r => {
+            const variant = buildVariant(r);
+            const csKey = `${(r.color || "").toLowerCase().trim()}|||${(r.size || "").trim()}`;
+            const priorCount = colorSizeOccurrences[csKey] || 0;
+            if (priorCount > 0) {
+              variant.itemName = `${variant.itemName}-${SUFFIX_LETTERS[priorCount - 1] || priorCount}`;
+            }
+            colorSizeOccurrences[csKey] = priorCount + 1;
+            return variant;
+          });
 
           // ── Merge: preserve existing variants with their inventory ───
           const existingVariants = (existingMaster.variants || []).map(v => ({
@@ -1885,13 +1954,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     ? "bg-rose-50 border-rose-200 text-rose-800"
                                     : conflict.type === "auto-rename"
                                       ? "bg-purple-50 border-purple-200 text-purple-800"
-                                      : "bg-amber-50 border-amber-200 text-amber-800"
+                                      : conflict.type === "db-full-duplicate"
+                                        ? "bg-slate-100 border-slate-300 text-slate-700"
+                                        : "bg-amber-50 border-amber-200 text-amber-800"
                                 }`}
                               >
                                 <div className="flex-1">
                                   <p className="font-black text-[10px] uppercase tracking-wider mb-0.5 opacity-60">
                                     {conflict.type === "db-cross-stage" ? "DB Conflict"
                                       : conflict.type === "auto-rename" ? "Auto Renamed"
+                                      : conflict.type === "db-full-duplicate" ? "100% Duplicate"
                                       : "Both Stages"}
                                   </p>
                                   <p className="leading-relaxed">{conflict.detail}</p>
@@ -1941,12 +2013,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     ? "bg-orange-50 border-orange-200 text-orange-800"
                                     : conflict.type === "zero-mrp"
                                       ? "bg-yellow-50 border-yellow-200 text-yellow-800"
-                                      : "bg-slate-50 border-slate-200 text-slate-500"
+                                      : conflict.type === "db-partial-duplicate"
+                                        ? "bg-slate-50 border-slate-200 text-slate-600"
+                                        : "bg-slate-50 border-slate-200 text-slate-500"
                                 }`}
                               >
                                 <p className="font-black text-[10px] uppercase tracking-wider mb-0.5 opacity-50">
                                   {conflict.type === "duplicate-sku" ? "Duplicate SKU"
                                     : conflict.type === "zero-mrp" ? "Zero MRP"
+                                    : conflict.type === "db-partial-duplicate" ? "Partial Duplicate"
                                     : "Duplicate Row (auto-merged)"}
                                 </p>
                                 <p className="leading-relaxed">{conflict.detail}</p>

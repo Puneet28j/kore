@@ -139,6 +139,19 @@ const GRN: React.FC = () => {
   // Track which cartons are already GRN'd (from previous submissions) - stores array of 0-based indices
   const [doneCartons, setDoneCartons] = useState<Record<string, number[]>>({}); // itemName -> array of done carton indices
 
+  // Cartons that hit 24 pairs AND have had their printed label re-scanned to confirm.
+  // Only confirmed cartons count toward being submittable.
+  const [confirmedCartons, setConfirmedCartons] = useState<Record<string, number[]>>({});
+  const [cartonConfirmPopup, setCartonConfirmPopup] = useState<{
+    scanKey: string;
+    itemLabel: string;
+    cartonIdx: number;
+    barcode: string;
+    inputValue: string;
+    error: string;
+  } | null>(null);
+  const confirmInputRef = useRef<HTMLInputElement>(null);
+
   // Collapsible state for items in All Items Status
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
 
@@ -518,6 +531,14 @@ const GRN: React.FC = () => {
     }
   }, [selectedItem, currentCartonIdx]);
 
+  /* ── Auto-focus the label-confirm input when the popup opens ── */
+  useEffect(() => {
+    if (cartonConfirmPopup) {
+      const t = setTimeout(() => confirmInputRef.current?.focus(), 80);
+      return () => clearTimeout(t);
+    }
+  }, [cartonConfirmPopup]);
+
   const sizes = useMemo(() => {
     if (!selectedItem) return [];
     return Object.keys(selectedItem.sizeMap).sort(
@@ -693,17 +714,51 @@ const GRN: React.FC = () => {
     setScanInput("");
     scanInputRef.current?.focus();
 
-    // Check if carton is now full — notify but DO NOT auto-advance
+    // Check if carton is now full — pause and require a label-confirm scan
+    // before it counts toward submission (see confirmCartonLabel below).
     const newCartonTotal = Object.values({...currentCartonScan, [size]: (currentCartonScan?.[size] || 0) + 1})
       .reduce((s, q) => s + q, 0);
-    
+
     if (newCartonTotal >= 24) {
-      if (currentCartonIdx < (selectedItem.cartonCount || 1) - 1) {
-        toast.success(`✅ Carton ${currentCartonIdx + 1} complete! Moving to next carton...`);
-        setTimeout(() => setCurrentCartonIdx(prev => prev + 1), 300);
-      } else {
-        toast.success("All cartons for this item are complete!");
-      }
+      const cartonSku = selectedItem.sku || selectedItem.itemName;
+      const barcode = `${cartonSku}-CT${String(currentCartonIdx + 1).padStart(3, "0")}`;
+      setCartonConfirmPopup({
+        scanKey: selectedItemName,
+        itemLabel: selectedItem.itemName,
+        cartonIdx: currentCartonIdx,
+        barcode,
+        inputValue: "",
+        error: "",
+      });
+    }
+  };
+
+  /* ── Confirm a completed carton's printed label ── */
+  const confirmCartonLabel = () => {
+    if (!cartonConfirmPopup) return;
+    const typed = cartonConfirmPopup.inputValue.trim();
+    if (!typed) return;
+
+    if (typed !== cartonConfirmPopup.barcode) {
+      setCartonConfirmPopup({ ...cartonConfirmPopup, error: "Barcode doesn't match — check the printed label and rescan.", inputValue: "" });
+      return;
+    }
+
+    const { scanKey, cartonIdx } = cartonConfirmPopup;
+    setConfirmedCartons((prev) => {
+      const existing = prev[scanKey] || [];
+      if (existing.includes(cartonIdx)) return prev;
+      return { ...prev, [scanKey]: [...existing, cartonIdx] };
+    });
+
+    toast.success(`✅ Carton ${cartonIdx + 1} confirmed via label scan!`);
+    setCartonConfirmPopup(null);
+
+    const item = allPOItems.find((i) => i._scanKey === scanKey);
+    if (item && cartonIdx < (item.cartonCount || 1) - 1) {
+      setCurrentCartonIdx(cartonIdx + 1);
+    } else {
+      toast.success("All cartons for this item are complete!");
     }
   };
 
@@ -828,18 +883,21 @@ const GRN: React.FC = () => {
     if (overallProgress.scanned === 0) return false;
     if (!grnFormComplete) return false;
 
-    // Every started carton MUST be fully scanned (24 pairs)
+    // Every started carton MUST be fully scanned (24 pairs) AND have its
+    // printed label confirmed via rescan before the GRN can be submitted.
     for (const item of allPOItems) {
       const cartons = scanState[item._scanKey];
       if (!cartons) continue;
+      const confirmed = confirmedCartons[item._scanKey] || [];
       for (let i = 0; i < cartons.length; i++) {
         const prog = getCartonProgress(item._scanKey, i);
         if (prog.scanned > 0 && prog.scanned < 24) return false;
+        if (prog.scanned >= 24 && !confirmed.includes(i)) return false;
       }
     }
 
     return true;
-  }, [poDetail, overallProgress, scanState, grnFormComplete, allPOItems]);
+  }, [poDetail, overallProgress, scanState, grnFormComplete, allPOItems, confirmedCartons]);
 
   const submitGRN = async () => {
     if (!canSubmit || !poDetail) return;
@@ -1354,15 +1412,16 @@ const GRN: React.FC = () => {
                           <CartonProgressRing scanned={scannedCount} total={24} />
 
                           {/* Chip strip + legend */}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between mb-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-2 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
                               <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                                 Carton {currentCartonIdx + 1} / {selectedItem.cartonCount || 1}
                               </p>
-                              <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-wider text-slate-400">
-                                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded bg-emerald-500" /> Done</span>
-                                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded bg-indigo-500 ring-1 ring-indigo-300" /> Active</span>
-                                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded bg-amber-400" /> Partial</span>
+                              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 shrink-0 rounded bg-emerald-500" /> Confirmed</span>
+                                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 shrink-0 rounded bg-orange-500" /> Label pending</span>
+                                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 shrink-0 rounded bg-indigo-500 ring-1 ring-indigo-300" /> Active</span>
+                                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 shrink-0 rounded bg-amber-400" /> Partial</span>
                               </div>
                             </div>
                             <div className="flex flex-wrap gap-1.5">
@@ -1370,13 +1429,17 @@ const GRN: React.FC = () => {
                                 const doneIndices = doneCartons[getDoneKey(selectedItem)] || [];
                                 const isPreviouslyDone = doneIndices.includes(cIdx);
                                 const prog = getCartonProgress(selectedItemName, cIdx);
-                                const isDone = isPreviouslyDone || prog.scanned >= 24;
+                                const isComplete = prog.scanned >= 24;
+                                const isConfirmed = (confirmedCartons[selectedItemName] || []).includes(cIdx);
+                                const isAwaitingLabel = !isPreviouslyDone && isComplete && !isConfirmed;
+                                const isDone = isPreviouslyDone || (isComplete && isConfirmed);
                                 const isActive = cIdx === currentCartonIdx;
-                                const isPartial = !isDone && !isActive && prog.scanned > 0;
+                                const isPartial = !isDone && !isAwaitingLabel && !isActive && prog.scanned > 0;
 
                                 let chipClass = "bg-slate-100 text-slate-500 hover:bg-slate-200";
                                 if (isPreviouslyDone) chipClass = "bg-emerald-500 text-white cursor-not-allowed opacity-70";
                                 else if (isDone) chipClass = "bg-emerald-500 text-white";
+                                else if (isAwaitingLabel) chipClass = "bg-orange-500 text-white animate-pulse";
                                 else if (isActive) chipClass = "bg-indigo-500 text-white ring-2 ring-indigo-300 ring-offset-1";
                                 else if (isPartial) chipClass = "bg-amber-400 text-white";
 
@@ -1385,8 +1448,22 @@ const GRN: React.FC = () => {
                                     key={cIdx}
                                     type="button"
                                     disabled={isPreviouslyDone}
-                                    onClick={() => { if (!isPreviouslyDone) setCurrentCartonIdx(cIdx); }}
-                                    title={`Carton ${cIdx + 1} — ${isPreviouslyDone ? "Already GRN'd" : `${prog.scanned}/24 scanned`}`}
+                                    onClick={() => {
+                                      if (isPreviouslyDone) return;
+                                      setCurrentCartonIdx(cIdx);
+                                      if (isAwaitingLabel) {
+                                        const cartonSku = selectedItem.sku || selectedItem.itemName;
+                                        setCartonConfirmPopup({
+                                          scanKey: selectedItemName,
+                                          itemLabel: selectedItem.itemName,
+                                          cartonIdx: cIdx,
+                                          barcode: `${cartonSku}-CT${String(cIdx + 1).padStart(3, "0")}`,
+                                          inputValue: "",
+                                          error: "",
+                                        });
+                                      }
+                                    }}
+                                    title={`Carton ${cIdx + 1} — ${isPreviouslyDone ? "Already GRN'd" : isAwaitingLabel ? "Scanned — awaiting label confirm" : `${prog.scanned}/24 scanned`}`}
                                     className={`h-8 w-8 rounded-lg text-[11px] font-bold tabular-nums transition-all ${chipClass}`}
                                   >
                                     {cIdx + 1}
@@ -1658,9 +1735,9 @@ const GRN: React.FC = () => {
                     >
                       <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                         {viewingGRN.cartons?.map((carton: any, idx: number) => {
-                          // Try to extract the carton sequence number from barcode (e.g. CTN-260325-PO-1023-007)
-                          const parts = (carton.cartonBarcode || "").split("-");
-                          const cartonNum = parts.length > 0 ? Number(parts[parts.length - 1]) : idx + 1;
+                          // Extract the carton sequence number from the barcode (e.g. "Riv-blk-04-08-CT007" -> 7)
+                          const ctMatch = (carton.cartonBarcode || "").match(/CT(\d+)$/);
+                          const cartonNum = ctMatch ? Number(ctMatch[1]) : idx + 1;
                           
                           return (
                             <div key={idx} className="p-4 rounded-2xl border border-slate-200 bg-white hover:border-amber-200 transition">
@@ -1724,12 +1801,15 @@ const GRN: React.FC = () => {
 
                 {/* ── Filter Bar ── */}
                 <div className="border-b border-slate-200 bg-white p-5">
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
-                    <FormInput
-                      label="Search (GRN/Article/Vendor)"
-                      value={historySearch}
-                      onChange={setHistorySearch}
-                    />
+                  <div className="grid grid-cols-1 items-end gap-4 sm:grid-cols-2 lg:grid-cols-6">
+                    <div className="sm:col-span-2 lg:col-span-2">
+                      <FormInput
+                        label="Search"
+                        placeholder="GRN, article, vendor or carton no…"
+                        value={historySearch}
+                        onChange={setHistorySearch}
+                      />
+                    </div>
                     <SearchableSelect
                       label="PO Reference"
                       options={poOptions}
@@ -1749,8 +1829,8 @@ const GRN: React.FC = () => {
                       value={historyDateTo}
                       onChange={setHistoryDateTo}
                     />
-                    <div>
-                      <label className="mb-2 block text-xs font-black uppercase tracking-widest text-slate-400">
+                    <div className="min-w-0">
+                      <label className="mb-2 block truncate text-xs font-black uppercase tracking-widest text-slate-400">
                         Sort By
                       </label>
                       <select
@@ -1766,14 +1846,14 @@ const GRN: React.FC = () => {
                         <option value="refId">PO Ref</option>
                       </select>
                     </div>
-                    <div className="flex items-end gap-2">
+                    <div className="flex items-center gap-2 sm:col-span-2 lg:col-span-6 lg:justify-end">
                       <button
                         onClick={() =>
                           setHistorySortOrder(
                             historySortOrder === "asc" ? "desc" : "asc"
                           )
                         }
-                        className="flex h-[46px] w-[46px] items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
+                        className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
                         title={
                           historySortOrder === "asc" ? "Ascending" : "Descending"
                         }
@@ -1786,7 +1866,7 @@ const GRN: React.FC = () => {
                       </button>
                       <button
                         onClick={clearHistoryFilters}
-                        className="flex h-[46px] flex-1 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-500 transition hover:bg-slate-50 hover:text-rose-600"
+                        className="flex h-[46px] flex-1 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-6 text-sm font-black text-slate-500 transition hover:bg-slate-50 hover:text-rose-600 sm:flex-none"
                       >
                         <RotateCcw size={16} />
                         Reset
@@ -1960,6 +2040,72 @@ const GRN: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* ── Carton label confirmation popup ── */}
+      {cartonConfirmPopup && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl bg-white shadow-2xl overflow-hidden">
+            <div className="bg-orange-500 px-6 py-5 text-white">
+              <div className="flex items-center gap-2">
+                <PackageCheck size={22} />
+                <h3 className="text-lg font-black">Carton {cartonConfirmPopup.cartonIdx + 1} Complete</h3>
+              </div>
+              <p className="mt-1 text-xs text-orange-50">{cartonConfirmPopup.itemLabel}</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5">
+                  Carton Barcode — print &amp; paste this label on the box
+                </p>
+                <div className="rounded-2xl border-2 border-dashed border-orange-300 bg-orange-50 px-4 py-3 text-center">
+                  <span className="text-lg font-black tracking-wider text-orange-700 font-mono">
+                    {cartonConfirmPopup.barcode}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  Scan / type the barcode from the label to confirm
+                </label>
+                <input
+                  ref={confirmInputRef}
+                  type="text"
+                  autoComplete="off"
+                  value={cartonConfirmPopup.inputValue}
+                  onChange={(e) => setCartonConfirmPopup({ ...cartonConfirmPopup, inputValue: e.target.value, error: "" })}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); confirmCartonLabel(); } }}
+                  placeholder="Rescan label here…"
+                  className={`w-full rounded-2xl border-2 p-3 text-sm outline-none transition font-mono ${
+                    cartonConfirmPopup.error
+                      ? "border-rose-300 bg-rose-50 focus:border-rose-400 focus:ring-4 focus:ring-rose-100"
+                      : "border-slate-200 bg-slate-50 focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+                  }`}
+                />
+                {cartonConfirmPopup.error && (
+                  <p className="mt-1.5 text-[11px] font-bold text-rose-500">{cartonConfirmPopup.error}</p>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-6 py-4">
+              {/* <button
+                type="button"
+                onClick={() => setCartonConfirmPopup(null)}
+                className="rounded-xl px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 transition"
+              >
+                Do this later
+              </button> */}
+              <button
+                type="button"
+                onClick={confirmCartonLabel}
+                disabled={!cartonConfirmPopup.inputValue.trim()}
+                className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-5 py-2 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+              >
+                <CheckCircle2 size={14} /> Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -2030,17 +2176,22 @@ const FormInput: React.FC<{
   value: string;
   onChange: (v: string) => void;
   type?: string;
-}> = ({ label, value, onChange, type = "text" }) => {
+  placeholder?: string;
+}> = ({ label, value, onChange, type = "text", placeholder }) => {
   return (
-    <div>
-      <label className="mb-2 block text-xs font-black uppercase tracking-widest text-slate-400">
+    <div className="min-w-0">
+      <label
+        title={label}
+        className="mb-2 block truncate text-xs font-black uppercase tracking-widest text-slate-400"
+      >
         {label}
       </label>
       <input
         type={type}
         value={value}
+        placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 outline-none transition focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+        className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none transition focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
       />
     </div>
   );

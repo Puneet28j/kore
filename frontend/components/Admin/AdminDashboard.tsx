@@ -398,7 +398,7 @@ const ShowMorePOs: React.FC<{
 
   const list = useMemo(() => {
     const q = search.toLowerCase();
-    const filtered = q ? data.filter(d => d.vendorName.toLowerCase().includes(q) || d.poNumber.toLowerCase().includes(q)) : data;
+    const filtered = q ? data.filter(d => d.vendorName.toLowerCase().includes(q) || (d.poNumber || "").toLowerCase().includes(q)) : data;
     return sortPOs(filtered, sort);
   }, [data, sort, search]);
 
@@ -437,7 +437,7 @@ const ShowMorePOs: React.FC<{
               <div className="flex-1 min-w-0">
                 <div className="flex justify-between items-start">
                   <div>
-                    <p className="font-semibold text-sm text-slate-900">{po.poNumber}</p>
+                    <p className="font-semibold text-sm text-slate-900">{po.poNumber || "Pending Approval"}</p>
                     <p className="text-[11px] text-slate-500">{po.vendorName}</p>
                   </div>
                   <div className="text-right ml-2 shrink-0">
@@ -798,7 +798,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-center">
-                    <p className="font-semibold text-sm text-slate-900">{po.poNumber}</p>
+                    <p className="font-semibold text-sm text-slate-900">{po.poNumber || "Pending Approval"}</p>
                     <p className="text-sm font-bold ml-2 shrink-0">₹{po.total?.toLocaleString()}</p>
                   </div>
                   <p className="text-[11px] text-slate-500 truncate">{po.vendorName} · {new Date(po.date).toLocaleDateString('en-IN')}</p>

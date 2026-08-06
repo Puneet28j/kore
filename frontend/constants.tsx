@@ -1,15 +1,15 @@
 import { Article, Assortment, AssortmentType, User, UserRole } from "./types";
 
 export const COMPANY_CONFIG = {
-  name: "INNOVATIVE LIFESTYLE TECHNOLOGY PRIVATE LIMITED",
-  cin: "U511909DL2020PTC3711873",
-  gst: "07AAFC18644A1ZP",
-  pan: "AAFC18644A",
-  brand: "YOHO",
-  invoiceTo: "INNOVATIVE LIFESTYLE TECHNOLOGY PRIVATE LIMITED, First Floor, M-24, Block-M, Badli Industrial Area Phase 1, GATE NO-4, New Delhi, North Delhi, Delhi, 110042",
-  shipTo: "419/1, Village mundka, Near Under Pass, Mundka, New Delhi, West Delhi, 110041",
-  phone: "+91 11 4444 8888",
-  email: "ops@yoho.com"
+  name: "Kore Kollektiv Private Limited",
+  cin: "",
+  gst: "08AAMCK3112C1ZX",
+  pan: "AAMCK3112C",
+  brand: "Toucan Toes",
+  invoiceTo: "G-1031, RIICO Industrial Area Tapukara, RIICO Industrial Area Kharani Khairthal Tijara, Rajasthan, 301019",
+  shipTo: "G-1031, RIICO Industrial Area Tapukara, RIICO Industrial Area Kharani Khairthal Tijara, Rajasthan, 301019",
+  phone: "+91 9999346024",
+  email: "care@toucantoes.com",
 };
 
 export const ASSORTMENTS: Assortment[] = [

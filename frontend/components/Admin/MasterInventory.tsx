@@ -37,6 +37,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [resultBarcodes, setResultBarcodes] = useState<string[] | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [totalPOPairs, setTotalPOPairs] = useState(0);
   const [poPairsPerArticle, setPoPairsPerArticle] = useState<Record<string, number>>({});
@@ -246,23 +247,30 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
     setShowModal(true);
   };
 
-  const closeModal = () => { setShowModal(false); setStep(0); };
+  const closeModal = () => { setShowModal(false); setStep(0); setResultBarcodes(null); };
 
   const handleMovementSubmit = async () => {
     if (!selectedVariantId || !cartons || !reason) return;
     setSubmitting(true);
     try {
-      await masterCatalogService.stockMovement(selectedVariantId, {
+      const res: any = await masterCatalogService.stockMovement(selectedVariantId, {
         type: movementType,
         cartons: Number(cartons),
         reason,
         note,
       });
       toast.success(`Stock ${movementType === 'INWARD' ? 'inward' : 'outward'} recorded (${cartons} carton(s))`);
-      closeModal();
       fetchLocalInventory(currentPage, pageSize, debouncedSearch.current, stageForTab);
       fetchStockTotals(stageForTab);
       if (onRefresh) onRefresh();
+
+      const barcodes: string[] = res?.data?.cartonBarcodes || [];
+      if (barcodes.length > 0) {
+        // Physical boxes were involved — show the carton labels to print instead of closing.
+        setResultBarcodes(barcodes);
+      } else {
+        closeModal();
+      }
     } catch (err: any) {
       toast.error(err?.message || 'Failed to record stock movement');
     } finally {
@@ -701,7 +709,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                 <div>
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Stock Movement</p>
                   <h3 className="text-base font-bold text-slate-900 leading-tight">
-                    {step === 0 ? 'Choose Type' : step === 1 ? 'Select Variant' : step === 2 ? 'Quantity & Reason' : 'Confirm'}
+                    {resultBarcodes ? 'Carton Labels' : step === 0 ? 'Choose Type' : step === 1 ? 'Select Variant' : step === 2 ? 'Quantity & Reason' : 'Confirm'}
                   </h3>
                 </div>
               </div>
@@ -711,17 +719,50 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
             </div>
 
             {/* Step Indicators */}
-            <div className="flex items-center gap-1.5 px-6 pt-4 pb-2 shrink-0">
-              {[0, 1, 2, 3].map(s => (
-                <div key={s} className={`h-1 flex-1 rounded-full transition-all duration-300 ${s <= step ? (movementType === 'INWARD' ? 'bg-emerald-500' : 'bg-rose-500') : 'bg-slate-100'}`} />
-              ))}
-            </div>
+            {!resultBarcodes && (
+              <div className="flex items-center gap-1.5 px-6 pt-4 pb-2 shrink-0">
+                {[0, 1, 2, 3].map(s => (
+                  <div key={s} className={`h-1 flex-1 rounded-full transition-all duration-300 ${s <= step ? (movementType === 'INWARD' ? 'bg-emerald-500' : 'bg-rose-500') : 'bg-slate-100'}`} />
+                ))}
+              </div>
+            )}
 
             {/* Body */}
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
 
+              {/* Result: carton labels to print, after a physical-box inward */}
+              {resultBarcodes && (
+                <div className="space-y-4">
+                  <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-5">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle size={28} className="text-emerald-600 shrink-0" />
+                      <div>
+                        <p className="text-sm font-black uppercase tracking-wider text-emerald-700">
+                          {resultBarcodes.length} Carton{resultBarcodes.length !== 1 ? 's' : ''} Added
+                        </p>
+                        <p className="text-xs text-slate-500">Print each label below and paste it on the matching box.</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {resultBarcodes.map((code) => (
+                      <div key={code} className="flex items-center justify-between rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-3">
+                        <span className="font-mono text-sm font-black tracking-wider text-slate-800">{code}</span>
+                        <button
+                          type="button"
+                          onClick={() => { navigator.clipboard.writeText(code); toast.success('Copied'); }}
+                          className="rounded-lg px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition-colors"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Step 0: Type selection (RFD only — Pre-Order skips to step 1 directly) */}
-              {step === 0 && (
+              {!resultBarcodes && step === 0 && (
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <button
                     onClick={() => { setMovementType('INWARD'); setStep(1); }}
@@ -911,7 +952,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
               )}
 
               {/* Step 3: Confirmation */}
-              {step === 3 && selectedVariant && (
+              {!resultBarcodes && step === 3 && selectedVariant && (
                 <div className="space-y-4">
                   <div className={`rounded-2xl border-2 p-5 ${movementType === 'INWARD' ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50'}`}>
                     <div className="flex items-center gap-3 mb-4">
@@ -966,49 +1007,60 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
 
             {/* Footer actions */}
             <div className="flex items-center gap-3 px-6 py-4 border-t border-slate-100 shrink-0">
-              {step > 0 && (
+              {resultBarcodes ? (
                 <button
-                  onClick={() => setStep((s) => Math.max(0, s - 1) as 0 | 1 | 2 | 3)}
-                  className="flex-1 py-3 rounded-xl border border-slate-200 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-all"
+                  onClick={closeModal}
+                  className="flex-1 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-all"
                 >
-                  Back
+                  Done
                 </button>
-              )}
-              {step === 0 && (
-                <button onClick={closeModal} className="flex-1 py-3 rounded-xl border border-slate-200 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-all">
-                  Cancel
-                </button>
-              )}
-              {step === 1 && selectedVariantId && (
-                <button
-                  onClick={() => setStep(2)}
-                  className="flex-1 py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-all"
-                >
-                  Next
-                </button>
-              )}
-              {step === 2 && (
-                <button
-                  disabled={!cartons || Number(cartons) < 1 || !reason || (movementType === 'OUTWARD' && Number(cartons) > Math.floor(variantLive / 24))}
-                  onClick={() => setStep(3)}
-                  className="flex-1 py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  Review
-                </button>
-              )}
-              {step === 3 && (
-                <button
-                  disabled={submitting}
-                  onClick={handleMovementSubmit}
-                  className={`flex-1 py-3 rounded-xl text-white text-sm font-bold transition-all flex items-center justify-center gap-2 ${
-                    movementType === 'INWARD'
-                      ? 'bg-emerald-600 hover:bg-emerald-700 shadow-sm shadow-emerald-100'
-                      : 'bg-rose-600 hover:bg-rose-700 shadow-sm shadow-rose-100'
-                  } disabled:opacity-50`}
-                >
-                  {submitting ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-                  {submitting ? 'Saving...' : `Confirm ${movementType === 'INWARD' ? 'Inward' : 'Outward'}`}
-                </button>
+              ) : (
+                <>
+                  {step > 0 && (
+                    <button
+                      onClick={() => setStep((s) => Math.max(0, s - 1) as 0 | 1 | 2 | 3)}
+                      className="flex-1 py-3 rounded-xl border border-slate-200 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-all"
+                    >
+                      Back
+                    </button>
+                  )}
+                  {step === 0 && (
+                    <button onClick={closeModal} className="flex-1 py-3 rounded-xl border border-slate-200 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-all">
+                      Cancel
+                    </button>
+                  )}
+                  {step === 1 && selectedVariantId && (
+                    <button
+                      onClick={() => setStep(2)}
+                      className="flex-1 py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-all"
+                    >
+                      Next
+                    </button>
+                  )}
+                  {step === 2 && (
+                    <button
+                      disabled={!cartons || Number(cartons) < 1 || !reason || (movementType === 'OUTWARD' && Number(cartons) > Math.floor(variantLive / 24))}
+                      onClick={() => setStep(3)}
+                      className="flex-1 py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Review
+                    </button>
+                  )}
+                  {step === 3 && (
+                    <button
+                      disabled={submitting}
+                      onClick={handleMovementSubmit}
+                      className={`flex-1 py-3 rounded-xl text-white text-sm font-bold transition-all flex items-center justify-center gap-2 ${
+                        movementType === 'INWARD'
+                          ? 'bg-emerald-600 hover:bg-emerald-700 shadow-sm shadow-emerald-100'
+                          : 'bg-rose-600 hover:bg-rose-700 shadow-sm shadow-rose-100'
+                      } disabled:opacity-50`}
+                    >
+                      {submitting ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                      {submitting ? 'Saving...' : `Confirm ${movementType === 'INWARD' ? 'Inward' : 'Outward'}`}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>

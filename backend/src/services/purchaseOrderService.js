@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const PurchaseOrder = require("../models/PurchaseOrder");
 const Vendor = require("../models/Vendor");
+const Counter = require("../models/Counter");
 
 const ALLOWED_PAGE_LIMITS = [10, 20, 30, 50, 100, 200, 500, 1000];
 
@@ -27,9 +28,9 @@ const ensureValidId = (id, name = "ID") => {
 };
 
 const computeItem = (it) => {
-  const base = Number(it.basePrice || 0);
+  const base = Number(it.basePrice || 0); // price per carton (24 pairs)
 
-  // Calculate quantity from sizeMap if it exists
+  // Calculate quantity (pairs) from sizeMap if it exists
   let qty = Number(it.quantity || 1);
   if (it.sizeMap) {
     let derivedQty = 0;
@@ -48,14 +49,19 @@ const computeItem = (it) => {
   }
   qty = Math.max(1, qty);
 
+  const cartonCount =
+    Number(it.cartonCount || 0) || Math.floor(qty / 24) || 1;
+
   const taxRate = Number(it.taxRate || 0);
 
-  const taxPerItem = round2((base * taxRate) / 100);
-  const unitTotal = round2((base + taxPerItem) * qty);
+  // unitTotal is ex-tax; basePrice is per carton, so total = cartons × price/carton
+  const unitTotal = round2(base * cartonCount);
+  const taxPerItem = round2((unitTotal * taxRate) / 100);
 
   return {
     ...it,
     quantity: qty,
+    cartonCount,
     basePrice: base,
     taxRate,
     taxPerItem,
@@ -67,20 +73,14 @@ const computeTotals = (items, discountPercent) => {
   const computed = items.map(computeItem);
 
   const subTotal = round2(
-    computed.reduce(
-      (sum, it) => sum + Number(it.basePrice || 0) * Number(it.quantity || 0),
-      0
-    )
+    computed.reduce((sum, it) => sum + Number(it.unitTotal || 0), 0)
   );
 
   const discPct = Math.min(100, Math.max(0, Number(discountPercent || 0)));
   const discountAmount = round2((subTotal * discPct) / 100);
 
   const totalTax = round2(
-    computed.reduce(
-      (sum, it) => sum + Number(it.taxPerItem || 0) * Number(it.quantity || 0),
-      0
-    )
+    computed.reduce((sum, it) => sum + Number(it.taxPerItem || 0), 0)
   );
 
   const total = round2(subTotal - discountAmount + totalTax);
@@ -95,26 +95,44 @@ const computeTotals = (items, discountPercent) => {
   };
 };
 
-exports.generateNextPONumber = async () => {
-  const last = await PurchaseOrder.findOne({ isDeleted: false })
-    .sort({ createdAt: -1 })
+// PO numbers are allocated only on bill approval (see approveBill), not at
+// creation, so drafts never burn a hole in the sequence.
+const PO_COUNTER_ID = "po_number";
+
+// One-time seed so the counter picks up after any pre-existing poNumbers
+// (from before allocation moved to approval time) instead of restarting at 1.
+const bootstrapPoCounterIfNeeded = async () => {
+  const existing = await Counter.findOne({ id: PO_COUNTER_ID }).lean();
+  if (existing) return;
+
+  const docs = await PurchaseOrder.find({ poNumber: { $exists: true } })
     .select("poNumber")
     .lean();
+  let seed = 0;
+  docs.forEach((d) => {
+    const n = parseInt(d.poNumber?.match(/PO-(\d+)/)?.[1] || "0", 10);
+    if (n > seed) seed = n;
+  });
 
-  const lastNum = last?.poNumber?.match(/PO-(\d+)/)?.[1];
-  const next = (lastNum ? parseInt(lastNum, 10) : 0) + 1;
+  await Counter.findOneAndUpdate(
+    { id: PO_COUNTER_ID },
+    { $setOnInsert: { seq: seed } },
+    { upsert: true }
+  );
+};
 
-  return `PO-${String(next).padStart(5, "0")}`;
+const allocatePoNumber = async () => {
+  await bootstrapPoCounterIfNeeded();
+  const counter = await Counter.findOneAndUpdate(
+    { id: PO_COUNTER_ID },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return `PO-${String(counter.seq).padStart(5, "0")}`;
 };
 
 exports.create = async (body) => {
   ensureValidId(body.vendorId, "vendorId");
-
-  if (!body.poNumber) {
-    const err = new Error("poNumber is required");
-    err.statusCode = 400;
-    throw err;
-  }
 
   const vendor = await Vendor.findById(body.vendorId).lean();
   if (!vendor) {
@@ -142,7 +160,8 @@ exports.create = async (body) => {
       vendorName:
         body.vendorName || vendor.displayName || vendor.companyName || "",
 
-      poNumber: body.poNumber,
+      // poNumber is allocated on approval, not here — ignore any value a
+      // caller might still send.
       referenceNumber: body.referenceNumber || "",
 
       date: body.date ? new Date(body.date) : new Date(),
@@ -185,6 +204,7 @@ exports.create = async (body) => {
           variantId: it.variantId || "",
 
           itemName: it.itemName || "",
+          color: it.color || "",
           image: it.image || "",
           sku: it.sku || "",
           skuCompany: it.skuCompany || "",
@@ -391,7 +411,7 @@ exports.update = async (id, body) => {
   const patch = {
     vendorId: body.vendorId,
     vendorName: body.vendorName,
-    poNumber: body.poNumber,
+    // poNumber is not editable here — it's allocated once, on approval.
     referenceNumber: body.referenceNumber,
     date: body.date ? new Date(body.date) : undefined,
     deliveryDate: body.deliveryDate ? new Date(body.deliveryDate) : undefined,
@@ -416,7 +436,6 @@ exports.update = async (id, body) => {
   }
 
   [
-    "poNumber",
     "referenceNumber",
     "paymentTerms",
     "shipmentPreference",
@@ -487,6 +506,7 @@ exports.update = async (id, body) => {
           : undefined,
         variantId: it.variantId || "",
         itemName: it.itemName || "",
+        color: it.color || "",
         image: it.image || "",
         sku: it.sku || "",
         skuCompany: it.skuCompany || "",
@@ -548,12 +568,30 @@ exports.approveBill = async (id, body) => {
     throw err;
   }
 
+  // Idempotent: a double-click/duplicate approve must not allocate a second number.
+  if (doc.billStatus === "APPROVED") {
+    return doc;
+  }
+
   doc.billStatus = "APPROVED";
   doc.billRemark = body?.remark || "";
   doc.billApprovedAt = new Date();
   doc.billRejectedAt = null;
 
-  await doc.save();
+  if (!doc.poNumber) {
+    doc.poNumber = await allocatePoNumber();
+  }
+
+  try {
+    await doc.save();
+  } catch (e) {
+    if (e.code === 11000) {
+      const err = new Error("poNumber already exists");
+      err.statusCode = 409;
+      throw err;
+    }
+    throw e;
+  }
   return doc;
 };
 

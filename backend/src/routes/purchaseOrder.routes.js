@@ -1,8 +1,6 @@
 const router = require("express").Router();
 const ctrl = require("../controllers/purchaseOrderController");
 
-router.get("/next-number", ctrl.getNextPONumber);
-
 // ✅ bill routes
 router.get("/bills", ctrl.listBills);
 router.get("/bills/:id", ctrl.getBillById);

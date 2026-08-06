@@ -985,16 +985,28 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
   const dirLabel = type === "INWARD" ? "Inward" : "Outward";
   const totalPairs = Object.values(delta).reduce((s, v) => s + v, 0);
 
+  // Physical cartons genuinely arrive for these reasons — assign box labels
+  // the same way GRN does (<Carton SKU>-CT<serial>), restarting at CT001 for
+  // this movement. No printed-label rescan gate here (unlike GRN receiving).
+  const PHYSICAL_BOX_REASONS = ["Returned Stock", "Stock Transfer In"];
+  let cartonBarcodes = [];
+  if (type === "INWARD" && PHYSICAL_BOX_REASONS.includes(reason)) {
+    const cartonSku = variant.sku || variant.itemName || "CTN";
+    cartonBarcodes = Array.from({ length: cartons }, (_, i) =>
+      `${cartonSku}-CT${String(i + 1).padStart(3, "0")}`
+    );
+  }
+
   await activityLog.createLog({
     action: type === "INWARD" ? "STOCK_INWARD" : "STOCK_OUTWARD",
     entityType: "STOCK",
     entityId: String(variantIdStr),
     description: `Stock ${dirLabel}: ${cartons} carton(s) / ${totalPairs} pairs for "${variant.itemName || variant.color}" — ${reason}${note ? `: ${note}` : ""}`,
-    metadata: { variantId: variantIdStr, articleId: String(catalog._id), cartons, totalPairs, delta, reason, note, type },
+    metadata: { variantId: variantIdStr, articleId: String(catalog._id), cartons, totalPairs, delta, reason, note, type, cartonBarcodes },
     user,
   });
 
-  return { variantId: variantIdStr, articleId: String(catalog._id), type, cartons, totalPairs, delta };
+  return { variantId: variantIdStr, articleId: String(catalog._id), type, cartons, totalPairs, delta, cartonBarcodes };
 };
 
 exports.updateVariantSku = async (variantId, sku) => {

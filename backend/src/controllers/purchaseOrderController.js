@@ -7,15 +7,6 @@ const sendError = (res, err) => {
   return res.status(code).json({ message: err.message || "Server error" });
 };
 
-exports.getNextPONumber = async (req, res) => {
-  try {
-    const poNumber = await service.generateNextPONumber();
-    return res.json({ data: { poNumber } });
-  } catch (err) {
-    return sendError(res, err);
-  }
-};
-
 exports.createPO = async (req, res) => {
   try {
     const doc = await service.create(req.body);
@@ -24,7 +15,7 @@ exports.createPO = async (req, res) => {
       action: "PO_CREATED",
       entityType: "PO",
       entityId: String(doc._id),
-      description: `PO #${doc.poNumber} created by ${req.user?.name || "admin"}`,
+      description: `PO (${String(doc._id).slice(-6)}) created by ${req.user?.name || "admin"}`,
       metadata: { poNumber: doc.poNumber, vendor: doc.vendorName },
       user: req.user,
     });
@@ -106,7 +97,7 @@ exports.updatePO = async (req, res) => {
       action: "PO_UPDATED",
       entityType: "PO",
       entityId: String(req.params.id),
-      description: `PO #${doc.poNumber} updated by ${req.user?.name || "admin"}`,
+      description: `PO (${String(req.params.id).slice(-6)}) updated by ${req.user?.name || "admin"}`,
       user: req.user,
     });
 

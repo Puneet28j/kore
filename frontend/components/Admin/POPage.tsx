@@ -71,15 +71,6 @@ const emptyItem = (): PurchaseOrderItem => ({
   gender: "",
 });
 
-// ─── Generate PO Number ────────────────────────────────
-const generatePONumber = (existingPOs: PurchaseOrder[]): string => {
-  const maxNum = existingPOs.reduce((max, po) => {
-    const match = po.poNumber.match(/PO-(\d+)/);
-    return match ? Math.max(max, parseInt(match[1])) : max;
-  }, 0);
-  return `PO-${String(maxNum + 1).padStart(5, "0")}`;
-};
-
 // ─── Format date for input ─────────────────────────────
 const todayStr = () => new Date().toISOString().split("T")[0];
 
@@ -551,6 +542,7 @@ const QuantityGridModal: React.FC<{
       itemName: `${article.name}-${variant.color || "Default"}-${
         variant.sizeRange || "Range"
       }`,
+      color: variant.color || "",
       sku: firstSku || variant.sku || article.sku,
       quantity: totalQty,
       basePrice:
@@ -959,6 +951,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     mrp: number;
     assortment?: string;
     gender: string;
+    color?: string;
   }[] = [];
 
   articles.filter(a => !a.status || a.status === "AVAILABLE").forEach((article) => {
@@ -999,6 +992,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
           mrp: variant.mrp || article.mrp || 0,
           assortment: formatAssortment(variant.sizeQuantities),
           gender: article.category || "",
+          color: variant.color || "",
         });
       });
     } else {
@@ -1060,7 +1054,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
   const resetForm = () => {
     setSelectedVendorId("");
     setVendorSearch("");
-    setPONumber(generatePONumber(purchaseOrders));
+    setPONumber("");
     setReferenceNumber("");
     setPODate(todayStr());
     setDeliveryDate("");
@@ -1075,15 +1069,8 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     setEditingPOId(null);
   };
 
-  const openCreateForm = async () => {
+  const openCreateForm = () => {
     resetForm();
-    try {
-      const res = await poService.getNextPONumber();
-      setPONumber(res.data.poNumber);
-    } catch (err) {
-      console.error("Failed to get next PO number", err);
-      setPONumber(generatePONumber(purchaseOrders)); // fallback
-    }
     setView("form");
   };
 
@@ -1107,7 +1094,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     };
 
     setSelectedVendorId(po.vendorId);
-    setPONumber(po.poNumber);
+    setPONumber(po.poNumber || "");
     setReferenceNumber(po.referenceNumber || "");
     setPODate(formatDateForInput(po.date));
     setDeliveryDate(formatDateForInput(po.deliveryDate));
@@ -1242,9 +1229,11 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
         image: option.image,
         basePrice: option.basePrice * 24,
         mrp: (option.mrp || 0) * 24,
+        cartonCount: base.cartonCount || 1,
         sizeMap: defaultSizeMap,
         assortment: option.assortment,
         gender: option.gender,
+        color: option.color || "",
       });
 
     setItems(prev => {
@@ -1418,7 +1407,6 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
         const poData: Partial<PurchaseOrder> = {
           vendorId: selectedVendorId,
           vendorName: selectedVendor?.displayName || "",
-          poNumber,
           referenceNumber,
           date: poDate,
           deliveryDate,
@@ -1478,7 +1466,6 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     const poData: Partial<PurchaseOrder> = {
       vendorId: selectedVendorId,
       vendorName: selectedVendor?.displayName || "",
-      poNumber,
       referenceNumber,
       date: poDate,
       deliveryDate,
@@ -1660,7 +1647,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     const q = searchTerm.toLowerCase().trim();
     if (!q) return true;
     return (
-      po.poNumber.toLowerCase().includes(q) ||
+      (po.poNumber || "").toLowerCase().includes(q) ||
       po.vendorName.toLowerCase().includes(q)
     );
   });
@@ -1779,9 +1766,15 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex flex-col gap-1">
-                          <span className="font-bold text-slate-900 text-sm group-hover:text-indigo-600 transition-colors">
-                            {po.poNumber}
-                          </span>
+                          {po.poNumber ? (
+                            <span className="font-bold text-slate-900 text-sm group-hover:text-indigo-600 transition-colors">
+                              {po.poNumber}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center w-fit px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 uppercase tracking-tight">
+                              Pending Approval
+                            </span>
+                          )}
                           {po.isRevised && (
                             <span className="inline-flex items-center w-fit px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-700 border border-indigo-200 uppercase tracking-tight">
                               Revised {po.revisionCount ? `(v${po.revisionCount})` : ""}
@@ -1803,11 +1796,11 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
-                          onClick={() => {
+                          onClick={async () => {
                             const v = vendors.find(
                               (ven) => ven.id === po.vendorId
                             );
-                            exportPOToPDF(po, v);
+                            await exportPOToPDF(po, v);
                           }}
                           className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-all inline-flex items-center gap-1 font-semibold text-xs"
                           title="Download PDF"
@@ -1893,12 +1886,12 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
         {editingPOId ? (
           <div className="flex gap-2">
             <button
-              onClick={() => {
+              onClick={async () => {
                 const currentPO = purchaseOrders.find(
                   (p) => p.id === editingPOId
                 );
                 if (currentPO)
-                  exportPOToPDF({ ...currentPO, items }, selectedVendor);
+                  await exportPOToPDF({ ...currentPO, items }, selectedVendor);
               }}
               className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 text-sm font-bold rounded-xl hover:bg-indigo-100 transition-all border border-indigo-200"
             >
@@ -1920,7 +1913,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
           </div>
         ) : (
           <button
-            onClick={() => {
+            onClick={async () => {
               const dummyPO: any = {
                 poNumber,
                 vendorName: selectedVendor?.displayName || "New Vendor",
@@ -1933,7 +1926,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                 totalTax,
                 total,
               };
-              exportPOToPDF(dummyPO, selectedVendor || undefined);
+              await exportPOToPDF(dummyPO, selectedVendor || undefined);
             }}
             className="flex items-center gap-2 px-4 py-2 bg-slate-50 text-slate-600 text-sm font-bold rounded-xl hover:bg-slate-100 transition-all border border-slate-200"
           >
@@ -2135,15 +2128,14 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelClass}>
-                    Purchase Order# <span className="text-rose-500">*</span>
-                  </label>
+                  <label className={labelClass}>Purchase Order#</label>
                   <input
                     type="text"
-                    className={inputClass}
-                    value={poNumber}
-                    disabled={isApprovedPO}
-                    onChange={(e) => setPONumber(e.target.value)}
+                    className={`${inputClass} cursor-not-allowed opacity-70`}
+                    value={poNumber || "Pending Approval"}
+                    disabled
+                    readOnly
+                    title="Allocated automatically when the accountant approves this PO"
                   />
                 </div>
                 <div>
@@ -2275,8 +2267,8 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                     <th className="px-4 py-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider">Item</th>
                     <th className="px-3 py-2.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-l border-slate-200 whitespace-nowrap">HSN</th>
                     <th className="px-3 py-2.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">Qty (Ctn)</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-violet-500 uppercase tracking-wider border-l border-violet-100 text-right whitespace-nowrap">MRP / Ctn (₹)</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-violet-500 uppercase tracking-wider text-right whitespace-nowrap">Costing / Ctn (₹)</th>
+                    <th className="px-3 py-2.5 text-[10px] font-bold text-violet-500 uppercase tracking-wider border-l border-violet-100 text-right whitespace-nowrap">MRP / Pair (₹)</th>
+                    <th className="px-3 py-2.5 text-[10px] font-bold text-violet-500 uppercase tracking-wider text-right whitespace-nowrap">Costing / Pair (₹)</th>
                     <th className="px-3 py-2.5 text-[10px] font-bold text-amber-500 uppercase tracking-wider border-l border-amber-100 text-right whitespace-nowrap">GST&nbsp;%</th>
                     <th className="px-3 py-2.5 text-[10px] font-bold text-amber-500 uppercase tracking-wider text-right whitespace-nowrap">Total (ex.GST)</th>
                     <th className="px-3 py-2.5 text-[10px] font-bold text-amber-600 uppercase tracking-wider text-right whitespace-nowrap">Total (incl.GST)</th>
@@ -2319,6 +2311,9 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                                     {item.gender && (
                                       <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] font-bold uppercase tracking-wide">{item.gender}</span>
+                                    )}
+                                    {item.color && (
+                                      <span className="px-1.5 py-0.5 bg-rose-50 text-rose-500 rounded text-[9px] font-bold border border-rose-100">{item.color}</span>
                                     )}
                                     {item.assortment && (
                                       <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[9px] font-bold border border-indigo-100">{item.assortment}</span>
@@ -2369,33 +2364,33 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                         )}
                       </td>
 
-                      {/* MRP / Ctn */}
+                      {/* MRP / Pair */}
                       <td className="px-3 py-3 border-l border-violet-100">
                         <input
                           type="number"
                           min={0}
                           className="w-20 px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 text-[11px] font-bold text-right"
-                          value={item.mrp || ""}
+                          value={item.mrp ? item.mrp / 24 : ""}
                           disabled={isApprovedPO}
-                          onChange={(e) => updateItem(item.id, "mrp", parseFloat(e.target.value) || 0)}
+                          onChange={(e) => updateItem(item.id, "mrp", (parseFloat(e.target.value) || 0) * 24)}
                         />
                         {item.mrp > 0 && (
-                          <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{(item.mrp / 24).toFixed(1)}/pair</p>
+                          <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{item.mrp.toFixed(1)}/ctn</p>
                         )}
                       </td>
 
-                      {/* Costing / Ctn */}
+                      {/* Costing / Pair */}
                       <td className="px-3 py-3">
                         <input
                           type="number"
                           min={0}
                           className="w-24 px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 text-[11px] font-bold text-right text-violet-700"
-                          value={item.basePrice || ""}
+                          value={item.basePrice ? item.basePrice / 24 : ""}
                           disabled={isApprovedPO}
-                          onChange={(e) => updateItem(item.id, "basePrice", parseFloat(e.target.value) || 0)}
+                          onChange={(e) => updateItem(item.id, "basePrice", (parseFloat(e.target.value) || 0) * 24)}
                         />
                         {item.basePrice > 0 && (
-                          <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{(item.basePrice / 24).toFixed(1)}/pair</p>
+                          <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{item.basePrice.toFixed(1)}/ctn</p>
                         )}
                       </td>
 
@@ -2496,6 +2491,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                           <p className="text-xs font-semibold text-slate-800 truncate">{item.itemName}</p>
                           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                             {item.gender && <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] font-bold">{item.gender}</span>}
+                            {item.color && <span className="px-1.5 py-0.5 bg-rose-50 text-rose-500 rounded text-[9px] font-bold border border-rose-100">{item.color}</span>}
                             {item.assortment && <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[9px] font-bold border border-indigo-100">{item.assortment}</span>}
                           </div>
                         </>
@@ -2535,14 +2531,14 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                     <input type="number" min={0} max={100} step={0.5} className="w-full px-2 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] font-bold text-center outline-none text-amber-700" value={item.taxRate || ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "taxRate", parseFloat(e.target.value) || 0)} />
                   </div>
                   <div>
-                    <p className="text-[9px] font-bold text-violet-500 uppercase mb-1">MRP/Ctn (₹)</p>
-                    <input type="number" min={0} className="w-full px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-[11px] font-bold text-right outline-none" value={item.mrp || ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "mrp", parseFloat(e.target.value) || 0)} />
-                    {item.mrp > 0 && <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{(item.mrp / 24).toFixed(1)}/pair</p>}
+                    <p className="text-[9px] font-bold text-violet-500 uppercase mb-1">MRP/Pair (₹)</p>
+                    <input type="number" min={0} className="w-full px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-[11px] font-bold text-right outline-none" value={item.mrp ? item.mrp / 24 : ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "mrp", (parseFloat(e.target.value) || 0) * 24)} />
+                    {item.mrp > 0 && <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{item.mrp.toFixed(1)}/ctn</p>}
                   </div>
                   <div>
-                    <p className="text-[9px] font-bold text-violet-600 uppercase mb-1">Costing/Ctn (₹)</p>
-                    <input type="number" min={0} className="w-full px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-[11px] font-bold text-right outline-none text-violet-700" value={item.basePrice || ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "basePrice", parseFloat(e.target.value) || 0)} />
-                    {item.basePrice > 0 && <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{(item.basePrice / 24).toFixed(1)}/pair</p>}
+                    <p className="text-[9px] font-bold text-violet-600 uppercase mb-1">Costing/Pair (₹)</p>
+                    <input type="number" min={0} className="w-full px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-[11px] font-bold text-right outline-none text-violet-700" value={item.basePrice ? item.basePrice / 24 : ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "basePrice", (parseFloat(e.target.value) || 0) * 24)} />
+                    {item.basePrice > 0 && <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{item.basePrice.toFixed(1)}/ctn</p>}
                   </div>
                   <div className="flex flex-col justify-end">
                     <p className="text-[9px] font-bold text-indigo-500 uppercase mb-1">Total (incl.GST)</p>

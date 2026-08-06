@@ -20,8 +20,9 @@ export const masterCatalogService = {
     return apiFetch(`/master-catalog/${id}`);
   },
 
-  async getStockTotals() {
-    return apiFetch(`/master-catalog/stock-totals`);
+  async getStockTotals(stage?: string) {
+    const qs = stage ? `?stage=${stage}` : '';
+    return apiFetch(`/master-catalog/stock-totals${qs}`);
   },
 
   async createMasterItem(formData: FormData) {

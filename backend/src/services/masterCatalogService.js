@@ -339,9 +339,11 @@ exports.list = async (query) => {
 };
 
 /** Company-wide live + blocked pair totals across all non-deleted catalog items */
-exports.getStockTotals = async () => {
+exports.getStockTotals = async (stage) => {
+  const matchStage = { isDeleted: false };
+  if (stage) matchStage.stage = stage;
   const [row] = await MasterCatalog.aggregate([
-    { $match: { isDeleted: false } },
+    { $match: matchStage },
     { $unwind: { path: "$variants", preserveNullAndEmptyArrays: false } },
     {
       $project: {

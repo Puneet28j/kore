@@ -44,6 +44,8 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
   // Secondary lookup by SKU — used when PO item has no variantId (older POs)
   const [poPairsByVariantSku, setPoPairsByVariantSku] = useState<Record<string, number>>({});
 
+  const [stockTab, setStockTab] = useState<'RFD' | 'PREORDER'>('RFD');
+
   // ── Backend pagination state ─────────────────────────────────────────────
   const [localArticles, setLocalArticles] = useState<ArticleType[]>([]);
   const [totalItems, setTotalItems] = useState(0);
@@ -58,9 +60,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
   const [totalLivePairs, setTotalLivePairs] = useState(0);
   const [totalBlockedPairs, setTotalBlockedPairs] = useState(0);
 
-  const fetchStockTotals = useCallback(async () => {
+  const fetchStockTotals = useCallback(async (stage?: string) => {
     try {
-      const res = await masterCatalogService.getStockTotals();
+      const res = await masterCatalogService.getStockTotals(stage);
       const data = res?.data || res || {};
       setTotalLivePairs(Number(data.totalLivePairs) || 0);
       setTotalBlockedPairs(Number(data.totalBlockedPairs) || 0);
@@ -121,13 +123,16 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
     } catch { /* silent */ }
   };
 
-  useEffect(() => { fetchPOPairs(); fetchStockTotals(); }, [fetchStockTotals]);
+  const stageForTab = stockTab === 'RFD' ? 'AVAILABLE' : 'WISHLIST';
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchPOPairs(); fetchStockTotals(stageForTab); }, [fetchStockTotals, stageForTab]);
 
   // Real-time: re-fetch when PO/GRN/catalog changes affect pending stock
   useEffect(() => {
     const handler = () => {
       fetchPOPairs();
-      fetchStockTotals();
+      fetchStockTotals(stageForTab);
     };
     window.addEventListener("billRefetch",   handler);
     window.addEventListener("grnRefetch",    handler);
@@ -139,7 +144,8 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
       window.removeEventListener("catalogRefetch", handler);
       window.removeEventListener("poRefetch",     handler);
     };
-  }, [fetchStockTotals]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchStockTotals, stageForTab]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -151,10 +157,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
   };
 
   // ── Backend-paginated inventory fetch ──────────────────────────────────
-  const fetchLocalInventory = useCallback(async (page: number, limit: number, q: string) => {
+  const fetchLocalInventory = useCallback(async (page: number, limit: number, q: string, stage?: string) => {
     setPageLoading(true);
     try {
-      const res = await masterCatalogService.listMasterItems({ page, limit, q: q || undefined });
+      const res = await masterCatalogService.listMasterItems({ page, limit, q: q || undefined, stage: stage || undefined });
       const mapped: ArticleType[] = (res.data || []).map((item: any) => {
         const normalizedVariants = (item.variants || []).map((v: any) => {
           const sizeSkus: Record<string, string> = v.sizeSkus || {};
@@ -195,11 +201,11 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
     }
   }, []);
 
-  // Fetch on page/pageSize change
+  // Fetch on page/pageSize/tab change
   useEffect(() => {
-    fetchLocalInventory(currentPage, pageSize, debouncedSearch.current);
+    fetchLocalInventory(currentPage, pageSize, debouncedSearch.current, stageForTab);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize]);
+  }, [currentPage, pageSize, stockTab]);
 
   // Debounced search resets to page 1
   useEffect(() => {
@@ -207,15 +213,15 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
     searchDebounceRef.current = setTimeout(() => {
       debouncedSearch.current = searchTerm.trim();
       setCurrentPage(1);
-      fetchLocalInventory(1, pageSize, searchTerm.trim());
+      fetchLocalInventory(1, pageSize, searchTerm.trim(), stageForTab);
     }, 400);
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchTerm]);
+  }, [searchTerm, stockTab]);
 
   // Real-time refresh inventory on catalog / grn changes
   useEffect(() => {
-    const handler = () => fetchLocalInventory(currentPage, pageSize, debouncedSearch.current);
+    const handler = () => fetchLocalInventory(currentPage, pageSize, debouncedSearch.current, stageForTab);
     window.addEventListener('catalogRefetch', handler);
     window.addEventListener('grnRefetch', handler);
     return () => {
@@ -223,7 +229,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
       window.removeEventListener('grnRefetch', handler);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize]);
+  }, [currentPage, pageSize, stockTab]);
 
   const filteredInventory = localArticles.map(a => ({ articleId: a.id, ...inventory.find(i => i.articleId === a.id) }));
 
@@ -254,8 +260,8 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
       });
       toast.success(`Stock ${movementType === 'INWARD' ? 'inward' : 'outward'} recorded (${cartons} carton(s))`);
       closeModal();
-      fetchLocalInventory(currentPage, pageSize, debouncedSearch.current);
-      fetchStockTotals();
+      fetchLocalInventory(currentPage, pageSize, debouncedSearch.current, stageForTab);
+      fetchStockTotals(stageForTab);
       if (onRefresh) onRefresh();
     } catch (err: any) {
       toast.error(err?.message || 'Failed to record stock movement');
@@ -283,6 +289,30 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
 
   return (
     <div className="space-y-6">
+      {/* Tab Switcher */}
+      <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
+        <button
+          onClick={() => { setStockTab('RFD'); setCurrentPage(1); }}
+          className={`px-5 py-2 rounded-lg text-sm font-bold transition-all ${
+            stockTab === 'RFD'
+              ? 'bg-white text-indigo-700 shadow-sm border border-slate-200'
+              : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          RFD
+        </button>
+        <button
+          onClick={() => { setStockTab('PREORDER'); setCurrentPage(1); }}
+          className={`px-5 py-2 rounded-lg text-sm font-bold transition-all ${
+            stockTab === 'PREORDER'
+              ? 'bg-white text-amber-700 shadow-sm border border-slate-200'
+              : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          Pre-Order
+        </button>
+      </div>
+
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
         <div className="flex items-center gap-4">
            <div className="p-3 bg-indigo-50 rounded-xl">
@@ -314,55 +344,75 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
             />
           </div>
           <button
-            onClick={() => openMovementModal('INWARD')}
+            onClick={() => {
+              if (stockTab === 'PREORDER') {
+                setMovementType('INWARD');
+                setSelectedArticleId('');
+                setSelectedVariantId('');
+                setModalArticleSearch('');
+                setCartons('');
+                setReason('');
+                setNote('');
+                setStep(1);
+                setShowModal(true);
+              } else {
+                openMovementModal('INWARD');
+              }
+            }}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-100"
           >
-            <ArrowUpCircle size={16} /> Stock Movement
+            <ArrowUpCircle size={16} /> {stockTab === 'PREORDER' ? 'Stock Inward' : 'Stock Movement'}
           </button>
         </div>
       </div>
 
       {/* Stats Row */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className={`grid gap-4 ${stockTab === 'RFD' ? 'grid-cols-3' : 'grid-cols-1 max-w-xs'}`}>
         <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm p-4 flex items-center gap-4">
           <div className="p-2.5 bg-emerald-50 rounded-xl">
             <TrendingUp size={20} className="text-emerald-600" />
           </div>
           <div>
-            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Available</p>
+            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">
+              {stockTab === 'RFD' ? 'Available' : 'Quantity'}
+            </p>
             <div className="flex items-baseline gap-1.5">
               <span className="text-2xl font-black text-slate-900">{Math.floor(totalLivePairs / 24).toLocaleString()}</span>
               <span className="text-xs font-bold text-slate-400">Ctns</span>
             </div>
-            <p className="text-[10px] text-slate-400 mt-0.5">{totalLivePairs.toLocaleString()} free pairs</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">{totalLivePairs.toLocaleString()} pairs</p>
           </div>
         </div>
-        <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm p-4 flex items-center gap-4">
-          <div className="p-2.5 bg-indigo-50 rounded-xl">
-            <ShoppingCart size={20} className="text-indigo-600" />
-          </div>
-          <div>
-            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">PO Pending</p>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-slate-900">{Math.floor(totalPOPairs / 24).toLocaleString()}</span>
-              <span className="text-xs font-bold text-slate-400">Ctns</span>
+        {stockTab === 'RFD' && (
+          <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm p-4 flex items-center gap-4">
+            <div className="p-2.5 bg-indigo-50 rounded-xl">
+              <ShoppingCart size={20} className="text-indigo-600" />
             </div>
-            <p className="text-[10px] text-slate-400 mt-0.5">{totalPOPairs.toLocaleString()} pairs incoming</p>
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-4 flex items-center gap-4">
-          <div className="p-2.5 bg-amber-50 rounded-xl">
-            <Lock size={20} className="text-amber-600" />
-          </div>
-          <div>
-            <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Blocked</p>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-slate-900">{Math.floor(totalBlockedPairs / 24).toLocaleString()}</span>
-              <span className="text-xs font-bold text-slate-400">Ctns</span>
+            <div>
+              <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">PO Pending</p>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-2xl font-black text-slate-900">{Math.floor(totalPOPairs / 24).toLocaleString()}</span>
+                <span className="text-xs font-bold text-slate-400">Ctns</span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">{totalPOPairs.toLocaleString()} pairs incoming</p>
             </div>
-            <p className="text-[10px] text-slate-400 mt-0.5">{totalBlockedPairs.toLocaleString()} pairs</p>
           </div>
-        </div>
+        )}
+        {stockTab === 'RFD' && (
+          <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-4 flex items-center gap-4">
+            <div className="p-2.5 bg-amber-50 rounded-xl">
+              <Lock size={20} className="text-amber-600" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Blocked</p>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-2xl font-black text-slate-900">{Math.floor(totalBlockedPairs / 24).toLocaleString()}</span>
+                <span className="text-xs font-bold text-slate-400">Ctns</span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">{totalBlockedPairs.toLocaleString()} pairs</p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="space-y-3">
@@ -428,29 +478,35 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                 {/* Stock Summary Columns */}
                 <div className="hidden lg:flex items-center gap-6 mr-4">
                   <div className="text-center w-24 border-l border-slate-100 pl-4">
-                    <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest mb-0.5">Available</p>
+                    <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest mb-0.5">
+                      {stockTab === 'RFD' ? 'Available' : 'Quantity'}
+                    </p>
                     <div className="flex items-baseline justify-center gap-1">
                       <span className="text-xl font-black text-slate-900">{Math.floor(articleLivePairs / 24)}</span>
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Ctns</span>
                     </div>
                     <p className="text-[9px] text-slate-400 mt-0.5">{articleLivePairs} prs</p>
                   </div>
-                  <div className="text-center w-24 border-l border-slate-100 pl-4">
-                    <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">PO Pending</p>
-                    <div className="flex items-baseline justify-center gap-1">
-                      <span className="text-xl font-black text-slate-900">{Math.floor(articlePOPairs / 24)}</span>
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Ctns</span>
+                  {stockTab === 'RFD' && (
+                    <div className="text-center w-24 border-l border-slate-100 pl-4">
+                      <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">PO Pending</p>
+                      <div className="flex items-baseline justify-center gap-1">
+                        <span className="text-xl font-black text-slate-900">{Math.floor(articlePOPairs / 24)}</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Ctns</span>
+                      </div>
+                      <p className="text-[9px] text-slate-400 mt-0.5">{articlePOPairs} prs</p>
                     </div>
-                    <p className="text-[9px] text-slate-400 mt-0.5">{articlePOPairs} prs</p>
-                  </div>
-                  <div className="text-center w-24 border-l border-slate-100 pl-4">
-                    <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest mb-0.5">Blocked</p>
-                    <div className="flex items-baseline justify-center gap-1">
-                      <span className="text-xl font-black text-slate-900">{Math.floor(articleBlockedPairs / 24)}</span>
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Ctns</span>
+                  )}
+                  {stockTab === 'RFD' && (
+                    <div className="text-center w-24 border-l border-slate-100 pl-4">
+                      <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest mb-0.5">Blocked</p>
+                      <div className="flex items-baseline justify-center gap-1">
+                        <span className="text-xl font-black text-slate-900">{Math.floor(articleBlockedPairs / 24)}</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Ctns</span>
+                      </div>
+                      <p className="text-[9px] text-slate-400 mt-0.5">{articleBlockedPairs} prs</p>
                     </div>
-                    <p className="text-[9px] text-slate-400 mt-0.5">{articleBlockedPairs} prs</p>
-                  </div>
+                  )}
                 </div>
 
                 {/* Actions */}
@@ -464,22 +520,28 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
               </div>
 
               {/* Mobile Stats Row */}
-              <div className="lg:hidden grid grid-cols-3 gap-1.5 px-4 pb-4">
+              <div className={`lg:hidden grid gap-1.5 px-4 pb-4 ${stockTab === 'RFD' ? 'grid-cols-3' : 'grid-cols-1'}`}>
                 <div className="bg-emerald-50/50 p-2 rounded-xl text-center border border-emerald-100">
-                  <p className="text-[8px] font-black text-emerald-600 uppercase tracking-tighter mb-0.5">Avail</p>
+                  <p className="text-[8px] font-black text-emerald-600 uppercase tracking-tighter mb-0.5">
+                    {stockTab === 'RFD' ? 'Avail' : 'Qty'}
+                  </p>
                   <p className="text-sm font-black text-slate-900">{Math.floor(articleLivePairs / 24)} <span className="text-[8px] text-slate-400">C</span></p>
                   <p className="text-[8px] text-slate-400">{articleLivePairs} prs</p>
                 </div>
-                <div className="bg-indigo-50/50 p-2 rounded-xl text-center border border-indigo-100">
-                  <p className="text-[8px] font-black text-indigo-600 uppercase tracking-tighter mb-0.5">PO</p>
-                  <p className="text-sm font-black text-slate-900">{Math.floor(articlePOPairs / 24)} <span className="text-[8px] text-slate-400">C</span></p>
-                  <p className="text-[8px] text-slate-400">{articlePOPairs} prs</p>
-                </div>
-                <div className="bg-amber-50/50 p-2 rounded-xl text-center border border-amber-100">
-                  <p className="text-[8px] font-black text-amber-600 uppercase tracking-tighter mb-0.5">Blocked</p>
-                  <p className="text-sm font-black text-slate-900">{Math.floor(articleBlockedPairs / 24)} <span className="text-[8px] text-slate-400">C</span></p>
-                  <p className="text-[8px] text-slate-400">{articleBlockedPairs} prs</p>
-                </div>
+                {stockTab === 'RFD' && (
+                  <div className="bg-indigo-50/50 p-2 rounded-xl text-center border border-indigo-100">
+                    <p className="text-[8px] font-black text-indigo-600 uppercase tracking-tighter mb-0.5">PO</p>
+                    <p className="text-sm font-black text-slate-900">{Math.floor(articlePOPairs / 24)} <span className="text-[8px] text-slate-400">C</span></p>
+                    <p className="text-[8px] text-slate-400">{articlePOPairs} prs</p>
+                  </div>
+                )}
+                {stockTab === 'RFD' && (
+                  <div className="bg-amber-50/50 p-2 rounded-xl text-center border border-amber-100">
+                    <p className="text-[8px] font-black text-amber-600 uppercase tracking-tighter mb-0.5">Blocked</p>
+                    <p className="text-sm font-black text-slate-900">{Math.floor(articleBlockedPairs / 24)} <span className="text-[8px] text-slate-400">C</span></p>
+                    <p className="text-[8px] text-slate-400">{articleBlockedPairs} prs</p>
+                  </div>
+                )}
               </div>
 
               {/* Variant Dropdown Content */}
@@ -496,9 +558,15 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                              <tr>
                                <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">Variant Details</th>
                                <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Color</th>
-                               <th className="px-6 py-3 text-[9px] font-black text-emerald-500 uppercase tracking-widest text-center">Available</th>
-                               <th className="px-6 py-3 text-[9px] font-black text-indigo-500 uppercase tracking-widest text-center">PO Pending</th>
-                               <th className="px-6 py-3 text-[9px] font-black text-amber-500 uppercase tracking-widest text-center">Blocked</th>
+                               <th className="px-6 py-3 text-[9px] font-black text-emerald-500 uppercase tracking-widest text-center">
+                                 {stockTab === 'RFD' ? 'Available' : 'Quantity'}
+                               </th>
+                               {stockTab === 'RFD' && (
+                                 <th className="px-6 py-3 text-[9px] font-black text-indigo-500 uppercase tracking-widest text-center">PO Pending</th>
+                               )}
+                               {stockTab === 'RFD' && (
+                                 <th className="px-6 py-3 text-[9px] font-black text-amber-500 uppercase tracking-widest text-center">Blocked</th>
+                               )}
                                <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">Actions</th>
                              </tr>
                           </thead>
@@ -555,24 +623,30 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
                                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Cartons</p>
                                      <p className="text-[8px] text-slate-300">{livePairs} prs</p>
                                    </td>
-                                   <td className="px-6 py-3 text-center">
-                                     <span className="text-sm font-black text-indigo-600">{poCtns}</span>
-                                     <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Cartons</p>
-                                     <p className="text-[8px] text-slate-300">{poPairs} prs</p>
-                                   </td>
-                                   <td className="px-6 py-3 text-center">
-                                     <span className="text-sm font-black text-amber-500">{blockedCtns}</span>
-                                     <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Cartons</p>
-                                     <p className="text-[8px] text-slate-300">{blockedPairs} prs</p>
-                                   </td>
+                                   {stockTab === 'RFD' && (
+                                     <td className="px-6 py-3 text-center">
+                                       <span className="text-sm font-black text-indigo-600">{poCtns}</span>
+                                       <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Cartons</p>
+                                       <p className="text-[8px] text-slate-300">{poPairs} prs</p>
+                                     </td>
+                                   )}
+                                   {stockTab === 'RFD' && (
+                                     <td className="px-6 py-3 text-center">
+                                       <span className="text-sm font-black text-amber-500">{blockedCtns}</span>
+                                       <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Cartons</p>
+                                       <p className="text-[8px] text-slate-300">{blockedPairs} prs</p>
+                                     </td>
+                                   )}
                                    <td className="px-6 py-3">
                                       <div className="flex justify-end items-center gap-2">
-                                        <button
-                                          onClick={() => openMovementModal('OUTWARD', article.id, variant.id)}
-                                          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-[9px] font-bold hover:bg-rose-100 transition-all border border-rose-100"
-                                        >
-                                          <Minus size={12} /> Outward
-                                        </button>
+                                        {stockTab === 'RFD' && (
+                                          <button
+                                            onClick={() => openMovementModal('OUTWARD', article.id, variant.id)}
+                                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-[9px] font-bold hover:bg-rose-100 transition-all border border-rose-100"
+                                          >
+                                            <Minus size={12} /> Outward
+                                          </button>
+                                        )}
                                         <button
                                           onClick={() => openMovementModal('INWARD', article.id, variant.id)}
                                           className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg text-[9px] font-bold hover:bg-emerald-100 transition-all border border-emerald-100"
@@ -644,7 +718,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({ inventory, articles, 
             {/* Body */}
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
 
-              {/* Step 0: Type selection */}
+              {/* Step 0: Type selection (RFD only — Pre-Order skips to step 1 directly) */}
               {step === 0 && (
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <button

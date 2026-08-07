@@ -17,7 +17,6 @@ import {
   Shield,
   AlertCircle,
   Loader,
-  Trash2,
   Edit,
   Eye,
   EyeOff,
@@ -198,8 +197,8 @@ const DistributorActivityOverview: React.FC<{ distributorId: string }> = ({ dist
           {[
             { label: "Total Orders",  value: summary.totalOrders.toLocaleString(),            icon: <Package size={14} />,      color: "text-indigo-600",  bg: "bg-indigo-50" },
             { label: "Total Value",   value: `₹${summary.totalAmount.toLocaleString()}`,       icon: <IndianRupee size={14} />,   color: "text-emerald-600", bg: "bg-emerald-50" },
-            { label: "Total Pairs",   value: summary.totalPairs.toLocaleString(),              icon: <Package size={14} />,      color: "text-blue-600",    bg: "bg-blue-50" },
-            { label: "Returns",       value: `${summary.totalReturns} (${summary.returnPairs} pr)`, icon: <RotateCcw size={14} />, color: "text-amber-600",   bg: "bg-amber-50" },
+            { label: "Total CTN",   value: Math.floor(summary.totalPairs / 24).toLocaleString(),   icon: <Package size={14} />,      color: "text-blue-600",    bg: "bg-blue-50" },
+            { label: "Returns",       value: `${summary.totalReturns} (${Math.floor(summary.returnPairs / 24)} ctn)`, icon: <RotateCcw size={14} />, color: "text-amber-600",   bg: "bg-amber-50" },
           ].map(s => (
             <div key={s.label} className={`${s.bg} rounded-xl p-3`}>
               <div className={`${s.color} mb-1`}>{s.icon}</div>
@@ -633,7 +632,7 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
         }
       }
 
-      let updatedDistributor = null;
+      let updatedDistributor: any = null;
       if (editingId) {
         // Update existing distributor
         updatedDistributor = await distributorService.updateDistributor(editingId, payload);
@@ -719,6 +718,31 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       const errorMsg = err.message || "Failed to update login status";
       setError(errorMsg);
       console.error("Error toggling login:", err);
+    }
+  };
+
+  const handleToggleActiveStatus = async (distributor: User) => {
+    try {
+      setError(null);
+      if (!distributor.id) {
+        throw new Error("Missing distributor id");
+      }
+      const updated: any = await distributorService.toggleDistributorStatus(
+        distributor.id
+      );
+      const nextActive = updated.isActive;
+      toast.success(
+        `${distributor.companyName} marked ${nextActive ? "Active" : "Inactive"}`
+      );
+      setDistributors((prev) =>
+        prev.map((d) =>
+          d.id === distributor.id ? { ...d, isActive: nextActive } : d
+        )
+      );
+    } catch (err: any) {
+      const errorMsg = err.message || "Failed to update status";
+      setError(errorMsg);
+      console.error("Error toggling active status:", err);
     }
   };
 
@@ -1268,14 +1292,14 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                 <h2 className="text-2xl font-bold text-slate-900 leading-tight">
                   {d.companyName}
                 </h2>
-                <div className="flex items-center gap-2 mt-1">
+                {/* <div className="flex items-center gap-2 mt-1">
                   <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded text-[10px] font-black uppercase tracking-wider">
-                    Active Partner
+                    Active
                   </span>
                   <span className="text-xs text-slate-500 font-mono">
                     {d.id}
                   </span>
-                </div>
+                </div> */}
               </div>
             </div>
 
@@ -1707,9 +1731,20 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                     </tr>
                   ) : (
                     distributors.map((dist) => {
-                      const hasOrders = orders.filter(
-                        (o) => o.distributorId === dist.id
-                      ).length;
+                      // Order.distributorId references the linked login
+                      // User._id — NOT the Distributor's own _id (dist.id) —
+                      // so match against dist.userId. It also comes back
+                      // either as a plain string or, when the backend
+                      // populates it for display, as an object ({ id/_id,
+                      // name, email, ... }).
+                      const distUserId = (dist as any).userId;
+                      const hasOrders = orders.filter((o) => {
+                        const oDistId =
+                          typeof o.distributorId === "string"
+                            ? o.distributorId
+                            : (o.distributorId as any)?.id || (o.distributorId as any)?._id;
+                        return !!oDistId && !!distUserId && String(oDistId) === String(distUserId);
+                      }).length;
 
                       return (
                         <tr
@@ -1779,17 +1814,23 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                             </div>
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <div className="flex items-center justify-end gap-2">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteDistributor(dist.id);
-                                }}
-                                className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
-                                title="Delete"
+                            <div className="flex items-center justify-end gap-3">
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex items-center gap-1.5"
+                                title={dist.isActive !== false ? "Active" : "Inactive"}
                               >
-                                <Trash2 size={18} />
-                              </button>
+                                <span className={`text-[10px] font-black uppercase tracking-wider ${
+                                  dist.isActive !== false ? "text-emerald-600" : "text-slate-400"
+                                }`}>
+                                  {dist.isActive !== false ? "Active" : "Inactive"}
+                                </span>
+                                <Switch
+                                  checked={dist.isActive !== false}
+                                  onCheckedChange={() => handleToggleActiveStatus(dist)}
+                                  className="scale-90"
+                                />
+                              </div>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();

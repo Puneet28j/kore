@@ -201,9 +201,6 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   const transportInputRef = useRef<HTMLInputElement>(null);
   const receivingNoteInputRef = useRef<HTMLInputElement>(null);
 
-  // Allocation state for Admins — re-derive whenever currentOrder changes
-  const [allocations, setAllocations] = useState<Record<string, any>>({});
-  const [blockingState, setBlockingState] = useState<Record<string, any>>({});
   const [scannedItems, setScannedItems] = useState<Record<string, number>>({}); // variantId -> cartonCount verified
   const [scanInput, setScanInput] = useState("");
 
@@ -216,187 +213,6 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   const [scannedCTNs, setScannedCTNs] = useState<Set<string>>(new Set());
   const [previewDoc, setPreviewDoc] = useState<{ url: string; title: string } | null>(null);
   
-  // Real-time stock state to align with VariantDetailsPage
-  const [variantStockData, setVariantStockData] = useState<Record<string, { 
-    liveStockMap: Record<string, number>, 
-    blockedStockMap: Record<string, number> 
-  }>>({});
-  const [isLoadingStock, setIsLoadingStock] = useState(false);
-
-  // Re-sync allocation state from order data (runs on mount + after save)
-  React.useEffect(() => {
-    const initialAlloc: Record<string, any> = {};
-    const initialBlock: Record<string, any> = {};
-    currentOrder.items.forEach(item => {
-      if (item.variantId) {
-        const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
-        const defaultCartons = item.allocatedCartonCount || remaining;
-        const ratio = item.cartonCount > 0 ? defaultCartons / item.cartonCount : 0;
-        const defaultPairs = item.allocatedPairCount || Math.round(item.pairCount * ratio);
-        const defaultSizeQtys = Object.keys(item.allocatedSizeQuantities || {}).length > 0
-          ? { ...(item.allocatedSizeQuantities ?? {}) }
-          : Object.fromEntries(Object.entries(item.sizeQuantities || {}).map(([s, q]) => [s, Math.round((q as number) * ratio)]));
-        initialAlloc[item.variantId] = {
-          variantId: item.variantId,
-          allocatedCartonCount: defaultCartons,
-          allocatedPairCount: defaultPairs,
-          allocatedSizeQuantities: defaultSizeQtys,
-        };
-        initialBlock[item.variantId] = {
-          variantId: item.variantId,
-          blockedCartonCount: item.blockedCartonCount ?? 0,
-          blockedPairCount: item.blockedPairCount ?? 0,
-          blockedSizeQuantities: { ...(item.blockedSizeQuantities ?? {}) }
-        };
-      }
-    });
-    setAllocations(initialAlloc);
-    setBlockingState(initialBlock);
-  }, [currentOrder]);
-
-  const fetchAllVariantStock = async () => {
-    const variantIds = Array.from(new Set(currentOrder.items.map(item => item.variantId).filter(Boolean)));
-    if (variantIds.length === 0) return;
-
-    setIsLoadingStock(true);
-    const stockMap: typeof variantStockData = {};
-    
-    try {
-      await Promise.all(variantIds.map(async (vid) => {
-        try {
-          const url = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5005/api') + `/master-catalog/variants/${vid}/stock`;
-          const res = await fetch(url);
-          const json = await res.json();
-          if (json.data) {
-            stockMap[vid!] = {
-              liveStockMap: json.data.liveStockMap || {},
-              blockedStockMap: json.data.blockedStockMap || {}
-            };
-          }
-        } catch (err) {
-          console.error(`Failed to fetch stock for variant ${vid}`, err);
-        }
-      }));
-      setVariantStockData(stockMap);
-    } finally {
-      setIsLoadingStock(false);
-    }
-  };
-
-  React.useEffect(() => {
-    fetchAllVariantStock();
-  }, [currentOrder.id]);
-
-  const handleCartonAllocationChange = (variantId: string, newCartonCount: number, item: OrderItem) => {
-    const article = articles.find(a => a.id === item.articleId);
-    const variant = article?.variants?.find(v => v.id === item.variantId);
-
-    setAllocations(prev => {
-      // Block is now optional — allocate up to remaining unfulfilled quantity
-      const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
-      const cartonCount = Math.max(0, Math.min(newCartonCount, remaining));
-      
-      const originalCartonCount = item.cartonCount;
-      const originalPairCount = item.pairCount;
-      const originalSizeQuantities = item.sizeQuantities || variant?.sizeQuantities || {};
-
-      const ratio = originalCartonCount > 0 ? cartonCount / originalCartonCount : 0;
-      
-      const newPairCount = Math.round(originalPairCount * ratio);
-      const newSizeQuantities: Record<string, number> = {};
-      
-      Object.entries(originalSizeQuantities).forEach(([size, qty]) => {
-        newSizeQuantities[size] = Math.round(qty * ratio);
-      });
-
-      return {
-        ...prev,
-        [variantId]: {
-          variantId,
-          allocatedCartonCount: cartonCount,
-          allocatedPairCount: newPairCount,
-          allocatedSizeQuantities: newSizeQuantities
-        }
-      };
-    });
-  };
-
-  const handleCartonBlockingChange = (variantId: string, newCartonCount: number, item: OrderItem) => {
-    const article = articles.find(a => a.id === item.articleId);
-    const variant = article?.variants?.find(v => v.id === item.variantId);
-
-    // Calculate live limit
-    const stockData = variantStockData[variantId];
-    let maxLive = Infinity;
-    if (stockData?.liveStockMap && variant?.sizeQuantities) {
-      const possibleCartons = Object.entries(variant.sizeQuantities).map(([sz, count]) => {
-        const reqPerCarton = Number(count) || 0;
-        if (reqPerCarton <= 0) return Infinity;
-        const cleanSz = sz.trim();
-        const physical = Number(stockData.liveStockMap[cleanSz] ?? stockData.liveStockMap[sz]) || 0;
-        const currentBlocked = Number(stockData.blockedStockMap[cleanSz] ?? stockData.blockedStockMap[sz]) || 0;
-        const available = Math.max(0, physical - currentBlocked);
-        // We can block what's already blocked in THIS order + what's available unblocked
-        // But simpler: Physical - (TotalBlocked - ItemBlocked)
-        return Math.floor(available / reqPerCarton);
-      });
-      const unblockedCartons = Math.min(...possibleCartons);
-      maxLive = (item.blockedCartonCount || 0) + (unblockedCartons === Infinity ? 0 : unblockedCartons);
-    }
-
-    setBlockingState(prev => {
-      // Blocking is limited by (ordered total - fulfilled) AND live available
-      const remainingOrdered = item.cartonCount - (item.fulfilledCartonCount || 0);
-      const limit = Math.min(remainingOrdered, maxLive);
-      const cartonCount = Math.max(0, Math.min(newCartonCount, limit));
-      
-      const originalCartonCount = item.cartonCount;
-      const originalPairCount = item.pairCount;
-      const originalSizeQuantities = item.sizeQuantities || variant?.sizeQuantities || {};
-
-      const ratio = originalCartonCount > 0 ? cartonCount / originalCartonCount : 0;
-      
-      const newPairCount = Math.round(originalPairCount * ratio);
-      const newSizeQuantities: Record<string, number> = {};
-      
-      Object.entries(originalSizeQuantities).forEach(([size, qty]) => {
-        newSizeQuantities[size] = Math.round(qty * ratio);
-      });
-
-      return {
-        ...prev,
-        [variantId]: {
-          variantId,
-          blockedCartonCount: cartonCount,
-          blockedPairCount: newPairCount,
-          blockedSizeQuantities: newSizeQuantities
-        }
-      };
-    });
-  };
-
-  const handleUpdateBlockedStock = async () => {
-    try {
-      setUploading(true);
-      const blockedItems = Object.values(blockingState);
-      
-      const updated = await distributorOrderService.updateOrderStatus(
-        currentOrder.id, 
-        currentOrder.status, 
-        { blockedItems }
-      );
-      if (updated) {
-        setCurrentOrder(updated);
-        fetchAllVariantStock(); // Refresh live counts after blocking update
-        toast.success("Blocked stock updated successfully!");
-      }
-    } catch (err: any) {
-      console.error("Failed to update blocked stock", err);
-      toast.error(err?.response?.data?.message || "Failed to update blocked stock");
-    } finally {
-      setUploading(false);
-    }
-  };
 
   const handleScanSKU = (sku: string) => {
     if (!sku.trim()) return;
@@ -422,11 +238,10 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
       const variantSKU = (variant.sku || "").toLowerCase().replace(/\s+/g, "");
 
       if (normalizedInput === cartonSKU || (variantSKU && normalizedInput === variantSKU)) {
-        // Use live allocations state for limit check to allow immediate verification after adjustments
-        const allocated = allocations[item.variantId!]?.allocatedCartonCount ?? item.allocatedCartonCount ?? 0;
+        const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
         const alreadyScanned = scannedItems[item.variantId!] || 0;
-        
-        if (alreadyScanned < allocated) {
+
+        if (alreadyScanned < remaining) {
           setScannedItems(prev => ({
             ...prev,
             [item.variantId!]: (prev[item.variantId!] || 0) + 1
@@ -448,21 +263,20 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
 
   const isScanningFinished = () => {
     return currentOrder.items.every(item => {
-      const allocated = allocations[item.variantId!]?.allocatedCartonCount ?? item.allocatedCartonCount ?? 0;
+      const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
       const scanned = scannedItems[item.variantId!] || 0;
-      return scanned >= allocated;
+      return scanned >= remaining;
     });
   };
 
   const handleAllocateAndProceed = async () => {
     try {
       setUploading(true);
-      const allocatedItems = Object.values(allocations);
       const targetStatus = [OrderStatus.BOOKED, OrderStatus.PARTIAL].includes(currentOrder.status)
         ? OrderStatus.PFD
         : currentOrder.status;
 
-      const options: any = { allocatedItems };
+      const options: any = {};
 
       if (targetStatus === OrderStatus.PFD) {
         // Validate required dispatch fields
@@ -498,7 +312,6 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
       const updated = await distributorOrderService.updateOrderStatus(currentOrder.id, targetStatus, options);
       if (updated) {
         setCurrentOrder(updated);
-        fetchAllVariantStock();
         toast.success('Order dispatched successfully!');
       }
     } catch (err: any) {
@@ -525,10 +338,8 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
 
   const generateExpectedCTNs = (): string[] => {
     const all: string[] = [];
-    Object.values(allocations).forEach((alloc: any) => {
-      const ctn = alloc.allocatedCartonCount || alloc.cartonCount || 0;
-      // Match allocation to order item by variantId for correct SKU lookup
-      const item = currentOrder.items.find(i => i.variantId === alloc.variantId) || currentOrder.items[0];
+    currentOrder.items.forEach(item => {
+      const ctn = item.cartonCount - (item.fulfilledCartonCount || 0);
       const code = getItemCode(item);
       for (let n = 1; n <= ctn; n++) all.push(`${code}-CT${String(n).padStart(4, '0')}`);
     });
@@ -641,6 +452,186 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     }
   };
 
+  const handlePrintOrderPDF = async () => {
+    // ── Pre-fetch all item images as base64 ────────────────────────────────
+    const imageMap: Record<string, string> = {};
+    await Promise.all(
+      currentOrder.items.map(async (item) => {
+        const article = articles.find(a => a.id === item.articleId);
+        const variant = article?.variants?.find(v => v.id === item.variantId);
+        const colorMedia = article?.colorMedia || [];
+        const matched = colorMedia.find((cm: any) => cm.color.toLowerCase() === variant?.color?.toLowerCase());
+        const rawUrl = (matched?.images?.length > 0)
+          ? matched.images[0].url
+          : (variant?.images?.length > 0 ? variant.images[0] : article?.imageUrl);
+        if (!rawUrl) return;
+        try {
+          const fullUrl = getImageUrl(rawUrl);
+          const resp = await fetch(fullUrl);
+          const blob = await resp.blob();
+          const b64 = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          imageMap[item.variantId || item.articleId] = b64;
+        } catch {
+          // skip if image load fails
+        }
+      })
+    );
+
+    const doc = new jsPDF("portrait", "pt", "a4") as jsPDFWithAutoTable;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 40;
+    const IMG_SIZE = 36; // px in PDF pts
+    const ROW_HEIGHT = IMG_SIZE + 8;
+
+    const dist = typeof currentOrder.distributorId === 'object' ? currentOrder.distributorId : null;
+    const profile = dist?.distributorId;
+    const addr = profile?.shippingAddress;
+    const phone = profile?.phone || 'N/A';
+    const email = profile?.email || dist?.email || 'N/A';
+
+    // ── Title bar ──────────────────────────────────────────────────────────
+    autoTable(doc, {
+      startY: 20,
+      margin: { left: margin, right: margin },
+      theme: "plain",
+      styles: { cellPadding: 5, fontSize: 10, lineColor: [0,0,0], lineWidth: 0.5 },
+      body: [[
+        { content: COMPANY_CONFIG.name || 'Kore', styles: { fontStyle: "bold", fontSize: 12, halign: "left" } },
+        { content: "ORDER DETAIL", styles: { halign: "center", fontSize: 14, fontStyle: "bold", fillColor: [240, 245, 255] } },
+        { content: "", styles: { halign: "right" } },
+      ]],
+      columnStyles: { 0: { cellWidth: 200 }, 1: { cellWidth: 200 }, 2: { cellWidth: "auto" } },
+    });
+
+    // ── Order info grid ────────────────────────────────────────────────────
+    const statusLabel = STATUS_LABELS[currentOrder.status] || currentOrder.status;
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY,
+      margin: { left: margin, right: margin },
+      theme: "grid",
+      styles: { fontSize: 8, cellPadding: 4, lineColor: [0,0,0], lineWidth: 0.5, valign: "middle" },
+      columnStyles: {
+        0: { cellWidth: 70, fontStyle: "bold" },
+        1: { cellWidth: 160 },
+        2: { cellWidth: 60, fontStyle: "bold" },
+        3: { cellWidth: 110 },
+        4: { cellWidth: 60, fontStyle: "bold" },
+        5: { cellWidth: "auto" },
+      },
+      body: [
+        ["Order No.", `#${currentOrder.orderNumber || currentOrder.id.slice(-6).toUpperCase()}`, "Date", currentOrder.date || '-', "Status", statusLabel],
+        ["Distributor", currentOrder.distributorName || '-', "Company", profile?.companyName || '-', "Phone", phone],
+        ["Ship To", addr ? [addr.address1, addr.address2, addr.city, addr.state, addr.pinCode].filter(Boolean).join(', ') : '-', "Email", email, "Total Ctns", currentOrder.totalCartons],
+      ],
+    });
+
+    // ── Items table (col 0 = image placeholder, drawn via didDrawCell) ─────
+    const itemRows = currentOrder.items.map((item, idx) => {
+      const article = articles.find(a => a.id === item.articleId);
+      const variant = article?.variants?.find(v => v.id === item.variantId);
+      const assortment = (() => {
+        const sq = variant?.sizeQuantities;
+        if (!sq || Object.keys(sq).length === 0) return 'N/A';
+        return Object.keys(sq).sort((a, b) => parseInt(a) - parseInt(b)).map(s => `${s}:${sq[s]}`).join(', ');
+      })();
+      const remaining = Math.max(0, item.cartonCount - (item.fulfilledCartonCount || 0));
+      return [
+        "",                           // col 0: image (drawn below)
+        idx + 1,
+        article?.name || '-',
+        variant?.color || 'N/A',
+        variant?.sizeRange || '-',
+        assortment,
+        item.cartonCount,
+        item.fulfilledCartonCount || 0,
+        item.returnedCartonCount || 0,
+        remaining,
+      ];
+    });
+
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY + 12,
+      margin: { left: margin, right: margin },
+      theme: "grid",
+      headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: "bold", fontSize: 7, halign: "center" },
+      styles: { fontSize: 7, cellPadding: 3, lineColor: [0,0,0], lineWidth: 0.5, halign: "center", valign: "middle", minCellHeight: ROW_HEIGHT },
+      columnStyles: {
+        0: { cellWidth: ROW_HEIGHT + 4 },   // image column
+        2: { halign: "left" },              // Article
+        5: { halign: "left", cellWidth: 100 }, // Size Assortment
+      },
+      head: [["", "#", "Article", "Color", "Size Range", "Size Assortment", "Ordered\n(Ctn)", "Dispatched\n(Ctn)", "Returned\n(Ctn)", "Remaining\n(Ctn)"]],
+      body: itemRows,
+      didDrawCell: (data: any) => {
+        if (data.section === 'body' && data.column.index === 0) {
+          const item = currentOrder.items[data.row.index];
+          if (!item) return;
+          const key = item.variantId || item.articleId;
+          const b64 = imageMap[key];
+          if (!b64) return;
+          const pad = 3;
+          const cellX = data.cell.x + pad;
+          const cellY = data.cell.y + pad;
+          const size = Math.min(data.cell.width - pad * 2, data.cell.height - pad * 2);
+          try {
+            const fmt = b64.startsWith('data:image/png') ? 'PNG' : 'JPEG';
+            doc.addImage(b64, fmt, cellX, cellY, size, size);
+          } catch {
+            // skip if image can't be embedded
+          }
+        }
+      },
+    });
+
+    // ── Payment summary ────────────────────────────────────────────────────
+    const subtotal = currentOrder.totalAmount || 0;
+    const discAmt = currentOrder.discountAmount || 0;
+    const taxable = currentOrder.finalAmount ?? (subtotal - discAmt);
+    const gstRate = currentOrder.gstRate ?? 5;
+    const gstAmt = currentOrder.gstAmount ?? Math.round(taxable * gstRate / 100 * 100) / 100;
+    const finalPayable = Math.round(taxable + gstAmt);
+
+    const finalY = (doc as any).lastAutoTable.finalY + 12;
+    const summaryRows: any[] = [
+      ["Order Subtotal", `Rs. ${subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`],
+    ];
+    if (discAmt > 0) {
+      summaryRows.push(["Discount", `- Rs. ${discAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`]);
+      summaryRows.push(["Taxable Amount", `Rs. ${taxable.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`]);
+    }
+    summaryRows.push([`GST @ ${gstRate}%`, `Rs. ${gstAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`]);
+    summaryRows.push(["FINAL PAYABLE", `Rs. ${finalPayable.toLocaleString('en-IN')}`]);
+
+    autoTable(doc, {
+      startY: finalY,
+      margin: { left: pageWidth - margin - 220, right: margin },
+      theme: "grid",
+      styles: { fontSize: 8, cellPadding: 4, lineColor: [0,0,0], lineWidth: 0.5 },
+      columnStyles: { 0: { fontStyle: "bold", cellWidth: 110 }, 1: { halign: "right", cellWidth: 110 } },
+      body: summaryRows,
+      didParseCell: (data: any) => {
+        if (data.row.index === summaryRows.length - 1) {
+          data.cell.styles.fontStyle = "bold";
+          data.cell.styles.fontSize = 10;
+          data.cell.styles.textColor = [79, 70, 229];
+        }
+      },
+    });
+
+    // ── Footer ─────────────────────────────────────────────────────────────
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'italic');
+    doc.setTextColor(180, 180, 180);
+    doc.text('This is a system-generated order summary.', pageWidth / 2, doc.internal.pageSize.getHeight() - 20, { align: 'center' });
+
+    doc.save(`Order-${currentOrder.orderNumber || currentOrder.id.slice(-6).toUpperCase()}.pdf`);
+    toast.success("Order PDF downloaded!");
+  };
+
   const handleDownloadPI = () => {
     const doc = new jsPDF("portrait", "pt", "a4") as jsPDFWithAutoTable;
     
@@ -688,8 +679,8 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     ]);
 
     // Dynamic batch values for PI
-    const getBatchCartons = (item: any) => ['PFD', 'RFD', 'OFD'].includes(currentOrder.status) ? (item.allocatedCartonCount || 0) : item.cartonCount;
-    const getBatchPairs = (item: any) => ['PFD', 'RFD', 'OFD'].includes(currentOrder.status) ? (item.allocatedPairCount || 0) : item.pairCount;
+    const getBatchCartons = (item: any) => item.cartonCount - (item.fulfilledCartonCount || 0) || item.cartonCount;
+    const getBatchPairs = (item: any) => item.pairCount - (item.fulfilledPairCount || 0) || item.pairCount;
 
     const totalBatchPairs = currentOrder.items.reduce((sum, item) => sum + getBatchPairs(item), 0);
     const totalBatchCartons = currentOrder.items.reduce((sum, item) => sum + getBatchCartons(item), 0);
@@ -861,8 +852,8 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     worksheet.addRow([]); // Gap
 
     // Info Grid
-    const getBatchPairs = (item: any) => ['PFD', 'RFD', 'OFD'].includes(currentOrder.status) ? (item.allocatedPairCount || 0) : item.pairCount;
-    const getBatchCartons = (item: any) => ['PFD', 'RFD', 'OFD'].includes(currentOrder.status) ? (item.allocatedCartonCount || 0) : item.cartonCount;
+    const getBatchPairs = (item: any) => item.pairCount - (item.fulfilledPairCount || 0) || item.pairCount;
+    const getBatchCartons = (item: any) => item.cartonCount - (item.fulfilledCartonCount || 0) || item.cartonCount;
     const totalBatchPairs = currentOrder.items.reduce((sum, item) => sum + getBatchPairs(item), 0);
     const totalBatchCartons = currentOrder.items.reduce((sum, item) => sum + getBatchCartons(item), 0);
 
@@ -994,7 +985,6 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   };
 
   const statusSteps = [
-    { status: OrderStatus.PENDING,  label: 'Pending',          icon: <Clock size={16} /> },
     { status: OrderStatus.BOOKED,   label: 'Booked',           icon: <Package size={16} /> },
     { status: OrderStatus.PFD,      label: 'Dispatched',       icon: <Truck size={16} /> },
     { status: OrderStatus.RFD,      label: 'In Transit',       icon: <Truck size={16} /> },
@@ -1099,11 +1089,14 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
               </button>
             </>
           )}
-          <button className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition-all">
+          <button
+            onClick={() => {
+              toast.loading("Generating PDF...", { id: "print-pdf" });
+              handlePrintOrderPDF().finally(() => toast.dismiss("print-pdf"));
+            }}
+            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition-all"
+          >
             <Printer size={14} /> Print
-          </button>
-          <button className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition-all shadow-sm">
-            <Download size={14} /> Invoice
           </button>
         </div>
       </div>
@@ -1466,7 +1459,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                             <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Ordered (Ctn)</th>
                             <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Dispatched (Ctn)</th>
                             <th className="px-6 py-3 text-[10px] font-black text-rose-500 uppercase tracking-widest text-center">Returned (Ctn)</th>
-                            <th className="px-6 py-3 text-[10px] font-black text-rose-500 uppercase tracking-widest text-center">Remaining (Ctn)</th>
+                            <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Remaining (Ctn)</th>
                             <th className="px-6 py-3 text-[10px] font-black text-indigo-600 uppercase tracking-widest text-center">Allocation (Batch)</th>
                           </tr>
                         ) : (
@@ -1476,10 +1469,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                             <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Ordered (Ctn)</th>
                             <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Dispatched (Ctn)</th>
                             <th className="px-4 py-3 text-[10px] font-black text-rose-500 uppercase tracking-widest text-center">Returned (Ctn)</th>
-                            <th className="px-4 py-3 text-[10px] font-black text-rose-500 uppercase tracking-widest text-center">Remaining (Ctn)</th>
-                            <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center bg-indigo-50/30">Live Stock (Ctn)</th>
-                            <th className="px-4 py-3 text-[10px] font-black text-amber-600 uppercase tracking-widest text-center bg-amber-50/30">Block Stock <span className="normal-case font-medium text-amber-400">(opt)</span></th>
-                            <th className="px-4 py-3 text-[10px] font-black text-indigo-600 uppercase tracking-widest text-center bg-indigo-50/30">Allocation (Ctn)</th>
+                            <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Remaining (Ctn)</th>
                             {[OrderStatus.RFD, OrderStatus.OFD, OrderStatus.RECEIVED].includes(currentOrder.status) && (
                               <th className="px-4 py-3 text-[10px] font-black text-emerald-600 uppercase tracking-widest text-center">Scanned (Ctn)</th>
                             )}
@@ -1491,43 +1481,9 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                           const article = articles.find(a => a.id === item.articleId);
                           const variant = article?.variants?.find(v => v.id === item.variantId);
                           
-                          // Robust Assortment-aware Live Stock (Min cartons possible by size ratio) using real-time fetched data
-                          const getAssortmentLiveCartons = (delta: number = 0) => {
-                            const stockData = variantStockData[item.variantId!];
-                            if (!stockData?.liveStockMap || !variant?.sizeQuantities) return 0;
-                            
-                            const possibleCartons = Object.entries(variant.sizeQuantities).map(([sz, count]) => {
-                              const reqPerCarton = Number(count) || 0;
-                              if (reqPerCarton <= 0) return Infinity;
-
-                              // Robust lookup: check for trimmed keys and prioritize fetched liveStockMap
-                              const cleanSz = sz.trim();
-                              
-                              // Calculate available stock as (Physical/Live - Blocked)
-                              // We use the real-time stock map instead of variant.sizeMap which might be stale
-                              const physicalSizeStock = Number(stockData.liveStockMap[cleanSz] ?? stockData.liveStockMap[sz]) || 0;
-                              const blockedSizeStock = Number(stockData.blockedStockMap[cleanSz] ?? stockData.blockedStockMap[sz]) || 0;
-                              
-                              const availableSizeStock = Math.max(0, physicalSizeStock - blockedSizeStock);
-
-                              // Factor in pending blocking delta (delta is in cartons)
-                              const previewSizeStock = Math.max(0, availableSizeStock - (delta * reqPerCarton));
-                              return Math.floor(previewSizeStock / reqPerCarton);
-                            });
-                            const result = Math.min(...possibleCartons);
-                            return (result === Infinity || isNaN(result)) ? 0 : result;
-                          };
-
-                          // Pending blocking delta (local state change vs saved state)
-                          const currentBlockedSaved = item.blockedCartonCount || 0;
-                          const pendingBlocked = blockingState[item.variantId!]?.blockedCartonCount ?? currentBlockedSaved;
-                          const blockDelta = pendingBlocked - currentBlockedSaved;
-
-                          const previewLiveStockCartons = getAssortmentLiveCartons(blockDelta);
-
                           const scanned = scannedItems[item.variantId!] || 0;
-                          const allocatedCount = allocations[item.variantId!]?.allocatedCartonCount ?? item.allocatedCartonCount ?? 0;
-                          const isVerified = scanned >= allocatedCount && allocatedCount > 0;
+                          const remainingCount = item.cartonCount - (item.fulfilledCartonCount || 0);
+                          const isVerified = scanned >= remainingCount && remainingCount > 0;
 
                           if (isDistributor) {
                             const itemKey = item.variantId || item.articleId;
@@ -1603,21 +1559,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                   )}
                                 </td>
                                 <td className="px-6 py-4 text-center">
-                                  <p className="text-sm font-black text-emerald-600 leading-none">
-                                    {[OrderStatus.PFD, OrderStatus.RFD, OrderStatus.OFD].includes(currentOrder.status)
-                                      ? (item.allocatedCartonCount || 0)
-                                      : (item.fulfilledCartonCount || 0)}
-                                  </p>
+                                  <p className="text-sm font-black text-emerald-600 leading-none">{item.fulfilledCartonCount || 0}</p>
                                 </td>
                                 <td className="px-6 py-4 text-center">
                                   <p className="text-sm font-black text-rose-600 leading-none">{item.returnedCartonCount || 0}</p>
                                 </td>
                                 <td className="px-6 py-4 text-center">
-                                  <p className="text-sm font-black text-rose-500 leading-none">{Math.max(0, item.cartonCount - (item.fulfilledCartonCount || 0) - ([OrderStatus.PFD, OrderStatus.RFD, OrderStatus.OFD].includes(currentOrder.status) ? (item.allocatedCartonCount || 0) : 0))}</p>
-                                </td>
-                                <td className="px-6 py-4 text-center">
-                                  <p className="text-sm font-black text-indigo-500 leading-none">{item.allocatedCartonCount || 0}</p>
-                                  <p className="text-[8px] font-bold text-indigo-500 uppercase tracking-widest mt-1">Next Delivery</p>
+                                  <p className="text-sm font-black text-slate-400 leading-none">{Math.max(0, item.cartonCount - (item.fulfilledCartonCount || 0))}</p>
                                 </td>
                               </tr>
                             );
@@ -1694,54 +1642,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                 )}
                               </td>
                               <td className="px-4 py-4 text-center">
-                                <p className="text-sm font-black text-emerald-600 leading-none">
-                                  {[OrderStatus.PFD, OrderStatus.RFD, OrderStatus.OFD].includes(currentOrder.status)
-                                    ? (item.allocatedCartonCount || 0)
-                                    : (item.fulfilledCartonCount || 0)}
-                                </p>
+                                <p className="text-sm font-black text-emerald-600 leading-none">{item.fulfilledCartonCount || 0}</p>
                               </td>
                               <td className="px-4 py-4 text-center">
                                 <p className="text-sm font-black text-rose-600 leading-none">{item.returnedCartonCount || 0}</p>
                               </td>
                               <td className="px-4 py-4 text-center">
-                                <p className="text-sm font-black text-rose-500 leading-none">{item.cartonCount - (item.fulfilledCartonCount || 0) - ([OrderStatus.PFD, OrderStatus.RFD, OrderStatus.OFD].includes(currentOrder.status) ? (item.allocatedCartonCount || 0) : 0)}</p>
-                              </td>
-                              <td className="px-4 py-4 text-center bg-indigo-50/20">
-                                <div className="flex flex-col items-center">
-                                  <p className={`text-sm font-black leading-none ${previewLiveStockCartons > 0 ? 'text-indigo-600' : 'text-rose-500'}`}>{previewLiveStockCartons}</p>
-                                  {blockDelta !== 0 && (
-                                    <span className="text-[7px] font-bold text-amber-500 bg-amber-50 px-1 rounded mt-0.5">{blockDelta > 0 ? `-${blockDelta}` : `+${Math.abs(blockDelta)}`}</span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="px-4 py-4 text-center bg-amber-50/20">
-                                <input
-                                  type="number"
-                                  value={(() => { const v = blockingState[item.variantId!]?.blockedCartonCount ?? item.blockedCartonCount ?? 0; return v === 0 ? "" : v; })()}
-                                  placeholder="0"
-                                  min={0}
-                                  max={Math.min(
-                                    item.cartonCount - (item.fulfilledCartonCount || 0),
-                                    (item.blockedCartonCount || 0) + getAssortmentLiveCartons(0)
-                                  )}
-                                  onChange={(e) => handleCartonBlockingChange(item.variantId!, parseInt(e.target.value) || 0, item)}
-                                  className="w-14 h-7 text-center bg-white border border-amber-200 rounded text-xs font-black text-amber-600 outline-none focus:ring-1 focus:ring-amber-500 placeholder:text-amber-200"
-                                />
-                              </td>
-                              <td className="px-4 py-4 text-center bg-indigo-50/20">
-                                {[OrderStatus.BOOKED, OrderStatus.PARTIAL, OrderStatus.PFD, OrderStatus.RFD].includes(currentOrder.status) ? (
-                                  <input
-                                    type="number"
-                                    value={allocations[item.variantId!]?.allocatedCartonCount ?? (item.cartonCount - (item.fulfilledCartonCount || 0))}
-                                    placeholder="0"
-                                    min={0}
-                                    max={item.cartonCount - (item.fulfilledCartonCount || 0)}
-                                    onChange={(e) => handleCartonAllocationChange(item.variantId!, parseInt(e.target.value) || 0, item)}
-                                    className="w-14 h-7 text-center bg-white border border-indigo-200 rounded text-xs font-black text-indigo-600 outline-none focus:ring-1 focus:ring-indigo-500 placeholder:text-indigo-200"
-                                  />
-                                ) : (
-                                  <p className="text-sm font-black text-indigo-500 leading-none">{item.allocatedCartonCount || 0}</p>
-                                )}
+                                <p className="text-sm font-black text-slate-400 leading-none">{Math.max(0, item.cartonCount - (item.fulfilledCartonCount || 0))}</p>
                               </td>
                               {[OrderStatus.RFD, OrderStatus.OFD, OrderStatus.RECEIVED].includes(currentOrder.status) && (
                                 <td className="px-4 py-4 text-center">
@@ -1759,26 +1666,10 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                   </div>
 
                   {(() => {
-                    const totalAllocated = Object.values(allocations).reduce((sum, a) => sum + (a.allocatedCartonCount || 0), 0) ||
-                                         currentOrder.items.reduce((sum, i) => sum + (i.allocatedCartonCount || 0), 0);
-
-                    const itemsInBatch = currentOrder.items.filter(item => {
-                      const alloc = allocations[item.variantId!]?.allocatedCartonCount ?? item.allocatedCartonCount ?? 0;
-                      return alloc > 0;
-                    }).length;
-                    const itemsPending = currentOrder.items.filter(item => {
-                      const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
-                      const alloc = allocations[item.variantId!]?.allocatedCartonCount ?? item.allocatedCartonCount ?? 0;
-                      return remaining > 0 && alloc === 0;
-                    }).length;
-                    const hasAnyAllocation = itemsInBatch > 0;
-                    const isPartialBatch = itemsPending > 0;
-
-                    const hasUnsavedBlocking = currentOrder.items.some(item => {
-                      const saved = item.blockedCartonCount ?? 0;
-                      const current = blockingState[item.variantId!]?.blockedCartonCount ?? saved;
-                      return current !== saved;
-                    });
+                    const itemsInBatch = currentOrder.items.filter(item =>
+                      (item.cartonCount - (item.fulfilledCartonCount || 0)) > 0
+                    ).length;
+                    const isPartialBatch = false;
 
                     const _expectedCTNsForBtn = generateExpectedCTNs();
                     const ctnReady = _expectedCTNsForBtn.length === 0 || scannedCTNs.size >= _expectedCTNsForBtn.length;
@@ -1788,10 +1679,10 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                     if (isDistributor || ![OrderStatus.BOOKED, OrderStatus.PARTIAL, OrderStatus.PFD, OrderStatus.RFD].includes(currentOrder.status)) return null;
 
                     const stepConfig = {
-                      [OrderStatus.BOOKED]:  { num: 1, color: 'bg-indigo-600', title: 'Allocate & Dispatch',    hint: isPartialBatch ? `Partial dispatch — ${itemsInBatch} item(s) now, ${itemsPending} item(s) later.` : 'Set carton quantities, scan all CTNs, fill dispatch details, then confirm.' },
-                      [OrderStatus.PARTIAL]: { num: 1, color: 'bg-indigo-600', title: 'Dispatch Next Batch',    hint: isPartialBatch ? `${itemsInBatch} item(s) in this batch, ${itemsPending} item(s) pending.` : 'Allocate next delivery batch.' },
-                      [OrderStatus.PFD]:     { num: 2, color: 'bg-teal-500',   title: 'Mark as In Transit',    hint: 'Goods are dispatched — click to mark as In Transit when shipment is picked up by carrier.' },
-                      [OrderStatus.RFD]:     { num: 3, color: 'bg-orange-500', title: 'Out for Delivery',      hint: 'Optionally enter delivery agent details, then mark as Out for Delivery.' },
+                      [OrderStatus.BOOKED]:  { num: 1, color: 'bg-indigo-600', title: 'Dispatch',           hint: 'Scan all CTNs, fill dispatch details, then confirm.' },
+                      [OrderStatus.PARTIAL]: { num: 1, color: 'bg-indigo-600', title: 'Dispatch Next Batch', hint: 'Dispatch remaining cartons for this order.' },
+                      [OrderStatus.PFD]:     { num: 2, color: 'bg-teal-500',   title: 'Mark as In Transit',  hint: 'Goods are dispatched — click to mark as In Transit when shipment is picked up by carrier.' },
+                      [OrderStatus.RFD]:     { num: 3, color: 'bg-orange-500', title: 'Out for Delivery',    hint: 'Optionally enter delivery agent details, then mark as Out for Delivery.' },
                     } as const;
                     const step = stepConfig[currentOrder.status as keyof typeof stepConfig];
 
@@ -1806,11 +1697,6 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                             <div>
                               <div className="flex items-center gap-2">
                                 <p className="text-sm font-bold text-slate-900">{step.title}</p>
-                                {isPartialBatch && currentOrder.status !== OrderStatus.RFD && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[9px] font-black uppercase tracking-wider">
-                                    Partial · {itemsInBatch}/{itemsInBatch + itemsPending} items
-                                  </span>
-                                )}
                               </div>
                               <p className="text-[10px] font-medium text-slate-400">{step.hint}</p>
                             </div>
@@ -1999,31 +1885,19 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
 
                         {/* Action Row */}
                         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                          {/* Optional: Save Blocking Changes (only when user has made blocking edits) */}
-                          {hasUnsavedBlocking && [OrderStatus.BOOKED, OrderStatus.PARTIAL].includes(currentOrder.status) && (
-                            <button
-                              disabled={uploading}
-                              onClick={handleUpdateBlockedStock}
-                              className="flex items-center gap-1.5 px-4 py-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-xl font-bold text-[10px] uppercase hover:bg-amber-100 transition-all"
-                            >
-                              {uploading ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
-                              Save Reservations <span className="font-normal normal-case text-amber-500">(optional)</span>
-                            </button>
-                          )}
-
                           {/* Main actions */}
                           <div className="ml-auto flex items-center gap-3 flex-wrap w-full sm:w-auto">
 
-                            {/* BOOKED / PARTIAL: Allocate + Dispatch (includes doc upload) */}
+                            {/* BOOKED / PARTIAL: Dispatch (includes doc upload) */}
                             {[OrderStatus.BOOKED, OrderStatus.PARTIAL].includes(currentOrder.status) && (
                               <button
-                                disabled={uploading || !hasAnyAllocation || !allDocsUploaded}
-                                title={!ctnReady ? `Scan all cartons (${scannedCTNs.size}/${_expectedCTNsForBtn.length})` : !dispatchFieldsReady ? "Fill Vehicle No, Transporter, and LR No" : !hasAnyAllocation ? "Set allocation for at least one item" : undefined}
+                                disabled={uploading || !allDocsUploaded}
+                                title={!ctnReady ? `Scan all cartons (${scannedCTNs.size}/${_expectedCTNsForBtn.length})` : !dispatchFieldsReady ? "Fill Vehicle No, Transporter, and LR No" : undefined}
                                 onClick={handleAllocateAndProceed}
                                 className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700 transition-all shadow-md active:scale-95 disabled:opacity-50 w-full sm:w-auto justify-center"
                               >
                                 {uploading ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
-                                {isPartialBatch ? `Dispatch ${itemsInBatch} Item(s)` : 'Confirm Dispatch'}
+                                Confirm Dispatch
                               </button>
                             )}
 

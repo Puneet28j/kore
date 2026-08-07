@@ -22,7 +22,6 @@ import {
   StickyNote,
   CheckSquare,
   BoxesIcon,
-  Lock,
 } from "lucide-react";
 import { Order, OrderStatus, Article, Inventory } from "../../types";
 import OrderDetail from "../Distributor/OrderDetail";
@@ -611,7 +610,6 @@ const OrderProgress: React.FC<{
   status: OrderStatus;
 }> = ({ status }) => {
   const stages = [
-    OrderStatus.PENDING,
     OrderStatus.BOOKED,
     OrderStatus.PFD,
     OrderStatus.RFD,
@@ -659,98 +657,26 @@ const OrderProgress: React.FC<{
 };
 
 // ─── Booking Confirm Modal ────────────────────────────────────────────────────
-type BookingMode = "DISPATCH_READY" | "BLOCK_HOLD" | "NO_STOCK";
-
 const BookingConfirmModal: React.FC<{
   order: Order;
   articles: Article[];
   onClose: () => void;
   onSuccess: () => void;
-}> = ({ order, articles, onClose, onSuccess }) => {
-  const getItemLabel = (item: Order["items"][0]) => {
-    const article = articles.find((a) => a.id === item.articleId);
-    if (!article) return item.articleId;
-    const variant = article.variants?.find((v) => v.id === item.variantId);
-    return variant ? `${article.name} · ${variant.color}` : article.name;
-  };
-
-  const itemKey = (item: Order["items"][0]) => item.variantId ?? item.articleId;
-
-  const [mode, setMode] = useState<BookingMode>("DISPATCH_READY");
+}> = ({ order, onClose, onSuccess }) => {
   const [expectedDispatchDate, setExpectedDispatchDate] = useState("");
-  const [bookingPriority, setBookingPriority] = useState<"NORMAL" | "URGENT">(
-    "NORMAL"
-  );
+  const [bookingPriority, setBookingPriority] = useState<"NORMAL" | "URGENT">("NORMAL");
   const [adminNote, setAdminNote] = useState("");
-  const [blockReason, setBlockReason] = useState("");
-  const [blockCtns, setBlockCtns] = useState<Record<string, number>>(() =>
-    Object.fromEntries(order.items.map((it) => [itemKey(it), 0]))
-  );
   const [submitting, setSubmitting] = useState(false);
 
-  const setBlock = (key: string, delta: number, max: number) =>
-    setBlockCtns((prev) => ({
-      ...prev,
-      [key]: Math.min(max, Math.max(0, (prev[key] || 0) + delta)),
-    }));
-
-  const totalBlocked = Object.values(blockCtns).reduce((s, v) => s + v, 0);
-
   const handleSubmit = async () => {
-    if (mode === "BLOCK_HOLD") {
-      if (totalBlocked === 0) {
-        toast.error("Block karne ke liye kam se kam 1 CTN select karo");
-        return;
-      }
-      if (!blockReason.trim()) {
-        toast.error("Block karne ka reason dalna zaroori hai");
-        return;
-      }
-    }
-    if (mode === "NO_STOCK" && !expectedDispatchDate) {
-      toast.error("Expected dispatch date required hai jab stock nahi hai");
-      return;
-    }
     try {
       setSubmitting(true);
-
-      const blockedItems =
-        mode === "BLOCK_HOLD"
-          ? order.items
-              .filter((it) => (blockCtns[itemKey(it)] || 0) > 0)
-              .map((it) => ({
-                variantId: it.variantId,
-                blockedCartonCount: blockCtns[itemKey(it)] || 0,
-                blockedPairCount: (blockCtns[itemKey(it)] || 0) * 24,
-                blockedSizeQuantities: {},
-              }))
-          : undefined;
-
-      await distributorOrderService.updateOrderStatus(
-        order.id,
-        OrderStatus.BOOKED,
-        {
-          stockStatus: mode,
-          blockedItems,
-          blockReason: mode === "BLOCK_HOLD" ? blockReason.trim() : undefined,
-          expectedDispatchDate:
-            (mode === "BLOCK_HOLD" || mode === "NO_STOCK") &&
-            expectedDispatchDate
-              ? expectedDispatchDate
-              : undefined,
-          bookingPriority,
-          adminNote: adminNote.trim() || undefined,
-        }
-      );
-      toast.success(
-        `Order booked — ${
-          mode === "DISPATCH_READY"
-            ? "Ready to dispatch"
-            : mode === "BLOCK_HOLD"
-            ? `${totalBlocked} CTN blocked`
-            : "No stock, date set"
-        }`
-      );
+      await distributorOrderService.updateOrderStatus(order.id, OrderStatus.BOOKED, {
+        expectedDispatchDate: expectedDispatchDate || undefined,
+        bookingPriority,
+        adminNote: adminNote.trim() || undefined,
+      });
+      toast.success("Order booked — Ready to dispatch");
       onSuccess();
     } catch (err: any) {
       toast.error(err?.response?.data?.message || "Order book nahi hua");
@@ -759,49 +685,16 @@ const BookingConfirmModal: React.FC<{
     }
   };
 
-  const MODES: {
-    val: BookingMode;
-    label: string;
-    sub: string;
-    activeClass: string;
-  }[] = [
-    {
-      val: "DISPATCH_READY",
-      label: "Dispatch Ready",
-      sub: "Stock available, bhejna hai",
-      activeClass: "border-emerald-500 bg-emerald-50 text-emerald-700",
-    },
-    {
-      val: "BLOCK_HOLD",
-      label: "Block & Hold",
-      sub: "Stock reserve karo, baad mein bhejo",
-      activeClass: "border-indigo-500 bg-indigo-50 text-indigo-700",
-    },
-    {
-      val: "NO_STOCK",
-      label: "No Stock Yet",
-      sub: "Stock nahi, expected date do",
-      activeClass: "border-rose-500 bg-rose-50 text-rose-700",
-    },
-  ];
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <div>
-            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">
-              Confirm Booking
-            </p>
-            <h2 className="text-sm font-bold text-slate-900 mt-0.5">
-              {order.distributorName}
-            </h2>
+            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Confirm Booking</p>
+            <h2 className="text-sm font-bold text-slate-900 mt-0.5">{order.distributorName}</h2>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 transition-colors"
-          >
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 transition-colors">
             <X size={16} />
           </button>
         </div>
@@ -811,170 +704,30 @@ const BookingConfirmModal: React.FC<{
           <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
             <Package size={14} className="text-slate-400 shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                Order Summary
-              </p>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Order Summary</p>
               <p className="text-xs font-bold text-slate-700">
-                {order.items.length} article(s) · {order.totalCartons} CTN ·{" "}
-                {order.totalPairs} pairs
+                {order.items.length} article(s) · {order.totalCartons} CTN · {order.totalPairs} pairs
               </p>
             </div>
             <span className="text-xs font-black text-slate-900">
-              ₹
-              {(order.finalAmount ?? order.totalAmount)?.toLocaleString(
-                "en-IN"
-              )}
+              ₹{(order.finalAmount ?? order.totalAmount)?.toLocaleString("en-IN")}
             </span>
           </div>
 
-          {/* Mode Selection */}
+          {/* Expected Dispatch Date (optional) */}
           <div>
-            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">
-              Booking Type
-            </p>
-            <div className="grid grid-cols-3 gap-2">
-              {MODES.map((m) => (
-                <button
-                  key={m.val}
-                  onClick={() => setMode(m.val)}
-                  className={`p-2.5 rounded-xl border-2 text-left transition-all ${
-                    mode === m.val
-                      ? m.activeClass
-                      : "border-slate-100 bg-white hover:border-slate-200"
-                  }`}
-                >
-                  <p
-                    className={`text-[10px] font-black ${
-                      mode === m.val ? "" : "text-slate-500"
-                    }`}
-                  >
-                    {m.label}
-                  </p>
-                  <p
-                    className={`text-[8px] font-medium mt-0.5 leading-tight ${
-                      mode === m.val ? "opacity-70" : "text-slate-400"
-                    }`}
-                  >
-                    {m.sub}
-                  </p>
-                </button>
-              ))}
-            </div>
+            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+              <Calendar size={10} /> Expected Dispatch Date{" "}
+              <span className="font-normal normal-case text-slate-300">(optional)</span>
+            </label>
+            <input
+              type="date"
+              value={expectedDispatchDate}
+              onChange={(e) => setExpectedDispatchDate(e.target.value)}
+              min={new Date().toISOString().split("T")[0]}
+              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 text-sm font-medium text-slate-700"
+            />
           </div>
-
-          {/* ── BLOCK & HOLD: per-item block CTN table ── */}
-          {mode === "BLOCK_HOLD" && (
-            <div className="animate-in fade-in slide-in-from-top-2 duration-200 space-y-3">
-              <div>
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                  <Lock size={10} /> Block Cartons Per Item
-                </p>
-                <div className="space-y-1.5">
-                  {order.items.map((item) => {
-                    const key = itemKey(item);
-                    const val = blockCtns[key] || 0;
-                    return (
-                      <div
-                        key={key}
-                        className="flex items-center gap-3 p-2.5 bg-slate-50 rounded-xl border border-slate-100"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[10px] font-black text-slate-700 truncate">
-                            {getItemLabel(item)}
-                          </p>
-                          <p className="text-[9px] text-slate-400 font-bold">
-                            Ordered: {item.cartonCount} CTN
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            onClick={() => setBlock(key, -1, item.cartonCount)}
-                            className="w-6 h-6 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 font-black flex items-center justify-center transition-colors text-sm"
-                          >
-                            −
-                          </button>
-                          <span
-                            className={`text-xs font-black w-7 text-center ${
-                              val > 0 ? "text-indigo-700" : "text-slate-400"
-                            }`}
-                          >
-                            {val}
-                          </span>
-                          <button
-                            onClick={() => setBlock(key, 1, item.cartonCount)}
-                            className="w-6 h-6 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 font-black flex items-center justify-center transition-colors text-sm"
-                          >
-                            +
-                          </button>
-                          <span className="text-[9px] text-slate-400 font-bold">
-                            CTN
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {totalBlocked > 0 && (
-                  <p className="text-[9px] font-black text-indigo-600 mt-1.5 text-right">
-                    {totalBlocked} CTN blocked → inventory se immediately deduct
-                    hoga
-                  </p>
-                )}
-              </div>
-
-              {/* Block Reason — required */}
-              <div>
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
-                  <StickyNote size={10} /> Block Reason{" "}
-                  <span className="text-rose-400 normal-case font-bold">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={blockReason}
-                  onChange={(e) => setBlockReason(e.target.value)}
-                  placeholder="e.g. Transport arrange ho raha hai, 3-4 din mein bhejenge"
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 text-xs font-medium"
-                />
-              </div>
-
-              {/* Optional expected date for Block & Hold */}
-              <div>
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
-                  <Calendar size={10} /> Expected Dispatch Date{" "}
-                  <span className="font-normal normal-case text-slate-300">
-                    (optional)
-                  </span>
-                </label>
-                <input
-                  type="date"
-                  value={expectedDispatchDate}
-                  onChange={(e) => setExpectedDispatchDate(e.target.value)}
-                  min={new Date().toISOString().split("T")[0]}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 text-sm font-medium text-slate-700"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* ── NO STOCK: expected date required ── */}
-          {mode === "NO_STOCK" && (
-            <div className="animate-in fade-in slide-in-from-top-2 duration-200">
-              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
-                <Calendar size={10} /> Expected Dispatch Date{" "}
-                <span className="text-rose-400 normal-case font-bold">*</span>
-              </label>
-              <input
-                type="date"
-                value={expectedDispatchDate}
-                onChange={(e) => setExpectedDispatchDate(e.target.value)}
-                min={new Date().toISOString().split("T")[0]}
-                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 text-sm font-medium text-slate-700"
-              />
-              <p className="text-[9px] text-slate-400 font-medium mt-1.5">
-                Distributor ko sirf ye date dikhegi — stock details nahi
-              </p>
-            </div>
-          )}
 
           {/* Priority */}
           <div>
@@ -1004,9 +757,7 @@ const BookingConfirmModal: React.FC<{
           <div>
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
               <StickyNote size={10} /> Internal Note{" "}
-              <span className="font-normal normal-case text-slate-300">
-                (optional)
-              </span>
+              <span className="font-normal normal-case text-slate-300">(optional)</span>
             </label>
             <textarea
               value={adminNote}
@@ -1020,10 +771,7 @@ const BookingConfirmModal: React.FC<{
 
         {/* Footer */}
         <div className="flex gap-3 px-5 pb-5">
-          <button
-            onClick={onClose}
-            className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition-all"
-          >
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition-all">
             Cancel
           </button>
           <button
@@ -1031,11 +779,7 @@ const BookingConfirmModal: React.FC<{
             disabled={submitting}
             className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-xs hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {submitting ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : (
-              <CheckSquare size={13} />
-            )}
+            {submitting ? <Loader2 size={13} className="animate-spin" /> : <CheckSquare size={13} />}
             Book Order
           </button>
         </div>

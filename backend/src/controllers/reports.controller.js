@@ -27,8 +27,7 @@ const getStockReport = async (req, res) => {
         Object.entries(rawSizeMap).forEach(([sz, cell]) => {
           const c = cell && typeof cell === "object" ? cell : {};
           const qty = Number(c.qty || 0);
-          const blockedQty = Number(c.blockedQty || 0);
-          sizeStock[sz] = { qty, blockedQty };
+          sizeStock[sz] = { qty };
           variantTotalStock += qty;
         });
 

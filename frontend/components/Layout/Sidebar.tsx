@@ -288,14 +288,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                         isCollapsed={isCollapsed}
                       />
                       <NavItem
-                        icon={<Clock size={18} />}
-                        label="Pre-Orders"
-                        active={activeTab === "pre_orders"}
-                        onClick={() => go("pre_orders")}
-                        compact
-                        isCollapsed={isCollapsed}
-                      />
-                      <NavItem
                         icon={<PackageCheck size={18} />}
                         label="Orders"
                         active={activeTab === "orders"}

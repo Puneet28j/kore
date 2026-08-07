@@ -72,7 +72,9 @@ function sortDistributors(list: DistEntry[], sort: SortOption): DistEntry[] {
 function computeDistributors(orders: Order[]): DistEntry[] {
   const map: Record<string, DistEntry> = {};
   for (const o of orders) {
-    const key = String(typeof o.distributorId === 'object' ? (o.distributorId as any).id : o.distributorId);
+    const rawId = typeof o.distributorId === 'object' ? (o.distributorId as any)?._id ?? (o.distributorId as any)?.id : o.distributorId;
+    if (!rawId) continue;
+    const key = String(rawId);
     const name = o.distributorName || 'Unknown';
     if (!map[key]) map[key] = { id: key, name, totalAmount: 0, orderCount: 0, latestDate: o.date };
     map[key].totalAmount += o.totalAmount;
@@ -525,7 +527,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Company-wide live stock (not limited to the paginated articles prop)
   const fetchStockTotals = useCallback(async () => {
     try {
-      const res = await masterCatalogService.getStockTotals();
+      const res = await masterCatalogService.getStockTotals('AVAILABLE');
       const data = res?.data || res || {};
       setTotalLivePairs(Number(data.totalLivePairs) || 0);
     } catch {

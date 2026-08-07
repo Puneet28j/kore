@@ -93,9 +93,7 @@ const isVariantInStock = (v: Variant): boolean => {
     if (entries.length === 0) return false;
     return entries.some(([, val]: [string, any]) => {
       const qty = typeof val === "number" ? val : Number(val?.qty || 0);
-      const blocked =
-        typeof val === "object" ? Number(val?.blockedQty || 0) : 0;
-      return qty - blocked > 0;
+      return qty > 0;
     });
   }
 
@@ -109,12 +107,7 @@ const isVariantInStock = (v: Variant): boolean => {
       typeof (sizeMap as any).get === "function"
         ? (sizeMap as any).get(sz)
         : sizeMap[sz];
-    const available = stockEntry
-      ? Math.max(
-          0,
-          Number(stockEntry.qty || 0) - Number(stockEntry.blockedQty || 0)
-        )
-      : 0;
+    const available = stockEntry ? Math.max(0, Number(stockEntry.qty || 0)) : 0;
     min = Math.min(min, Math.floor(available / assortQty));
   }
   if (!hasValidAssort) return false;
@@ -200,7 +193,6 @@ const ArticleCard: React.FC<{
   const totalPairs = totalPairsPerCarton * cartonCount;
 
   // ── Stock cap logic (per variant, per size) ──────────────────────────────
-  // sizeMap[size].qty is live stock; blockedQty is reserved. Available = qty - blockedQty.
   const maxCartonsFromStock = useMemo(() => {
     if (!selectedVariant) return 0;
     const sizeMap = selectedVariant.sizeMap || {};
@@ -211,9 +203,7 @@ const ArticleCard: React.FC<{
       const assortQty = Number(baseBreakdown[sz]) || 0;
       if (assortQty === 0) continue;
       const stockEntry = sizeMap[sz];
-      const available = stockEntry
-        ? Math.max(0, (stockEntry.qty || 0) - (stockEntry.blockedQty || 0))
-        : 0;
+      const available = stockEntry ? Math.max(0, stockEntry.qty || 0) : 0;
       min = Math.min(min, Math.floor(available / assortQty));
     }
     return min === Infinity ? 0 : min;
@@ -240,9 +230,7 @@ const ArticleCard: React.FC<{
     const sizeMap = selectedVariant.sizeMap || {};
     return Object.values(sizeMap).reduce((sum, cell: any) => {
       const qty = typeof cell === "number" ? cell : Number(cell?.qty || 0);
-      const blocked =
-        typeof cell === "object" ? Number(cell?.blockedQty || 0) : 0;
-      return sum + Math.max(0, qty - blocked);
+      return sum + Math.max(0, qty);
     }, 0);
   }, [selectedVariant]);
 

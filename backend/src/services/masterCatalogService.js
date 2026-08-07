@@ -359,18 +359,12 @@ exports.getStockTotals = async (stage) => {
         totalLivePairs: {
           $sum: { $convert: { input: "$sizeCells.v.qty", to: "double", onError: 0, onNull: 0 } },
         },
-        totalBlockedPairs: {
-          $sum: {
-            $convert: { input: "$sizeCells.v.blockedQty", to: "double", onError: 0, onNull: 0 },
-          },
-        },
       },
     },
   ]);
 
   return {
     totalLivePairs: Math.max(0, Math.round(row?.totalLivePairs || 0)),
-    totalBlockedPairs: Math.max(0, Math.round(row?.totalBlockedPairs || 0)),
   };
 };
 
@@ -642,7 +636,6 @@ exports.getVariantStock = async (variantId) => {
   const Return = require("../models/Return");
 
   const liveStockMap = {};
-  const blockedStockMap = {};
   const poMap = {};
 
   // 1. Build SKU-to-Size mapping for the variant
@@ -669,7 +662,6 @@ exports.getVariantStock = async (variantId) => {
     if (cell && cell.sku) {
       skuToSize[String(cell.sku).trim().toLowerCase()] = cleanSize;
     }
-    blockedStockMap[cleanSize] = Number(cell?.blockedQty || 0);
   });
 
   Object.entries(sizeSkusData).forEach(([size, sku]) => {
@@ -898,7 +890,7 @@ exports.getVariantStock = async (variantId) => {
     });
   });
 
-  return { poMap, liveStockMap, blockedStockMap };
+  return { poMap, liveStockMap };
 };
 
 // Reset Variant Stock - Surgical Purge of Receipts and Fulfillments
@@ -970,7 +962,7 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
     const pairs = Math.round(Number(qtyPerCarton || 0) * cartons);
     if (pairs <= 0) return;
     delta[size] = pairs;
-    const cell = variant.sizeMap.get(size) || { qty: 0, blockedQty: 0, sku: "" };
+    const cell = variant.sizeMap.get(size) || { qty: 0, sku: "" };
     if (type === "INWARD") {
       cell.qty = (cell.qty || 0) + pairs;
     } else {

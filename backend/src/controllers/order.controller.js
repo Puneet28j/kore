@@ -81,19 +81,9 @@ const getAllOrders = async (req, res) => {
 const updateOrderStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    let { status, allocatedItems, blockedItems, receiverName, receiverMobile, deliveryAgentName, deliveryAgentMobile, deliveryNote,
-          expectedDispatchDate, bookingPriority, adminNote, stockStatus, blockReason,
+    const { status, receiverName, receiverMobile, deliveryAgentName, deliveryAgentMobile, deliveryNote,
+          expectedDispatchDate, bookingPriority, adminNote, stockStatus,
           vehicleNo, lrNo, transporterName, eWayBillNo, driverName, driverMobile, grossWeightKg, outScannedCartons } = req.body;
-    
-    // allocatedItems arrives as a JSON string via FormData — parse it
-    if (typeof allocatedItems === 'string') {
-      try { allocatedItems = JSON.parse(allocatedItems); } catch { allocatedItems = null; }
-    }
-    
-    // blockedItems arrives as a JSON string via FormData — parse it
-    if (typeof blockedItems === 'string') {
-      try { blockedItems = JSON.parse(blockedItems); } catch { blockedItems = null; }
-    }
 
     const docs = {};
     if (req.files) {
@@ -106,8 +96,6 @@ const updateOrderStatus = async (req, res) => {
 
     const updatedOrder = await OrderService.updateOrderStatus(id, status, {
       ...docs,
-      allocatedItems,
-      blockedItems,
       receiverName,
       receiverMobile,
       deliveryAgentName,
@@ -117,7 +105,6 @@ const updateOrderStatus = async (req, res) => {
       bookingPriority: bookingPriority || null,
       adminNote: adminNote !== undefined ? adminNote : null,
       stockStatus: stockStatus || null,
-      blockReason: blockReason !== undefined ? blockReason : null,
       vehicleNo: vehicleNo || null,
       lrNo: lrNo || null,
       transporterName: transporterName || null,

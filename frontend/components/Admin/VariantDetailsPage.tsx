@@ -200,7 +200,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   const currentBookingMap = variant.bookingMap || {};
   const currentPOMap = stockData?.poMap || {};
   const currentLiveStockMap = stockData?.liveStockMap || {};
-  const currentBlockedStockMap = stockData?.blockedStockMap || {};
+  const currentBlockedStockMap: Record<string, number> = {};
 
   const totalAssortment = Object.values(currentAssortmentMap).reduce(
     (s: number, v) => s + (Number(v) || 0),
@@ -218,9 +218,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
     return s + (Number(v) || 0);
   }, 0);
 
-  const totalBlocked = Object.values(currentBlockedStockMap).reduce((s: number, v) => {
-    return s + (Number(v) || 0);
-  }, 0);
+  const totalBlocked = 0;
 
   // Assortment-aware live stock calculation
   const calculateAssortmentCartons = (stockMap: Record<string, number>) => {
@@ -787,37 +785,14 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 </div>
 
                 <div className="grid grid-cols-3 gap-2">
-                  {sizes.map((sz) => {
-                    const cleanSz = sz.trim();
-                    const blockedQty = Number(currentBlockedStockMap[cleanSz] ?? currentBlockedStockMap[sz]) || 0;
-                    const statusColor = blockedQty === 0 ? "slate" : "red";
-
-                    return (
-                      <div
-                        key={sz}
-                        className={`p-3 rounded-xl border transition-all hover:shadow-md ${
-                          statusColor === "red"
-                            ? "bg-indigo-50/60 border-indigo-200"
-                            : "bg-slate-50/60 border-slate-200"
-                        }`}
-                      >
-                        <div className="flex flex-col items-start justify-between">
-                          <span className="text-xs font-bold text-slate-500">
-                            Size {sz}
-                          </span>
-                          <div
-                            className={`text-xl font-black leading-none ${
-                              blockedQty > 0
-                                ? "text-indigo-600"
-                                : "text-slate-300"
-                            }`}
-                          >
-                            {blockedQty}
-                          </div>
-                        </div>
+                  {sizes.map((sz) => (
+                    <div key={sz} className="p-3 rounded-xl border bg-slate-50/60 border-slate-200 transition-all hover:shadow-md">
+                      <div className="flex flex-col items-start justify-between">
+                        <span className="text-xs font-bold text-slate-500">Size {sz}</span>
+                        <div className="text-xl font-black leading-none text-slate-300">0</div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

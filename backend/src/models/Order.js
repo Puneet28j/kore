@@ -22,17 +22,7 @@ const OrderItemSchema = new mongoose.Schema(
       of: Number,
       default: {},
     },
-    allocatedSizeQuantities: {
-      type: Map,
-      of: Number,
-      default: {},
-    },
     fulfilledSizeQuantities: {
-      type: Map,
-      of: Number,
-      default: {},
-    },
-    blockedSizeQuantities: {
       type: Map,
       of: Number,
       default: {},
@@ -42,14 +32,6 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
       default: 0,
     },
-    allocatedCartonCount: {
-      type: Number,
-      default: null, // null means not yet allocated
-    },
-    blockedCartonCount: {
-      type: Number,
-      default: 0,
-    },
     fulfilledCartonCount: {
       type: Number,
       default: 0,
@@ -57,14 +39,6 @@ const OrderItemSchema = new mongoose.Schema(
     pairCount: {
       type: Number,
       required: true,
-      default: 0,
-    },
-    allocatedPairCount: {
-      type: Number,
-      default: null, // null means not yet allocated
-    },
-    blockedPairCount: {
-      type: Number,
       default: 0,
     },
     fulfilledPairCount: {
@@ -234,8 +208,7 @@ const OrderSchema = new mongoose.Schema(
     expectedDispatchDate: { type: Date, default: null },
     bookingPriority: { type: String, enum: ['NORMAL', 'URGENT'], default: 'NORMAL' },
     adminNote: { type: String, default: null },
-    stockStatus: { type: String, enum: ['DISPATCH_READY', 'BLOCK_HOLD', 'NO_STOCK'], default: null },
-    blockReason: { type: String, default: null },
+    stockStatus: { type: String, enum: ['DISPATCH_READY', 'NO_STOCK'], default: null },
   },
   {
     timestamps: true,

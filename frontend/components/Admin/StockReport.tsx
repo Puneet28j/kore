@@ -8,7 +8,7 @@ import { apiFetch } from "../../services/api";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
 
-interface SizeCell { qty: number; blockedQty: number; }
+interface SizeCell { qty: number; }
 
 interface Variant {
   variantId: string;
@@ -157,7 +157,7 @@ const StockReport: React.FC = () => {
       r.variants.forEach(v => {
         const sizes = Object.entries(v.sizeStock || {})
           .sort((a, b) => Number(a[0]) - Number(b[0]))
-          .map(([s, c]) => `${s}:${c.qty}/${c.blockedQty}`)
+          .map(([s, c]) => `${s}:${c.qty}`)
           .join(" ");
         const health = getStockHealth(v.totalStock);
         lines.push(`"${r.articleName}","${r.sku}","${r.category}","${r.brand}","${v.itemName}","${v.color}","${v.sizeRange}",${v.mrp},"${v.listingStatus}","${health}",${v.totalStock},"${sizes}"`);
@@ -378,7 +378,6 @@ const StockReport: React.FC = () => {
                                                 <span className="text-slate-500 font-bold">{s}</span>
                                                 <span className="text-slate-300 mx-0.5">:</span>
                                                 <span className={c.qty === 0 ? "text-rose-600 font-bold" : "text-emerald-700 font-semibold"}>{c.qty}</span>
-                                                {c.blockedQty > 0 && <span className="text-amber-600 font-semibold">/{c.blockedQty}</span>}
                                               </span>
                                             ))}
                                         </div>

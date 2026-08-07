@@ -65,7 +65,7 @@ export interface Variant {
   mrp: number;
   hsnCode?: string;
   sizeQuantities: Record<string, number>;
-  sizeMap?: Record<string, { qty: number; blockedQty?: number; sku: string }>;
+  sizeMap?: Record<string, { qty: number; sku: string }>;
   bookingMap?: Record<string, number>;
   poMap?: Record<string, number>;
   images?: string[];
@@ -119,7 +119,6 @@ export interface Inventory {
   articleId: string;
   actualStock: number; // In Cartons
   reservedStock: number; // In Cartons (Booked)
-  blockedStock: number; // In Cartons (Blocked)
   availableStock: number; // actual - reserved - blocked (Wait, user said subtraction from live stock, so live is available)
 }
 
@@ -146,18 +145,12 @@ export interface OrderItem {
   variantId?: string;
   /** detailed breakdown: pairs per size (e.g. {"5":12, "6":12}) */
   sizeQuantities?: Record<string, number>;
-  blockedSizeQuantities?: Record<string, number>;
-  allocatedSizeQuantities?: Record<string, number>;
   fulfilledSizeQuantities?: Record<string, number>;
 
   cartonCount: number;
-  blockedCartonCount?: number;
-  allocatedCartonCount?: number;
   fulfilledCartonCount?: number;
   returnedCartonCount?: number;
   pairCount: number;
-  blockedPairCount?: number;
-  allocatedPairCount?: number;
   fulfilledPairCount?: number;
   returnedPairCount?: number;
   price: number;
@@ -231,8 +224,7 @@ export interface Order {
   expectedDispatchDate?: string;
   bookingPriority?: 'NORMAL' | 'URGENT';
   adminNote?: string;
-  stockStatus?: 'DISPATCH_READY' | 'BLOCK_HOLD' | 'NO_STOCK';
-  blockReason?: string;
+  stockStatus?: 'DISPATCH_READY' | 'NO_STOCK';
   // Dispatch details — filled at BOOKED → PFD (CTN out-scan step)
   vehicleNo?: string;
   lrNo?: string;

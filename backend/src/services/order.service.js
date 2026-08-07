@@ -465,14 +465,11 @@ const updateOrderStatus = async (
     deliveryAgentName = null,
     deliveryAgentMobile = null,
     deliveryNote = null,
-    allocatedItems = null,
-    blockedItems = null,
     // Booking commitment fields
     expectedDispatchDate = null,
     bookingPriority = null,
     adminNote = null,
     stockStatus = null,
-    blockReason = null,
     // Dispatch fields — filled at BOOKED → PFD (CTN out-scan step)
     vehicleNo = null,
     lrNo = null,
@@ -541,7 +538,6 @@ const updateOrderStatus = async (
       if (bookingPriority) updateData.bookingPriority = bookingPriority;
       if (adminNote !== null) updateData.adminNote = adminNote;
       if (stockStatus) updateData.stockStatus = stockStatus;
-      if (blockReason !== null) updateData.blockReason = blockReason;
     }
 
     // Generate orderNumber when admin confirms (BOOKED) — keeps sequence clean
@@ -564,159 +560,6 @@ const updateOrderStatus = async (
       }
     }
 
-    // Handle Blocking Update (New Stage)
-    const isBlockingUpdate = blockedItems && Array.isArray(blockedItems);
-    if (isBlockingUpdate) {
-      for (const blockedEntry of blockedItems) {
-        const orderItem = order.items.find(
-          (item) =>
-            item.variantId.toString() === blockedEntry.variantId.toString()
-        );
-
-        if (orderItem) {
-          const oldBlockedSizes = orderItem.blockedSizeQuantities
-            ? Object.fromEntries(orderItem.blockedSizeQuantities)
-            : {};
-          const newBlockedSizes = blockedEntry.blockedSizeQuantities || {};
-
-          const catalogItem = await MasterCatalog.findById(orderItem.articleId);
-          if (catalogItem) {
-            const variant = catalogItem.variants.id(orderItem.variantId);
-            if (variant && variant.sizeMap) {
-              const allSizes = new Set([
-                ...Object.keys(oldBlockedSizes),
-                ...Object.keys(newBlockedSizes),
-              ]);
-
-              for (const size of allSizes) {
-                const oldVal = Number(oldBlockedSizes[size] || 0);
-                const newVal = Number(newBlockedSizes[size] || 0);
-                const delta = newVal - oldVal;
-
-                if (delta !== 0 && variant.sizeMap.has(size)) {
-                  const currentSizeCell = variant.sizeMap.get(size);
-                  // Deduct from Live Qty, Add to Blocked Qty
-                  currentSizeCell.qty = Math.max(
-                    0,
-                    (currentSizeCell.qty || 0) - delta
-                  );
-                  currentSizeCell.blockedQty = Math.max(
-                    0,
-                    (currentSizeCell.blockedQty || 0) + delta
-                  );
-                  variant.sizeMap.set(size, currentSizeCell);
-                }
-              }
-              await catalogItem.save();
-            }
-          }
-
-          orderItem.blockedCartonCount = Math.max(
-            0,
-            Number(blockedEntry.blockedCartonCount) || 0
-          );
-          orderItem.blockedPairCount = Math.max(
-            0,
-            Number(blockedEntry.blockedPairCount) || 0
-          );
-          orderItem.blockedSizeQuantities = newBlockedSizes;
-        }
-      }
-      order.markModified("items");
-      updateData.items = order.items;
-    }
-
-    // Handle manual allocation when moving to / updating PFD or RFD
-    const isAllocationUpdate =
-      ["PFD", "RFD", "BOOKED", "PARTIAL"].includes(status) ||
-      ["PFD", "RFD"].includes(order.status);
-
-    if (isAllocationUpdate && allocatedItems && Array.isArray(allocatedItems)) {
-      for (const allocatedItem of allocatedItems) {
-        const orderItem = order.items.find(
-          (item) =>
-            item.variantId.toString() === allocatedItem.variantId.toString()
-        );
-
-        if (orderItem) {
-          const oldBlockedSizes = orderItem.blockedSizeQuantities
-            ? Object.fromEntries(orderItem.blockedSizeQuantities)
-            : {};
-          const newAllocSizes = allocatedItem.allocatedSizeQuantities || {};
-          const updatedBlockedSizes = { ...oldBlockedSizes };
-
-          // Auto-block any stock not yet reserved that is needed for this allocation.
-          // This makes the "Block" step optional — allocation from live stock works directly.
-          let autoBlockApplied = false;
-          const catalogItem = await MasterCatalog.findById(orderItem.articleId);
-
-          for (const size in newAllocSizes) {
-            const req = Number(newAllocSizes[size] || 0);
-            const alreadyBlocked = Number(oldBlockedSizes[size] || 0);
-            const additionalNeeded = Math.max(0, req - alreadyBlocked);
-
-            if (additionalNeeded > 0) {
-              if (!catalogItem) {
-                throw new Error(
-                  `Cannot allocate ${req} pairs for size ${size}: catalog item not found.`
-                );
-              }
-              const variant = catalogItem.variants.id(orderItem.variantId);
-              if (!variant || !variant.sizeMap || !variant.sizeMap.has(size)) {
-                throw new Error(
-                  `Cannot allocate ${req} pairs for size ${size}: size not found in catalog.`
-                );
-              }
-              const cell = variant.sizeMap.get(size);
-              const liveQty = Number(cell.qty || 0);
-              if (additionalNeeded > liveQty) {
-                throw new Error(
-                  `Cannot allocate ${req} pairs for size ${size}. ` +
-                    `Only ${
-                      alreadyBlocked + liveQty
-                    } pairs available (${alreadyBlocked} reserved + ${liveQty} in stock).`
-                );
-              }
-              // Move the needed qty from live → blocked in the catalog
-              cell.qty = Math.max(0, liveQty - additionalNeeded);
-              cell.blockedQty = Math.max(
-                0,
-                (cell.blockedQty || 0) + additionalNeeded
-              );
-              variant.sizeMap.set(size, cell);
-              updatedBlockedSizes[size] = alreadyBlocked + additionalNeeded;
-              autoBlockApplied = true;
-            }
-          }
-
-          if (autoBlockApplied && catalogItem) {
-            await catalogItem.save();
-            orderItem.blockedSizeQuantities = updatedBlockedSizes;
-            orderItem.blockedPairCount = Object.values(
-              updatedBlockedSizes
-            ).reduce((s, v) => s + Number(v || 0), 0);
-            orderItem.blockedCartonCount = Math.max(
-              orderItem.blockedCartonCount || 0,
-              Number(allocatedItem.allocatedCartonCount) || 0
-            );
-          }
-
-          // Update allocated counts for the current batch
-          orderItem.allocatedCartonCount = Math.max(
-            0,
-            Number(allocatedItem.allocatedCartonCount) || 0
-          );
-          orderItem.allocatedPairCount = Math.max(
-            0,
-            Number(allocatedItem.allocatedPairCount) || 0
-          );
-          orderItem.allocatedSizeQuantities = newAllocSizes;
-        }
-      }
-      order.markModified("items");
-      updateData.items = order.items;
-    }
-
     // Handle finalization when moving to RECEIVED
     if (status === "RECEIVED") {
       const currentBatchItems = [];
@@ -727,84 +570,40 @@ const updateOrderStatus = async (
       let allFulfilled = true;
 
       for (const item of order.items) {
-        if (item.allocatedCartonCount > 0) {
-          // record in current batch
-          currentBatchItems.push({
-            variantId: item.variantId,
-            articleId: item.articleId,
-            cartonCount: item.allocatedCartonCount,
-            pairCount: item.allocatedPairCount,
-            sizeQuantities: item.allocatedSizeQuantities,
-          });
+        const remainingCartons = item.cartonCount - (item.fulfilledCartonCount || 0);
+        if (remainingCartons > 0) {
+          const remainingPairs = item.pairCount - (item.fulfilledPairCount || 0);
 
-          const perPairPrice = item.price / (item.pairCount || 1);
-          batchAmount += item.allocatedPairCount * perPairPrice;
-          batchCartons += item.allocatedCartonCount;
-          batchPairs += item.allocatedPairCount;
-
-          // update fulfilled counts
-          item.fulfilledCartonCount =
-            (item.fulfilledCartonCount || 0) + item.allocatedCartonCount;
-          item.fulfilledPairCount =
-            (item.fulfilledPairCount || 0) + item.allocatedPairCount;
-
+          // Build batch size quantities from what remains unfulfilled
+          const orderedSizes = item.sizeQuantities
+            ? Object.fromEntries(item.sizeQuantities)
+            : {};
           const fulfilledSizes = item.fulfilledSizeQuantities
             ? Object.fromEntries(item.fulfilledSizeQuantities)
             : {};
-          const currentAllocSizes = item.allocatedSizeQuantities
-            ? Object.fromEntries(item.allocatedSizeQuantities)
-            : {};
-
-          for (const [size, qty] of Object.entries(currentAllocSizes)) {
-            fulfilledSizes[size] = (fulfilledSizes[size] || 0) + qty;
-          }
-          item.fulfilledSizeQuantities = fulfilledSizes;
-
-          // Reduce the Blocked Stock in MasterCatalog as it's now out of the warehouse
-          const catalogItem = await MasterCatalog.findById(item.articleId);
-          if (catalogItem) {
-            const variant = catalogItem.variants.id(item.variantId);
-            if (variant && variant.sizeMap) {
-              for (const [size, qty] of Object.entries(currentAllocSizes)) {
-                if (variant.sizeMap.has(size)) {
-                  const currentSizeCell = variant.sizeMap.get(size);
-                  currentSizeCell.blockedQty = Math.max(
-                    0,
-                    (currentSizeCell.blockedQty || 0) - Number(qty)
-                  );
-                  variant.sizeMap.set(size, currentSizeCell);
-                }
-              }
-              catalogItem.markModified("variants");
-              await catalogItem.save();
-            }
+          const batchSizeQtys = {};
+          for (const [size, qty] of Object.entries(orderedSizes)) {
+            const rem = Math.max(0, Number(qty) - (fulfilledSizes[size] || 0));
+            if (rem > 0) batchSizeQtys[size] = rem;
           }
 
-          // Also reduce the order level blocked counts
-          const blockedSizes = item.blockedSizeQuantities
-            ? Object.fromEntries(item.blockedSizeQuantities)
-            : {};
-          for (const [size, qty] of Object.entries(currentAllocSizes)) {
-            blockedSizes[size] = Math.max(
-              0,
-              (blockedSizes[size] || 0) - Number(qty)
-            );
-          }
+          currentBatchItems.push({
+            variantId: item.variantId,
+            articleId: item.articleId,
+            cartonCount: remainingCartons,
+            pairCount: remainingPairs,
+            sizeQuantities: batchSizeQtys,
+          });
 
-          item.blockedSizeQuantities = blockedSizes;
-          item.blockedCartonCount = Math.max(
-            0,
-            (item.blockedCartonCount || 0) - item.allocatedCartonCount
-          );
-          item.blockedPairCount = Math.max(
-            0,
-            (item.blockedPairCount || 0) - item.allocatedPairCount
-          );
+          const perPairPrice = item.price / (item.pairCount || 1);
+          batchAmount += remainingPairs * perPairPrice;
+          batchCartons += remainingCartons;
+          batchPairs += remainingPairs;
 
-          // reset allocated counts for next batch AFTER using them for subtraction
-          item.allocatedCartonCount = 0;
-          item.allocatedPairCount = 0;
-          item.allocatedSizeQuantities = {};
+          // update fulfilled counts to fully fulfilled
+          item.fulfilledCartonCount = item.cartonCount;
+          item.fulfilledPairCount = item.pairCount;
+          item.fulfilledSizeQuantities = orderedSizes;
         }
 
         if ((item.fulfilledCartonCount || 0) < item.cartonCount) {

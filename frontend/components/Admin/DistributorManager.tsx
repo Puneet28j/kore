@@ -750,7 +750,10 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
     if (!selectedDistributor?.id) return;
     try {
       setCredSaving(true);
-      const payload: any = { loginEmail: credEmail || "" };
+      const payload: any = {
+        loginEmail: credEmail || "",
+        loginEnabled: true,
+      };
       if (credPassword.trim().length > 0) {
         payload.loginPassword = credPassword;
       }

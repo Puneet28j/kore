@@ -1156,15 +1156,19 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
       if (variant?.sizeQuantities && Object.keys(variant.sizeQuantities).length > 0) {
         Object.entries(variant.sizeQuantities).forEach(([sz, baseQty]) => {
           newSizeMap[sz] = {
-            qty: (Number(baseQty) || 0) * ctns,
+            qty: Number(baseQty) || 0, // per-carton quantity (not multiplied by carton count)
             sku: (variant.sizeSkus?.[sz] as string) || it.sizeMap?.[sz]?.sku || "",
           };
         });
       } else if (it.sizeMap && Object.keys(it.sizeMap).length > 0) {
         const oldCtns = it.cartonCount || 1;
         Object.entries(it.sizeMap).forEach(([sz, v]) => {
-          const baseQty = Math.round((v.qty || 0) / oldCtns);
-          newSizeMap[sz] = { qty: baseQty * ctns, sku: v.sku };
+          // Detect and normalize if the existing sizeMap stored totals
+          const rawSum = Object.values(it.sizeMap!).reduce((s, sv) => s + (sv.qty || 0), 0);
+          const perCartonQty = rawSum > 24 && oldCtns > 1
+            ? Math.round((v.qty || 0) / oldCtns)
+            : (v.qty || 0);
+          newSizeMap[sz] = { qty: perCartonQty, sku: v.sku }; // per-carton
         });
       }
       return computeItem({ ...it, cartonCount: ctns, quantity: ctns * 24, sizeMap: newSizeMap });

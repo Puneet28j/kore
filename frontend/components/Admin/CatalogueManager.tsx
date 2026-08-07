@@ -151,6 +151,16 @@ interface CsvConflict {
 // Generate per-size SKUs from carton SKU — same 2-strategy logic as backend + VariantDetailsPage
 // Strategy 1: if ctnSku ends with sizeRange (e.g. "amr-gry-7-11" ends with "7-11"), strip it
 // Strategy 2: regex /^(.*)-\d+-\d+$/ — handles cases where sizeRange is empty/missing in DB
+function stripGenderFromBase(base: string): string {
+  const withoutTrail = base.endsWith("-") ? base.slice(0, -1) : base;
+  const segments = withoutTrail.split("-");
+  const last = segments[segments.length - 1] || "";
+  if (last.length === 1 && /^[A-Za-z]$/.test(last)) {
+    return withoutTrail.slice(0, -(last.length + 1)) + "-";
+  }
+  return base;
+}
+
 function generateSizeSkus(
   ctnSku: string,
   sizeRange: string,
@@ -167,6 +177,7 @@ function generateSizeSkus(
     if (m) base = m[1] + "-";
   }
   if (base !== null) {
+    base = stripGenderFromBase(base);
     sizeKeys.forEach((sz) => {
       result[sz] = `${base}${sz}`;
     });

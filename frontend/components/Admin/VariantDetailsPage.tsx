@@ -50,7 +50,8 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   const [loadingStock, setLoadingStock] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  // Compute per-size SKUs on the fly from carton SKU
+  // Compute per-size SKUs on the fly from carton SKU.
+  // Gender letter (e.g. M/F/W/K) before the size range is stripped from per-pair SKUs.
   const perSizeSkus = useMemo(() => {
     const ctnSku = (variant.sku || "").trim();
     const sizeRange = (variant.sizeRange || "").trim();
@@ -68,12 +69,28 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
       if (m) base = m[1] + "-";
     }
     if (base !== null) {
-      sizeKeys.forEach(sz => { result[sz] = `${base}${sz}`; });
+      // Strip single-letter gender segment (e.g. "ARM-NVY-M-" → "ARM-NVY-")
+      const withoutTrail = base.endsWith("-") ? base.slice(0, -1) : base;
+      const segments = withoutTrail.split("-");
+      const lastSeg = segments[segments.length - 1] || "";
+      if (lastSeg.length === 1 && /^[A-Za-z]$/.test(lastSeg)) {
+        base = withoutTrail.slice(0, -(lastSeg.length + 1)) + "-";
+      }
+      sizeKeys.forEach((sz) => {
+        result[sz] = `${base}${sz}`;
+      });
     } else {
-      sizeKeys.forEach(sz => { result[sz] = `${ctnSku}-${sz}`; });
+      sizeKeys.forEach((sz) => {
+        result[sz] = `${ctnSku}-${sz}`;
+      });
     }
     return result;
-  }, [variant.sku, variant.sizeRange, variant.sizeQuantities, variant.sizeSkus]);
+  }, [
+    variant.sku,
+    variant.sizeRange,
+    variant.sizeQuantities,
+    variant.sizeSkus,
+  ]);
 
   const fetchStock = async () => {
     if (!variant.id) return;
@@ -102,14 +119,21 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
   const handleResetStock = async () => {
     if (!variant.id) return;
-    if (!window.confirm("WARNING: This will DELETE all GRNs and clear all Order Fulfillment records for THIS variant. This action cannot be undone. Proceed?")) return;
-    
+    if (
+      !window.confirm(
+        "WARNING: This will DELETE all GRNs and clear all Order Fulfillment records for THIS variant. This action cannot be undone. Proceed?"
+      )
+    )
+      return;
+
     setResetting(true);
     try {
-      const url = import.meta.env.VITE_API_BASE_URL + `/master-catalog/variants/${variant.id}/reset-stock`;
+      const url =
+        import.meta.env.VITE_API_BASE_URL +
+        `/master-catalog/variants/${variant.id}/reset-stock`;
       const res = await fetch(url, { method: "POST" });
       if (!res.ok) throw new Error("Failed to reset stock");
-      
+
       toast.success("Variant stock and orders reset successfully!");
       fetchStock(); // Refresh display
     } catch (err) {
@@ -164,7 +188,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
           ...(article.secondaryImages || []).map((img: any) => img.url || img),
         ].filter(Boolean);
 
-  const variantName = variant.itemName || `${article.name} – ${variant.color} - ${variant.sizeRange}`;
+  const variantName =
+    variant.itemName ||
+    `${article.name} – ${variant.color} - ${variant.sizeRange}`;
 
   const parseSizeRange = (range: string) => {
     const cleaned = range.trim().replace(/\s/g, "");
@@ -222,26 +248,38 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
   // Assortment-aware live stock calculation
   const calculateAssortmentCartons = (stockMap: Record<string, number>) => {
-    if (!variant.sizeQuantities || Object.keys(variant.sizeQuantities).length === 0) return 0;
-    const possibleCartons = Object.entries(variant.sizeQuantities).map(([sz, count]) => {
-      const req = Number(count) || 0;
-      if (req <= 0) return Infinity;
-      
-      const cleanSz = sz.trim();
-      const avail = Number(stockMap[cleanSz] ?? stockMap[sz]) || 0;
-      return Math.floor(avail / req);
-    });
+    if (
+      !variant.sizeQuantities ||
+      Object.keys(variant.sizeQuantities).length === 0
+    )
+      return 0;
+    const possibleCartons = Object.entries(variant.sizeQuantities).map(
+      ([sz, count]) => {
+        const req = Number(count) || 0;
+        if (req <= 0) return Infinity;
+
+        const cleanSz = sz.trim();
+        const avail = Number(stockMap[cleanSz] ?? stockMap[sz]) || 0;
+        return Math.floor(avail / req);
+      }
+    );
     const result = Math.min(...possibleCartons);
-    return (result === Infinity || isNaN(result)) ? 0 : result;
+    return result === Infinity || isNaN(result) ? 0 : result;
   };
 
   // Available stock (Live - Blocked)
   const availableStockMap: Record<string, number> = {};
-  sizes.forEach(sz => {
-    availableStockMap[sz] = Math.max(0, (currentLiveStockMap[sz] || 0) - (currentBlockedStockMap[sz] || 0));
+  sizes.forEach((sz) => {
+    availableStockMap[sz] = Math.max(
+      0,
+      (currentLiveStockMap[sz] || 0) - (currentBlockedStockMap[sz] || 0)
+    );
   });
 
-  const totalAvailable = Object.values(availableStockMap).reduce((s, v) => s + v, 0);
+  const totalAvailable = Object.values(availableStockMap).reduce(
+    (s, v) => s + v,
+    0
+  );
 
   const liveCartonsCount = calculateAssortmentCartons(availableStockMap);
 
@@ -428,7 +466,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 return (
                   <div
                     key={sz}
-                    className="flex flex-col items-center min-w-[48px] bg-white border border-slate-200 rounded-lg py-1.5"
+                    className="flex flex-col items-center min-w-12 bg-white border border-slate-200 rounded-lg py-1.5"
                   >
                     <span className="text-[9px] font-black text-slate-400">
                       {sz}
@@ -496,12 +534,14 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
           <div className="space-y-4">
             {/* Carton SKU — editable */}
             <div>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5">Carton SKU</p>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5">
+                Carton SKU
+              </p>
               <div className="flex items-center gap-2">
                 <input
                   type="text"
                   value={ctnSkuValue}
-                  onChange={e => setCtnSkuValue(e.target.value)}
+                  onChange={(e) => setCtnSkuValue(e.target.value)}
                   placeholder="e.g. slk-blk-5-9"
                   className="font-mono text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-100 min-w-0 flex-1"
                 />
@@ -510,38 +550,56 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                   disabled={savingCtnSku}
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-white bg-indigo-500 hover:bg-indigo-600 rounded-md transition-colors disabled:opacity-50"
                 >
-                  {savingCtnSku ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+                  {savingCtnSku ? (
+                    <Loader2 size={10} className="animate-spin" />
+                  ) : (
+                    <Save size={10} />
+                  )}
                   Save
                 </button>
               </div>
-              <p className="text-[9px] text-slate-400 mt-1">Save karne ke baad per-size SKUs auto-regenerate honge</p>
+              <p className="text-[9px] text-slate-400 mt-1">
+                Save karne ke baad per-size SKUs auto-regenerate honge
+              </p>
             </div>
 
             {/* Tag + MRPs */}
             {variant.tag && (
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400 font-medium w-20 shrink-0">Channel</span>
-                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${
-                    variant.tag === "online"
-                      ? "bg-blue-50 text-blue-600 border-blue-100"
-                      : "bg-amber-50 text-amber-600 border-amber-100"
-                  }`}>
+                  <span className="text-xs text-slate-400 font-medium w-20 shrink-0">
+                    Channel
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${
+                      variant.tag === "online"
+                        ? "bg-blue-50 text-blue-600 border-blue-100"
+                        : "bg-amber-50 text-amber-600 border-amber-100"
+                    }`}
+                  >
                     {variant.tag}
                   </span>
                 </div>
                 {(variant.onlineMrp || 0) > 0 && (
                   <div className="flex items-center gap-2">
                     <Globe size={11} className="text-blue-400 shrink-0" />
-                    <span className="text-xs text-slate-400 font-medium w-20 shrink-0">Online MRP</span>
-                    <span className="text-sm font-bold text-blue-700">₹{(variant.onlineMrp || 0).toLocaleString()}</span>
+                    <span className="text-xs text-slate-400 font-medium w-20 shrink-0">
+                      Online MRP
+                    </span>
+                    <span className="text-sm font-bold text-blue-700">
+                      ₹{(variant.onlineMrp || 0).toLocaleString()}
+                    </span>
                   </div>
                 )}
                 {(variant.offlineMrp || 0) > 0 && (
                   <div className="flex items-center gap-2">
                     <Store size={11} className="text-amber-400 shrink-0" />
-                    <span className="text-xs text-slate-400 font-medium w-20 shrink-0">Offline MRP</span>
-                    <span className="text-sm font-bold text-amber-700">₹{(variant.offlineMrp || 0).toLocaleString()}</span>
+                    <span className="text-xs text-slate-400 font-medium w-20 shrink-0">
+                      Offline MRP
+                    </span>
+                    <span className="text-sm font-bold text-amber-700">
+                      ₹{(variant.offlineMrp || 0).toLocaleString()}
+                    </span>
                   </div>
                 )}
               </div>
@@ -550,7 +608,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
           {/* Right: per-size SKUs */}
           <div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Per-Size SKUs</p>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">
+              Per-Size SKUs
+            </p>
             {Object.keys(perSizeSkus).length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
                 {Object.entries(perSizeSkus)
@@ -570,12 +630,18 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                     >
                       <span className="text-slate-400 text-[9px]">{sz}</span>
                       <span>{sku}</span>
-                      {copiedSku === sku ? <Check size={9} className="text-emerald-500" /> : <Copy size={9} className="text-slate-300" />}
+                      {copiedSku === sku ? (
+                        <Check size={9} className="text-emerald-500" />
+                      ) : (
+                        <Copy size={9} className="text-slate-300" />
+                      )}
                     </button>
                   ))}
               </div>
             ) : (
-              <p className="text-xs text-slate-300 italic">No SKUs yet — save a carton SKU to auto-generate</p>
+              <p className="text-xs text-slate-300 italic">
+                No SKUs yet — save a carton SKU to auto-generate
+              </p>
             )}
           </div>
         </div>
@@ -621,7 +687,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               <div className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
                 <span className="text-xs font-medium text-slate-600">
-                  Blocked:{" "}
+                  Booked:{" "}
                   <span className="font-bold text-indigo-600">
                     {totalBlocked} pairs
                   </span>
@@ -634,7 +700,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
           {loadingStock ? (
             <div className="flex flex-col items-center justify-center py-12 space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
               <Loader2 className="animate-spin text-indigo-500" size={32} />
-              <p className="text-sm font-medium text-slate-500 uppercase tracking-widest">Fetching live inventory...</p>
+              <p className="text-sm font-medium text-slate-500 uppercase tracking-widest">
+                Fetching live inventory...
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -652,8 +720,15 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {sizes.map((sz) => {
                     const cleanSz = sz.trim();
-                    const qty = Number(currentLiveStockMap[cleanSz] ?? currentLiveStockMap[sz]) || 0;
-                    const blocked = Number(currentBlockedStockMap[cleanSz] ?? currentBlockedStockMap[sz]) || 0;
+                    const qty =
+                      Number(
+                        currentLiveStockMap[cleanSz] ?? currentLiveStockMap[sz]
+                      ) || 0;
+                    const blocked =
+                      Number(
+                        currentBlockedStockMap[cleanSz] ??
+                          currentBlockedStockMap[sz]
+                      ) || 0;
                     const available = availableStockMap[sz] || 0;
 
                     let bgClass =
@@ -668,9 +743,15 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                         className={`p-3 rounded-xl border transition-all hover:shadow-md ${bgClass}`}
                       >
                         <div className="flex flex-col items-start justify-between mb-1">
-                          <span className="text-[10px] font-bold text-slate-500">Size {sz}</span>
+                          <span className="text-[10px] font-bold text-slate-500">
+                            Size {sz}
+                          </span>
                           <div className="flex items-baseline gap-1.5">
-                            <span className={`text-xl font-black leading-none ${qtyClass}`}>{available}</span>
+                            <span
+                              className={`text-xl font-black leading-none ${qtyClass}`}
+                            >
+                              {available}
+                            </span>
                             {/* {blocked > 0 && (
                               <span className="text-[10px] font-bold text-rose-500">(-{blocked} blk)</span>
                             )} */}
@@ -743,7 +824,8 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {sizes.map((sz) => {
                     const cleanSz = sz.trim();
-                    const poQty = Number(currentPOMap[cleanSz] ?? currentPOMap[sz]) || 0;
+                    const poQty =
+                      Number(currentPOMap[cleanSz] ?? currentPOMap[sz]) || 0;
                     const statusColor = poQty === 0 ? "slate" : "orange";
 
                     return (
@@ -777,7 +859,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-black text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
-                    <Package size={14} /> Blocked Stock
+                    <Package size={14} /> Booked Stock
                   </h4>
                   <span className="text-[10px] font-bold text-slate-400">
                     per size
@@ -786,10 +868,17 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
                 <div className="grid grid-cols-3 gap-2">
                   {sizes.map((sz) => (
-                    <div key={sz} className="p-3 rounded-xl border bg-slate-50/60 border-slate-200 transition-all hover:shadow-md">
+                    <div
+                      key={sz}
+                      className="p-3 rounded-xl border bg-slate-50/60 border-slate-200 transition-all hover:shadow-md"
+                    >
                       <div className="flex flex-col items-start justify-between">
-                        <span className="text-xs font-bold text-slate-500">Size {sz}</span>
-                        <div className="text-xl font-black leading-none text-slate-300">0</div>
+                        <span className="text-xs font-bold text-slate-500">
+                          Size {sz}
+                        </span>
+                        <div className="text-xl font-black leading-none text-slate-300">
+                          0
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -840,14 +929,20 @@ const PriceBox: React.FC<{
   }[accent];
   return (
     <div className={`rounded-xl border p-3 ${c.bg}`}>
-      <p className={`text-[9px] font-black uppercase tracking-wider ${c.label}`}>
+      <p
+        className={`text-[9px] font-black uppercase tracking-wider ${c.label}`}
+      >
         {label}
       </p>
       <p className={`text-lg font-black leading-tight ${c.val}`}>
         ₹{(value * 24).toLocaleString()}
-        <span className={`text-[10px] font-normal ml-0.5 ${c.label}`}>/ctn</span>
+        <span className={`text-[10px] font-normal ml-0.5 ${c.label}`}>
+          /ctn
+        </span>
       </p>
-      <p className={`text-[9px] mt-0.5 ${c.label}`}>₹{value.toLocaleString()}/pr</p>
+      <p className={`text-[9px] mt-0.5 ${c.label}`}>
+        ₹{value.toLocaleString()}/pr
+      </p>
     </div>
   );
 };

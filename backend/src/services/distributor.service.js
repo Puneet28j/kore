@@ -109,9 +109,11 @@ const sanitizePayload = (body = {}) => {
 
   if (!payload.location && body.billingAddress) {
     if (typeof body.billingAddress === "object") {
-      payload.location = body.billingAddress.city || body.billingAddress.address1 || "";
+      payload.location =
+        body.billingAddress.city || body.billingAddress.address1 || "";
     } else {
-      payload.location = String(body.billingAddress).split(",")[0]?.trim() || "";
+      payload.location =
+        String(body.billingAddress).split(",")[0]?.trim() || "";
     }
   }
 
@@ -203,14 +205,20 @@ exports.createDistributor = async (body) => {
 
       const user = await User.create([userPayload], { session });
       createdDistributor.userId = user[0]._id;
-      if (loginPassword) createdDistributor.loginPasswordPlain = String(loginPassword);
+      if (loginPassword)
+        createdDistributor.loginPasswordPlain = String(loginPassword);
       await createdDistributor.save({ session });
     }
 
     await session.commitTransaction();
     session.endSession();
 
-    return await Distributor.findById(createdDistributor._id).lean();
+    const created = await Distributor.findById(createdDistributor._id).lean();
+    if (created?.userId) {
+      const linkedUser = await User.findById(created.userId, "email").lean();
+      created.loginEmail = linkedUser?.email || "";
+    }
+    return created;
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
@@ -316,7 +324,14 @@ exports.updateDistributor = async (id, body) => {
     err.status = 404;
     throw err;
   }
-  console.log("[updateDistributor] found distributor:", distributor.companyName, "existing userId:", distributor.userId, "loginEnabled:", distributor.loginEnabled);
+  console.log(
+    "[updateDistributor] found distributor:",
+    distributor.companyName,
+    "existing userId:",
+    distributor.userId,
+    "loginEnabled:",
+    distributor.loginEnabled
+  );
 
   if (body.name !== undefined && !String(body.name).trim()) {
     const err = new Error("name cannot be empty");
@@ -334,14 +349,22 @@ exports.updateDistributor = async (id, body) => {
   // a DB reset script) — without this, the "sync linked user" block below
   // silently no-ops against a nonexistent _id, the caller gets a false
   // "success", and login stays broken forever.
-  if (distributor.userId && (body.loginEmail !== undefined || body.loginPassword !== undefined)) {
+  if (
+    distributor.userId &&
+    (body.loginEmail !== undefined || body.loginPassword !== undefined)
+  ) {
     const linkedUserExists = await User.exists({ _id: distributor.userId });
-    console.log("[updateDistributor] checked linked user exists:", !!linkedUserExists);
+    console.log(
+      "[updateDistributor] checked linked user exists:",
+      !!linkedUserExists
+    );
     if (!linkedUserExists) {
       if (body.loginEmail && body.loginPassword) {
         // Enough info to recreate — clear the stale reference so the
         // "create new user" path below runs instead of a silent no-op.
-        console.log("[updateDistributor] dangling userId detected — clearing so a new User gets created");
+        console.log(
+          "[updateDistributor] dangling userId detected — clearing so a new User gets created"
+        );
         distributor.userId = undefined;
       } else {
         // Not enough info to recreate (e.g. only email given, password left
@@ -365,14 +388,24 @@ exports.updateDistributor = async (id, body) => {
 
   await distributor.save();
 
-  console.log("[updateDistributor] hadUser:", hadUser, "loginEnabled:", distributor.loginEnabled);
+  console.log(
+    "[updateDistributor] hadUser:",
+    hadUser,
+    "loginEnabled:",
+    distributor.loginEnabled
+  );
 
   // if login has been enabled and there is no user yet, create one
   if (distributor.loginEnabled && !hadUser) {
     const loginEmail = body.loginEmail || distributor.email;
     const loginPassword = body.loginPassword;
     if (!loginEmail || !loginPassword) {
-      console.log("[updateDistributor] cannot create user — missing loginEmail or loginPassword. loginEmail:", loginEmail, "loginPassword present:", !!loginPassword);
+      console.log(
+        "[updateDistributor] cannot create user — missing loginEmail or loginPassword. loginEmail:",
+        loginEmail,
+        "loginPassword present:",
+        !!loginPassword
+      );
       const err = new Error(
         "loginEmail and loginPassword are required when enabling login"
       );
@@ -407,14 +440,19 @@ exports.updateDistributor = async (id, body) => {
     }
 
     let passwordChanged = false;
-    if (body.loginPassword !== undefined && String(body.loginPassword).trim().length > 0) {
+    if (
+      body.loginPassword !== undefined &&
+      String(body.loginPassword).trim().length > 0
+    ) {
       userPatch.password = await bcrypt.hash(
         String(body.loginPassword),
         SALT_ROUNDS
       );
       distributor.loginPasswordPlain = String(body.loginPassword);
       // Invalidate all existing sessions when password is changed
-      const linkedUser = await User.findById(distributor.userId).select('tokenVersion').lean();
+      const linkedUser = await User.findById(distributor.userId)
+        .select("tokenVersion")
+        .lean();
       userPatch.tokenVersion = (linkedUser?.tokenVersion || 0) + 1;
       passwordChanged = true;
     }
@@ -440,17 +478,27 @@ exports.updateDistributor = async (id, body) => {
         }).lean();
 
         if (exists) {
-          console.log("[updateDistributor] email conflict — another user already has:", userPatch.email);
+          console.log(
+            "[updateDistributor] email conflict — another user already has:",
+            userPatch.email
+          );
           const err = new Error("Email already in use by another user");
           err.status = 400;
           throw err;
         }
       }
 
-      const patchResult = await User.findByIdAndUpdate(distributor.userId, userPatch, {
-        returnDocument: 'after',
-      });
-      console.log("[updateDistributor] findByIdAndUpdate result (null means no matching User doc):", patchResult);
+      const patchResult = await User.findByIdAndUpdate(
+        distributor.userId,
+        userPatch,
+        {
+          returnDocument: "after",
+        }
+      );
+      console.log(
+        "[updateDistributor] findByIdAndUpdate result (null means no matching User doc):",
+        patchResult
+      );
     }
 
     // Push instant logout via socket if password was reset
@@ -471,7 +519,12 @@ exports.updateDistributor = async (id, body) => {
     const linkedUser = await User.findById(distributor.userId, "email").lean();
     result.loginEmail = linkedUser?.email || "";
   }
-  console.log("[updateDistributor] returning result.loginEmail:", result.loginEmail, "userId:", result.userId);
+  console.log(
+    "[updateDistributor] returning result.loginEmail:",
+    result.loginEmail,
+    "userId:",
+    result.userId
+  );
 
   return result;
 };

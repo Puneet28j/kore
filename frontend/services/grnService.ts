@@ -50,6 +50,19 @@ export type GRNHistoryItem = {
   createdAt: string;
 };
 
+// Per-pair SKU like "ARM-NVY-M-6" → "ARM-NVY-6": strip single-letter gender segment before the size
+function fixPerPairSku(sku: string, size: string): string {
+  const sizeStr = String(size);
+  if (!sku.endsWith(`-${sizeStr}`)) return sku;
+  const base = sku.slice(0, sku.length - sizeStr.length - 1);
+  const segments = base.split("-");
+  const lastSeg = segments[segments.length - 1] || "";
+  if (lastSeg.length === 1 && /^[A-Za-z]$/.test(lastSeg)) {
+    return segments.slice(0, -1).join("-") + "-" + sizeStr;
+  }
+  return sku;
+}
+
 export const grnService = {
   async listReferences(search: string = "") {
     const params = new URLSearchParams();
@@ -81,15 +94,29 @@ export const grnService = {
 
     let totalQty = 0;
     const items: MockPOItem[] = (poDoc.items || []).map((it: any) => {
+      const rawSizeMap = it.sizeMap || {};
+      const itemCartons = Math.max(1, Number(it.cartonCount || 0));
+
+      // Detect if sizeMap.qty was stored as total (qty × cartonCount) vs per-carton.
+      // Some POs were created via handleCartonCountChange which multiplied by cartonCount.
+      // Standard per-carton assortment sums to 24; if sum > 24 with >1 carton, it's total.
+      let rawSum = 0;
+      if (typeof rawSizeMap === "object") {
+        Object.values(rawSizeMap).forEach((v: any) => { rawSum += Number(v?.qty || 0); });
+      }
+      const isStoredAsTotal = rawSum > 24 && itemCartons > 1;
+      const qtyDivisor = isStoredAsTotal ? itemCartons : 1;
+
+      const sizeMap: Record<string, { qty: number; sku: string }> = {};
       let itemTotalQty = 0;
-      const sizeMapData = it.sizeMap || {};
-      if (typeof sizeMapData === "object") {
-        Object.values(sizeMapData).forEach((v: any) => {
-          itemTotalQty += Number(v?.qty || 0);
+      if (typeof rawSizeMap === "object") {
+        Object.entries(rawSizeMap).forEach(([sz, v]: [string, any]) => {
+          const perCartonQty = Math.round(Number(v?.qty || 0) / qtyDivisor);
+          sizeMap[sz] = { qty: perCartonQty, sku: fixPerPairSku(String(v?.sku || ""), sz) };
+          itemTotalQty += perCartonQty;
         });
       }
-      const itemCartons = Number(it.cartonCount || 0);
-      totalQty += (itemTotalQty * (itemCartons > 0 ? itemCartons : 1));
+      totalQty += itemTotalQty * itemCartons;
 
       return {
         itemName: it.itemName || "",
@@ -97,7 +124,7 @@ export const grnService = {
         color: it.skuCompany || "",
         sizeRange: "Variable",
         cartonCount: itemCartons,
-        sizeMap: sizeMapData,
+        sizeMap,
         sku: it.sku || "",
       };
     });

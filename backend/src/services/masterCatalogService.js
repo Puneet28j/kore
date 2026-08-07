@@ -993,7 +993,7 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
   if (type === "INWARD" && PHYSICAL_BOX_REASONS.includes(reason)) {
     const cartonSku = variant.sku || variant.itemName || "CTN";
     cartonBarcodes = Array.from({ length: cartons }, (_, i) =>
-      `${cartonSku}-CT${String(i + 1).padStart(3, "0")}`
+      `${cartonSku}-CT${String(i + 1).padStart(4, "0")}`
     );
   }
 

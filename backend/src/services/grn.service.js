@@ -13,7 +13,7 @@ const todayYYMMDD = () => {
 // Primary carton barcode: <Carton SKU>-CT<serial>, e.g. "Riv-blk-04-08-CT001".
 // Serial restarts at 1 for every new GRN draft (draft.cartonSerial / cartonIndex).
 const makeCartonBarcode = (cartonSku, serial) =>
-  `${cartonSku}-CT${String(serial).padStart(3, "0")}`;
+  `${cartonSku}-CT${String(serial).padStart(4, "0")}`;
 
 // Legacy format, kept only for the unused-by-UI single-pair scanPair path,
 // which has no catalog/variant context to derive a Carton SKU from.

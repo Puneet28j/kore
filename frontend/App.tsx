@@ -567,13 +567,39 @@ const App: React.FC = () => {
     price: number;
   };
 
+  // Prefer user.id (string), fall back to _id for older stored user objects
+  const getUserId = (u: any): string | undefined =>
+    u?.id || (u as any)?._id?.toString?.() || (u as any)?._id;
+
   const [cart, setCart] = useState<CartItem[]>(() => {
-    const saved = localStorage.getItem("kore_cart");
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const savedUser = localStorage.getItem("kore_user");
+      if (savedUser) {
+        const parsedUser = JSON.parse(savedUser);
+        const uid = parsedUser?.id || parsedUser?._id;
+        const savedCart = uid ? localStorage.getItem(`kore_cart_${uid}`) : null;
+        return savedCart ? JSON.parse(savedCart) : [];
+      }
+    } catch {}
+    return [];
   });
 
+  // Restore user-specific cart on login; clear it on logout
+  const currentUserId = getUserId(user);
   useEffect(() => {
-    localStorage.setItem("kore_cart", JSON.stringify(cart));
+    if (currentUserId) {
+      const savedCart = localStorage.getItem(`kore_cart_${currentUserId}`);
+      setCart(savedCart ? JSON.parse(savedCart) : []);
+    } else {
+      setCart([]);
+    }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    const uid = getUserId(user);
+    if (uid) {
+      localStorage.setItem(`kore_cart_${uid}`, JSON.stringify(cart));
+    }
   }, [cart]);
 
   // PERSISTENCE
@@ -629,7 +655,6 @@ const App: React.FC = () => {
 
   const handleLogout = () => {
     store.logout();
-    setCart([]);
   };
 
   // Catalogue Actions

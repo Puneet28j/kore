@@ -721,7 +721,7 @@ const GRN: React.FC = () => {
 
     if (newCartonTotal >= 24) {
       const cartonSku = selectedItem.sku || selectedItem.itemName;
-      const barcode = `${cartonSku}-CT${String(currentCartonIdx + 1).padStart(3, "0")}`;
+      const barcode = `${cartonSku}-CT${String(currentCartonIdx + 1).padStart(4, "0")}`;
       setCartonConfirmPopup({
         scanKey: selectedItemName,
         itemLabel: selectedItem.itemName,
@@ -1457,7 +1457,7 @@ const GRN: React.FC = () => {
                                           scanKey: selectedItemName,
                                           itemLabel: selectedItem.itemName,
                                           cartonIdx: cIdx,
-                                          barcode: `${cartonSku}-CT${String(cIdx + 1).padStart(3, "0")}`,
+                                          barcode: `${cartonSku}-CT${String(cIdx + 1).padStart(4, "0")}`,
                                           inputValue: "",
                                           error: "",
                                         });
@@ -1735,7 +1735,7 @@ const GRN: React.FC = () => {
                     >
                       <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                         {viewingGRN.cartons?.map((carton: any, idx: number) => {
-                          // Extract the carton sequence number from the barcode (e.g. "Riv-blk-04-08-CT007" -> 7)
+                          // Extract the carton sequence number from the barcode (e.g. "ZRO-BLK-M-7-11-CT0007" -> 7)
                           const ctMatch = (carton.cartonBarcode || "").match(/CT(\d+)$/);
                           const cartonNum = ctMatch ? Number(ctMatch[1]) : idx + 1;
                           

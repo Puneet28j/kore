@@ -59,6 +59,8 @@ exports.login = async (req, res, next) => {
     }
 
     const userData = user.toObject ? user.toObject() : { ...user };
+    // toObject() drops the 'id' virtual — add it explicitly so the frontend can rely on it
+    userData.id = String(userData._id || "");
     if (creditInfo) {
       Object.assign(userData, creditInfo);
     }
@@ -136,6 +138,8 @@ exports.me = async (req, res, next) => {
     }
 
     const userData = user.toObject ? user.toObject() : { ...user };
+    // toObject() drops the 'id' virtual — add it explicitly so the frontend can rely on it
+    userData.id = String(userData._id || "");
     if (creditInfo) {
       Object.assign(userData, creditInfo);
     }

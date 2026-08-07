@@ -524,14 +524,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   };
 
   const generateExpectedCTNs = (): string[] => {
-    const shortOrder = makeOrderShort();
     const all: string[] = [];
     Object.values(allocations).forEach((alloc: any) => {
       const ctn = alloc.allocatedCartonCount || alloc.cartonCount || 0;
       // Match allocation to order item by variantId for correct SKU lookup
       const item = currentOrder.items.find(i => i.variantId === alloc.variantId) || currentOrder.items[0];
       const code = getItemCode(item);
-      for (let n = 1; n <= ctn; n++) all.push(`${shortOrder}-${code}-C${String(n).padStart(2, '0')}`);
+      for (let n = 1; n <= ctn; n++) all.push(`${code}-CT${String(n).padStart(4, '0')}`);
     });
     return all;
   };
@@ -1874,50 +1873,29 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                       className="px-3 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black hover:bg-indigo-700 transition-all"
                                     >Scan</button>
                                   </div>
-                                  {/* Expected CTN chips per item */}
-                                  {Object.values(allocations).map((alloc: any, idx) => {
-                                    const item = currentOrder.items[idx] || currentOrder.items[0];
-                                    if (!item) return null;
-                                    const code = getItemCode(item);
-                                    const short = makeOrderShort();
-                                    const ctns = Array.from({ length: alloc.allocatedCartonCount || alloc.cartonCount || 0 }, (_, n) =>
-                                      `${short}-${code}-C${String(n + 1).padStart(2, '0')}`
-                                    );
-                                    if (!ctns.length) return null;
-                                    const article = articles.find(a => a.id === item.articleId);
-                                    return (
-                                      <div key={idx}>
-                                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5">
-                                          {article?.name || 'Item'} — {ctns.length} CTN
-                                        </p>
-                                        <div className="flex flex-wrap gap-1.5">
-                                          {ctns.map(ctnId => (
-                                            <button
-                                              key={ctnId}
-                                              onClick={() => {
-                                                if (scannedCTNs.has(ctnId)) {
-                                                  setScannedCTNs(prev => { const n = new Set(prev); n.delete(ctnId); return n; });
-                                                } else {
-                                                  setScannedCTNs(prev => new Set([...prev, ctnId]));
-                                                  toast.success(`${ctnId} ✓`);
-                                                }
-                                              }}
-                                              title={scannedCTNs.has(ctnId) ? 'Click to unscan' : 'Click to mark scanned'}
-                                              className={`px-2 py-1 rounded-lg text-[9px] font-black font-mono transition-all border ${
-                                                scannedCTNs.has(ctnId)
-                                                  ? 'bg-emerald-500 text-white border-emerald-500'
-                                                  : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-400'
-                                              }`}
-                                            >
-                                              {scannedCTNs.has(ctnId) ? '✓ ' : ''}{ctnId}
-                                            </button>
-                                          ))}
-                                        </div>
+                                  {/* Scanned CTNs — only show what has already been scanned */}
+                                  {scannedCTNs.size > 0 ? (
+                                    <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5">
+                                        Scanned — {scannedCTNs.size} CTN
+                                      </p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {[...scannedCTNs].map(ctnId => (
+                                          <button
+                                            key={ctnId}
+                                            onClick={() => setScannedCTNs(prev => { const n = new Set(prev); n.delete(ctnId); return n; })}
+                                            title="Click to remove"
+                                            className="px-2 py-1 rounded-lg text-[9px] font-black font-mono transition-all border bg-emerald-500 text-white border-emerald-500 hover:bg-rose-500 hover:border-rose-500"
+                                          >
+                                            ✓ {ctnId}
+                                          </button>
+                                        ))}
                                       </div>
-                                    );
-                                  })}
-                                  {totalExpected === 0 && (
-                                    <p className="text-[10px] text-slate-400 text-center py-2">Set carton allocation above to see CTN list</p>
+                                    </div>
+                                  ) : (
+                                    <p className="text-[10px] text-slate-400 text-center py-2">
+                                      {totalExpected === 0 ? 'Set carton allocation above to enable scanning' : 'No cartons scanned yet — scan to begin'}
+                                    </p>
                                   )}
                                 </div>
                               </div>

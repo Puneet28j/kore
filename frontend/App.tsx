@@ -843,6 +843,11 @@ const App: React.FC = () => {
       return art?.status === "AVAILABLE";
     });
 
+    const preOrderItems = cart.filter((i) => {
+      const art = articles.find((a) => a.id === i.articleId);
+      return art?.status !== "AVAILABLE";
+    });
+
     const placePromise = async () => {
       await checkAuth(true);
       const freshUser = store.currentUser;
@@ -892,12 +897,36 @@ const App: React.FC = () => {
         placed.push({ ...res, id: (res as any)._id || res.id });
       }
 
+      // ── Place PREORDER for non-AVAILABLE (wishlist) items ──
+      if (preOrderItems.length > 0) {
+        const prePayload: Partial<Order> = {
+          distributorId: user.id,
+          distributorName: user.name,
+          date: new Date().toISOString().split("T")[0],
+          orderType: "PREORDER",
+          items: preOrderItems.map((item) => ({
+            articleId: item.articleId,
+            variantId: item.variantId,
+            sizeQuantities: item.sizeQuantities,
+            cartonCount: item.cartonCount,
+            pairCount: item.pairCount,
+            price: item.price,
+          })),
+          totalAmount: preOrderItems.reduce((s, i) => s + i.price, 0),
+          totalCartons: preOrderItems.reduce((s, i) => s + i.cartonCount, 0),
+          totalPairs: preOrderItems.reduce((s, i) => s + i.pairCount, 0),
+          gstRate: gstPercent,
+        };
+        const preRes = await distributorOrderService.placeOrder(prePayload as any);
+        placed.push({ ...preRes, id: (preRes as any)._id || preRes.id });
+      }
+
       setOrders((prev) => [...placed, ...prev]);
       setCart([]);
       setActiveTab("orders");
       await checkAuth(true);
 
-      return "Order placed";
+      return placed.length === 2 ? "Order + Pre-Order placed" : "Order placed";
     };
 
     toast.promise(placePromise(), {

@@ -226,7 +226,8 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   const currentBookingMap = variant.bookingMap || {};
   const currentPOMap = stockData?.poMap || {};
   const currentLiveStockMap = stockData?.liveStockMap || {};
-  const currentBlockedStockMap: Record<string, number> = stockData?.blockedStockMap || {};
+  const currentBlockedStockMap: Record<string, number> =
+    stockData?.blockedStockMap || {};
 
   const totalAssortment = Object.values(currentAssortmentMap).reduce(
     (s: number, v) => s + (Number(v) || 0),
@@ -244,7 +245,10 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
     return s + (Number(v) || 0);
   }, 0);
 
-  const totalBlocked = Object.values(currentBlockedStockMap).reduce((s: number, v) => s + (Number(v) || 0), 0);
+  const totalBlocked = Object.values(currentBlockedStockMap).reduce(
+    (s: number, v) => s + (Number(v) || 0),
+    0
+  );
 
   // Assortment-aware live stock calculation
   const calculateAssortmentCartons = (stockMap: Record<string, number>) => {
@@ -753,7 +757,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                               {available}
                             </span>
                             {blocked > 0 && (
-                              <span className="text-[10px] font-bold text-rose-500">(-{blocked} blk)</span>
+                              <span className="text-[10px] font-bold text-rose-500">
+                                (-{blocked} blk)
+                              </span>
                             )}
                           </div>
                           {/* <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">Live: {qty}</p> */}
@@ -767,8 +773,8 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               {/* Middle Column - Blocked (Booked) Breakdown */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black text-rose-600 uppercase tracking-wider flex items-center gap-1.5">
-                    <ShoppingBag size={14} /> Blocked (Booked)
+                  <h4 className="text-xs font-black text-purple-600 uppercase tracking-wider flex items-center gap-1.5">
+                    <ShoppingBag size={14} /> Booked Quantity
                   </h4>
                   <span className="text-[10px] font-bold text-slate-400">
                     pairs
@@ -778,7 +784,11 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {sizes.map((sz) => {
                     const cleanSz = sz.trim();
-                    const blockedQty = Number(currentBlockedStockMap[cleanSz] ?? currentBlockedStockMap[sz]) || 0;
+                    const blockedQty =
+                      Number(
+                        currentBlockedStockMap[cleanSz] ??
+                          currentBlockedStockMap[sz]
+                      ) || 0;
 
                     return (
                       <div
@@ -796,7 +806,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                           <div
                             className={`text-xl font-black leading-none ${
                               blockedQty > 0
-                                ? "text-rose-600"
+                                ? "text-purple-600"
                                 : "text-slate-300"
                             }`}
                           >
@@ -855,7 +865,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               </div>
 
               {/* Fourth Column - Blocked Breakdown */}
-              <div className="space-y-3">
+              {/* <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-black text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
                     <Package size={14} /> Booked Stock
@@ -882,7 +892,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                     </div>
                   ))}
                 </div>
-              </div>
+              </div> */}
             </div>
           )}
         </div>

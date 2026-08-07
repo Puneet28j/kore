@@ -530,15 +530,38 @@ const updateOrderStatus = async (
       if (outScannedCartons) updateData.outScannedCartons = outScannedCartons;
       updateData.dispatchedAt = new Date();
 
-      // Update per-item fulfilledCartonCount using the frontend-computed map
-      // (variantId → cartonCount dispatched). This is reliable since the frontend
-      // generates barcodes per item and knows exactly which scanned CTN maps to which item.
+      // Update per-item fulfilledCartonCount and fulfilledSizeQuantities using the frontend-computed map.
+      // fulfilledSizeQuantities MUST be set here — the live stock formula in getVariantStock subtracts
+      // dispatched pairs from stock using this field. If it stays empty the order drops out of
+      // blockedStockMap (no longer BOOKED) but nothing is subtracted from live stock, making stock appear to increase.
       if (itemDispatchCounts && Object.keys(itemDispatchCounts).length > 0) {
         for (const item of order.items) {
           const key = item.variantId?.toString() || item.articleId?.toString();
           const dispatched = itemDispatchCounts[key] || 0;
           if (dispatched > 0) {
             item.fulfilledCartonCount = (item.fulfilledCartonCount || 0) + dispatched;
+
+            // Derive size quantities proportional to cartons dispatched
+            const orderedSizes = item.sizeQuantities
+              ? (item.sizeQuantities instanceof Map
+                  ? Object.fromEntries(item.sizeQuantities)
+                  : Object.fromEntries(Object.entries(item.sizeQuantities)))
+              : {};
+            const ratio = dispatched / (item.cartonCount || 1);
+            for (const [size, qty] of Object.entries(orderedSizes)) {
+              const proportional = Math.round(Number(qty) * ratio);
+              if (proportional > 0) {
+                if (!item.fulfilledSizeQuantities) item.fulfilledSizeQuantities = new Map();
+                const prev = item.fulfilledSizeQuantities instanceof Map
+                  ? (item.fulfilledSizeQuantities.get(size) || 0)
+                  : (item.fulfilledSizeQuantities[size] || 0);
+                if (item.fulfilledSizeQuantities instanceof Map) {
+                  item.fulfilledSizeQuantities.set(size, prev + proportional);
+                } else {
+                  item.fulfilledSizeQuantities[size] = prev + proportional;
+                }
+              }
+            }
           }
         }
         updateData.items = order.items;

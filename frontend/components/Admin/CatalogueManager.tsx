@@ -17,7 +17,6 @@ import {
   Layers,
   CheckCircle2,
   Heart,
-  ArrowRightLeft,
   CalendarDays,
   Package,
   ChevronDown,
@@ -61,6 +60,8 @@ interface CatalogueManagerProps {
   setExpandedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   onSuccess?: () => void;
   onAddNewMaster?: () => void;
+  scrollToArticleId?: string | null;
+  onScrollRestored?: () => void;
 }
 
 // ─── CSV Types ──────────────────────────────────────────────────────────────────
@@ -275,10 +276,40 @@ function parseCsvRow(line: string): string[] {
   return fields;
 }
 
+// Column header aliases — maps flexible user-written names to canonical CsvRow keys
+const CSV_HEADER_ALIASES: Record<string, string> = {
+  sku: "sku_ctn",
+  "listing status": "listing_status",
+  "listingstatus": "listing_status",
+  "listing_status": "listing_status",
+  "expected date": "expected_date",
+  "sole color": "sole_color",
+  "cost price": "cost_price",
+  "online mrp": "online_mrp",
+  "offline mrp": "offline_mrp",
+};
+
+function normalizeHeader(h: string): string {
+  const lower = h.trim().toLowerCase();
+  return CSV_HEADER_ALIASES[lower] ?? lower;
+}
+
+// Required columns (after alias normalization) for the import to proceed
+const CSV_REQUIRED_COLUMNS: { key: string; label: string; check: (headers: string[]) => boolean }[] = [
+  { key: "name",           label: "name",                                      check: hs => hs.includes("name") },
+  { key: "color",          label: "color",                                     check: hs => hs.includes("color") },
+  { key: "sku_ctn",        label: "sku  (carton SKU)",                         check: hs => hs.includes("sku_ctn") },
+  { key: "size",           label: "size  (size range, e.g. 6-10)",             check: hs => hs.includes("size") },
+  { key: "tag",            label: "tag  (online / offline)",                   check: hs => hs.includes("tag") },
+  { key: "gender",         label: "gender  (MEN / WOMEN / KIDS)",              check: hs => hs.includes("gender") },
+  { key: "listing_status", label: "listing_status  (available / wishlist)",    check: hs => hs.includes("listing_status") },
+  { key: "size_assortment",label: "size assortment columns  (e.g. size_5, size_6 …)", check: hs => hs.some(h => /^size_[\d]/.test(h)) },
+];
+
 function parseCsv(text: string): CsvRow[] {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
-  const headers = parseCsvRow(lines[0]).map((h) => h.trim().toLowerCase());
+  const headers = parseCsvRow(lines[0]).map(normalizeHeader);
   return lines
     .slice(1)
     .map((line) => {
@@ -290,6 +321,12 @@ function parseCsv(text: string): CsvRow[] {
       return row as CsvRow;
     })
     .filter((r) => r.name);
+}
+
+// Returns list of missing required column labels given the raw first-line text
+function getMissingColumns(firstLine: string): string[] {
+  const headers = parseCsvRow(firstLine).map(normalizeHeader);
+  return CSV_REQUIRED_COLUMNS.filter(rc => !rc.check(headers)).map(rc => rc.label);
 }
 
 // function groupCsvByName(rows: CsvRow[]): Record<string, CsvRow[]> {
@@ -397,6 +434,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   setExpandedIds,
   onSuccess,
   onAddNewMaster,
+  scrollToArticleId,
+  onScrollRestored,
 }) => {
   const [activeTab, setActiveTab] = useState<CatalogStatus>("AVAILABLE");
   const [searchTerm, setSearchTerm] = useState("");
@@ -418,6 +457,21 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const observerRef = useRef<HTMLDivElement | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useRef("");
+  const didScrollRef = useRef(false);
+
+  useEffect(() => {
+    didScrollRef.current = false;
+  }, [scrollToArticleId]);
+
+  useEffect(() => {
+    if (!scrollToArticleId || didScrollRef.current || localArticles.length === 0) return;
+    const el = document.getElementById(`article-${scrollToArticleId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "instant", block: "center" });
+      didScrollRef.current = true;
+      onScrollRestored?.();
+    }
+  }, [localArticles, scrollToArticleId, onScrollRestored]);
 
   // ── CSV Import State ─────────────────────────────────────────────────────────
   const [csvOpen, setCsvOpen] = useState(false);
@@ -426,6 +480,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [csvLoading, setCsvLoading] = useState(false);
   const [csvStep, setCsvStep] = useState<1 | 2>(1); // 1=upload, 2=preview+import
   const [csvConflicts, setCsvConflicts] = useState<CsvConflict[]>([]);
+  const [csvMissingCols, setCsvMissingCols] = useState<string[]>([]);
   const [taxonomy, setTaxonomy] = useState<{
     categories: any[];
     brands: any[];
@@ -460,6 +515,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     setCsvText("");
     setCsvRows([]);
     setCsvConflicts([]);
+    setCsvMissingCols([]);
     loadTaxonomy();
   };
   const closeCsvModal = () => {
@@ -468,9 +524,19 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     setCsvText("");
     setCsvStep(1);
     setCsvConflicts([]);
+    setCsvMissingCols([]);
   };
 
   const handleCsvParse = () => {
+    // Validate required columns before any further processing
+    const firstLine = csvText.trim().split(/\r?\n/).find(Boolean) || "";
+    const missing = getMissingColumns(firstLine);
+    if (missing.length > 0) {
+      setCsvMissingCols(missing);
+      return;
+    }
+    setCsvMissingCols([]);
+
     const rawRows = parseCsv(csvText);
     if (!rawRows.length)
       return toast.error(
@@ -1169,33 +1235,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     });
   };
 
-  const moveWishToAvailable = async (article: Article) => {
-    const status = (article.status || "AVAILABLE") as CatalogStatus;
-    if (status !== "WISHLIST") return;
-    const updated: Article = {
-      ...article,
-      status: "AVAILABLE",
-      expectedDate: "",
-    };
-
-    const promise = async () => {
-      // PERSIST TO BACKEND
-      await masterCatalogService.updateMasterItemFields(article.id, {
-        stage: "AVAILABLE",
-        expectedAvailableDate: "",
-      });
-      // Update local state
-      await updateArticle(updated);
-    };
-
-    toast.promise(promise(), {
-      loading: "Moving to Catalogue...",
-      success: "Moved to Available Catalogue!",
-      error: "Failed to move article",
-    });
-  };
-
-  const handleStatusToggle = async (article: Article, newStatus: boolean) => {
+const handleStatusToggle = async (article: Article, newStatus: boolean) => {
     const updated: Article = {
       ...article,
       isActive: newStatus,
@@ -1794,6 +1834,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           return (
             <div
               key={article.id}
+              id={`article-${article.id}`}
               className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden transition-all"
             >
               {/* Master Row */}
@@ -1923,18 +1964,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <Edit2 size={16} />
                   </button>
 
-                  {status === "WISHLIST" && (
-                    <button
-                      onClick={() => moveWishToAvailable(article)}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-amber-600 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl transition-all text-[10px] font-bold"
-                      title="Move Pre-Order → Available Catalogue"
-                    >
-                      <ArrowRightLeft size={13} />
-                      Make Available
-                    </button>
-                  )}
-
-                  <button
+<button
                     onClick={() => {
                       if (window.confirm(`Delete ${article.name}?`))
                         deleteArticle(article.id);
@@ -2319,13 +2349,17 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <p className="text-sm font-semibold text-slate-700 mb-1">
                       Upload CSV file or paste CSV text
                     </p>
-                    <p className="text-xs text-slate-400 mb-3">
-                      Columns:{" "}
+                    <p className="text-xs text-slate-400 mb-1">
+                      <span className="font-bold text-red-500">Required: </span>
                       <code className="bg-slate-100 px-1 rounded">
-                        name, sku_ctn, color, size, online_mrp, offline_mrp,
-                        tag, cost_price, hsn, gender, category, brand,
-                        manufacturer, unit, image, sole_color, listing_status,
-                        expected_date, size_5 ... size_13, size_01, size_02 ...
+                        name, color, sku, size, tag, gender, listing_status, size_5 / size_6 …
+                      </code>
+                    </p>
+                    <p className="text-xs text-slate-400 mb-3">
+                      <span className="font-bold text-slate-500">Optional: </span>
+                      <code className="bg-slate-100 px-1 rounded">
+                        online_mrp, offline_mrp, cost_price, hsn, category, brand,
+                        manufacturer, unit, image, sole_color, expected_date
                       </code>
                     </p>
                     <a
@@ -2371,6 +2405,22 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       etc.).
                     </p>
                   </div>
+
+                  {csvMissingCols.length > 0 && (
+                    <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                      <p className="text-xs font-black text-red-700 uppercase tracking-wider mb-2">
+                        Missing required columns — please add them to your file:
+                      </p>
+                      <ul className="space-y-1">
+                        {csvMissingCols.map((col) => (
+                          <li key={col} className="flex items-center gap-2 text-xs text-red-700">
+                            <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+                            <code className="bg-red-100 px-1.5 py-0.5 rounded font-mono font-bold">{col}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
                   <button
                     onClick={handleCsvParse}

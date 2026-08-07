@@ -98,6 +98,7 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showMasterForm, setShowMasterForm] = useState(false);
+  const [returnToArticleId, setReturnToArticleId] = useState<string | null>(null);
 
   // Articles state from API
   const [articles, setArticles] = useState<Article[]>([]);
@@ -149,6 +150,7 @@ const App: React.FC = () => {
   };
 
   const handleEditArticle = (id: string) => {
+    setReturnToArticleId(id);
     setPreviousTab(activeTab);
     setEditingArticleId(id);
     setShowMasterForm(true);
@@ -1050,6 +1052,8 @@ const App: React.FC = () => {
               setExpandedIds={setCatalogueExpandedIds}
               onSuccess={fetchArticles}
               onAddNewMaster={handleAddNewMaster}
+              scrollToArticleId={returnToArticleId}
+              onScrollRestored={() => setReturnToArticleId(null)}
             />
           ))}
 

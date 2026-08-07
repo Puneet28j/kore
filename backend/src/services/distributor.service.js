@@ -328,6 +328,19 @@ exports.updateDistributor = async (id, body) => {
     throw err;
   }
 
+  // Guard against a dangling userId (the linked User doc was deleted, e.g. by
+  // a DB reset script) — without this, the "sync linked user" block below
+  // silently no-ops against a nonexistent _id and login stays broken forever.
+  // Only auto-recreate when this call explicitly supplies fresh credentials
+  // (via the "Update Login Credentials" flow), so unrelated profile edits
+  // (name/address/GST) don't start failing just because login is broken.
+  if (distributor.userId && body.loginEmail && body.loginPassword) {
+    const linkedUserExists = await User.exists({ _id: distributor.userId });
+    if (!linkedUserExists) {
+      distributor.userId = undefined;
+    }
+  }
+
   const payload = sanitizePayload(body);
   // keep track of previous loginEnabled/user state so we can react later
   const hadUser = !!distributor.userId;
@@ -427,7 +440,16 @@ exports.updateDistributor = async (id, body) => {
   const { emitDistributorUpdate } = require("../socket");
   emitDistributorUpdate(distributor._id);
 
-  return distributor.toObject();
+  // loginEmail lives on the linked User doc, not on Distributor — attach it
+  // to the response the same way list()/getById() do, so the frontend sees
+  // the updated value immediately instead of it reverting to blank.
+  const result = distributor.toObject();
+  if (distributor.userId) {
+    const linkedUser = await User.findById(distributor.userId, "email").lean();
+    result.loginEmail = linkedUser?.email || "";
+  }
+
+  return result;
 };
 
 exports.toggleDistributorStatus = async (id) => {

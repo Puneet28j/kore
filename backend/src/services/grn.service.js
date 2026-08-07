@@ -457,6 +457,15 @@ exports.submitDraft = async (draftId, {
         { "variants._id": variant._id },
         { $inc: incUpdate }
       );
+
+      // Auto-promote WISHLIST → AVAILABLE when stock is received via GRN
+      if (catalog.stage === "WISHLIST") {
+        await MasterCatalog.updateOne(
+          { _id: catalog._id },
+          { $set: { stage: "AVAILABLE", expectedAvailableDate: null } }
+        );
+        console.log(`[GRN-SUBMIT] Auto-promoted "${catalog.articleName}" from WISHLIST → AVAILABLE`);
+      }
     }
   }
 

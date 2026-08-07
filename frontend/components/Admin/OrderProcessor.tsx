@@ -244,7 +244,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           },
         ];
         return (
-          <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${statCards.length}, 1fr)` }}>
             {statCards.map((s) => (
               <button
                 key={s.label}

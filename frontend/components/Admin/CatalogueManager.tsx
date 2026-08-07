@@ -97,12 +97,10 @@ function parseFlexibleDate(input: string | undefined): string {
 // "skip"/"import" = user decision required; "info" = informational only, always imports
 type ConflictResolution = "skip" | "import" | "info";
 interface CsvConflict {
-  key: string;  // groupKey "Name|||STAGE" for blocking; "⚠type:..." for info
+  key: string;  // groupKey "Name|||STAGE|||GENDER" for blocking; "⚠type:..." for info
   name: string;
   csvStage: "AVAILABLE" | "WISHLIST";
   type:
-    | "db-cross-stage"      // DB has same name in opposite stage
-    | "csv-both-stages"     // CSV has same name in both stages
     | "auto-rename"         // Name was auto-suffixed due to assortment collision
     | "duplicate-sku"       // Same sku_ctn used in multiple articles
     | "zero-mrp"            // Online/offline row has MRP = 0
@@ -235,15 +233,33 @@ function resolveStage(raw: string | undefined): "AVAILABLE" | "WISHLIST" {
   return (s === "wishlist" || s === "preorder") ? "WISHLIST" : "AVAILABLE";
 }
 
-// Group by (name + stage) — key format: "ArticleName|||AVAILABLE" or "ArticleName|||WISHLIST"
+// Normalize gender — same identity dimension as stage: "Echo" MEN and "Echo" WOMEN
+// are distinct articles, not the same one with conflicting data.
+function resolveGender(raw: string | undefined): string {
+  return (raw || "MEN").trim().toUpperCase();
+}
+
+// Article identity = name + gender + listing_status (stage). Two entries differing on
+// ANY of these are legitimately different articles, not duplicates/conflicts.
+function findExistingMaster(articles: Article[], name: string, gender: string, stage: string): Article | undefined {
+  return articles.find(
+    a =>
+      a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
+      resolveGender(a.category) === gender &&
+      (a.status || "AVAILABLE") === stage
+  );
+}
+
+// Group by (name + stage + gender) — key format: "ArticleName|||AVAILABLE|||MEN"
 // ALSO splits same-name groups where the same color+size appears with DIFFERENT assortments
 // into separate masters: "ArticleName", "ArticleName2", "ArticleName3", etc. (not "ArticleName-2")
 function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
-  // Step 1: basic grouping by name + stage
+  // Step 1: basic grouping by name + stage + gender
   const raw: Record<string, CsvRow[]> = {};
   rows.forEach(r => {
     const stage = resolveStage(r.listing_status as string | undefined);
-    const key = `${r.name}|||${stage}`;
+    const gender = resolveGender(r.gender as string | undefined);
+    const key = `${r.name}|||${stage}|||${gender}`;
     (raw[key] = raw[key] || []).push(r);
   });
 
@@ -253,7 +269,7 @@ function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
   // Step 2: for each group, detect assortment collisions and split into sub-groups
   const result: Record<string, CsvRow[]> = {};
   Object.entries(raw).forEach(([key, groupRows]) => {
-    const [name, stage] = key.split("|||");
+    const [name, stage, gender] = key.split("|||");
 
     // Assign each row to the first sub-group where its color+size isn't already taken
     // with a different assortment. Same color+size + same assortment = same variant (OK).
@@ -277,7 +293,7 @@ function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
       const renamed = sg.map(r =>
         idx === 0 ? r : { ...r, name: newName, _isAutoRenamed: true }
       );
-      result[`${newName}|||${stage}`] = renamed;
+      result[`${newName}|||${stage}|||${gender}`] = renamed;
     });
   });
 
@@ -360,48 +376,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     const processedRows = Object.values(groups).flat();
 
     // ── Conflict detection ──────────────────────────────────────────────────
+    // Article identity = name + gender + listing_status (stage). Same name in a
+    // different stage or gender is NOT a conflict — it's a legitimately distinct
+    // article, so there's no "DB cross-stage" / "both stages" check anymore.
     const conflicts: CsvConflict[] = [];
-
-    // Check: same article name exists in opposite stage in DB
-    Object.keys(groups).forEach(key => {
-      const [name, stage] = key.split("|||");
-      const opposite = stage === "AVAILABLE" ? "WISHLIST" : "AVAILABLE";
-      const existsInOpposite = articles.some(
-        a => a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-             (a.status || "AVAILABLE") === opposite
-      );
-      if (existsInOpposite) {
-        conflicts.push({
-          key, name,
-          csvStage: stage as "AVAILABLE" | "WISHLIST",
-          type: "db-cross-stage",
-          detail: `"${name}" already exists as ${opposite} in the database. Importing as ${stage} will create a duplicate cross-stage entry.`,
-          resolution: "import",
-        });
-      }
-    });
-
-    // Check: same article name in both stages in this CSV
-    const nameToKeys: Record<string, string[]> = {};
-    Object.keys(groups).forEach(key => {
-      const [name] = key.split("|||");
-      (nameToKeys[name] = nameToKeys[name] || []).push(key);
-    });
-    Object.entries(nameToKeys).forEach(([name, keys]) => {
-      if (keys.length > 1) {
-        keys.forEach(key => {
-          if (!conflicts.find(c => c.key === key && c.type === "db-cross-stage")) {
-            conflicts.push({
-              key, name,
-              csvStage: key.split("|||")[1] as "AVAILABLE" | "WISHLIST",
-              type: "csv-both-stages",
-              detail: `"${name}" appears in both AVAILABLE and WISHLIST in this CSV.`,
-              resolution: "import",
-            });
-          }
-        });
-      }
-    });
 
     // ── A6: Auto-rename → conflict card (skip/import choice) ─────────────────
     const renamedGroups = Object.keys(groups).filter(k => groups[k].some(r => r._isAutoRenamed));
@@ -421,11 +399,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     // ── DB duplicate check: 100% match on name + color + size range + size assortment ──
     Object.entries(groups).forEach(([key, groupRows]) => {
       const [name, stage] = key.split("|||");
-      const existingMaster = articles.find(
-        a =>
-          a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-          (a.status || "AVAILABLE") === stage
-      );
+      const gender = resolveGender(groupRows[0]?.gender as string | undefined);
+      const existingMaster = findExistingMaster(articles, name, gender, stage);
       if (!existingMaster) return; // brand new article — nothing in DB to compare against
 
       const existingVariantKeys = new Set(
@@ -685,12 +660,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         // Flexible date: accept any format, convert to YYYY-MM-DD
         const expectedDate = parseFlexibleDate(firstRow.expected_date);
 
-        // Match existing master by BOTH name AND stage
-        const existingMaster = articles.find(
-          a =>
-            a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-            (a.status || "AVAILABLE") === stage
-        );
+        // Match existing master by name + gender + stage (full article identity)
+        const existingMaster = findExistingMaster(articles, name, gender, stage);
 
         const fd = new FormData();
         fd.append("articleName", name);
@@ -724,11 +695,24 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             duplicateRows.map(r => `${r.color} (${r.size})`)
           ));
 
-          // All variants already exist → skip entirely
+          // Duplicate rows aren't recreated as new variants, but a CSV row can still carry
+          // a corrected SKU for an otherwise-identical existing variant — update it in place
+          // rather than silently discarding the new sku_ctn value.
+          const duplicateRowByKey = new Map(duplicateRows.map(r => [makeVariantKey(r), r]));
+          const skuUpdateLabels: string[] = [];
+
+          // All variants already exist → nothing new, but SKUs may still need updating
           if (newRows.length === 0) {
-            skipped++;
-            warnings.push(`"${name}" skipped — all variants already exist: ${duplicateLabels.join(", ")}`);
-            continue;
+            const hasSkuUpdate = duplicateRows.some(r => {
+              const match = duplicateRowByKey.get(makeVariantKey(r));
+              return match?.sku_ctn?.trim();
+            });
+            if (!hasSkuUpdate) {
+              skipped++;
+              warnings.push(`"${name}" skipped — all variants already exist: ${duplicateLabels.join(", ")}`);
+              continue;
+            }
+            // Fall through — variants are still merged below purely to apply SKU updates
           }
 
           // Some variants already exist → inform
@@ -760,24 +744,53 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           });
 
           // ── Merge: preserve existing variants with their inventory ───
-          const existingVariants = (existingMaster.variants || []).map(v => ({
-            _id: v.id,
-            itemName: v.itemName,
-            color: v.color,
-            sizeRange: v.sizeRange,
-            costPrice: v.costPrice || 0,
-            sellingPrice: v.sellingPrice || 0,
-            mrp: v.mrp || 0,
-            hsnCode: v.hsnCode || "",
-            sizeQuantities: v.sizeQuantities || {},
-            sizeSkus: v.sizeSkus || {},
-            sizeMap: v.sizeMap || {},
-            isActive: v.isActive !== false,
-            tag: v.tag || "online",
-            onlineMrp: v.onlineMrp || 0,
-            offlineMrp: v.offlineMrp || 0,
-            sku: v.sku || "",
-          }));
+          // SKU is NOT part of variant identity (color+sizeRange+assortment+tag is) — if the
+          // matching CSV row carries a different sku_ctn, update it (and regenerate per-size
+          // SKUs) in place instead of leaving the old one or creating a duplicate variant.
+          const existingVariants = (existingMaster.variants || []).map(v => {
+            const matchedRow = duplicateRowByKey.get(existingVariantKey(v));
+            const newSku = matchedRow?.sku_ctn?.trim();
+            const skuChanged = !!newSku && newSku !== (v.sku || "");
+
+            if (skuChanged) {
+              skuUpdateLabels.push(`${v.color} (${v.sizeRange})`);
+            }
+
+            const sizeSkus = skuChanged
+              ? generateSizeSkus(newSku!, v.sizeRange || "", Object.keys(v.sizeQuantities || {}))
+              : (v.sizeSkus || {});
+            const sizeMap = skuChanged
+              ? Object.fromEntries(
+                  Object.entries(v.sizeMap || {}).map(([sz, cell]: [string, any]) => [
+                    sz,
+                    { ...cell, sku: sizeSkus[sz] || cell?.sku || "" },
+                  ])
+                )
+              : (v.sizeMap || {});
+
+            return {
+              _id: v.id,
+              itemName: v.itemName,
+              color: v.color,
+              sizeRange: v.sizeRange,
+              costPrice: v.costPrice || 0,
+              sellingPrice: v.sellingPrice || 0,
+              mrp: v.mrp || 0,
+              hsnCode: v.hsnCode || "",
+              sizeQuantities: v.sizeQuantities || {},
+              sizeSkus,
+              sizeMap,
+              isActive: v.isActive !== false,
+              tag: v.tag || "online",
+              onlineMrp: v.onlineMrp || 0,
+              offlineMrp: v.offlineMrp || 0,
+              sku: skuChanged ? newSku : (v.sku || ""),
+            };
+          });
+
+          if (skuUpdateLabels.length > 0) {
+            warnings.push(`"${name}" — SKU updated for: ${Array.from(new Set(skuUpdateLabels)).join(", ")}`);
+          }
 
           const allVariants = [...existingVariants, ...newVariantsOnly];
           const allColors = Array.from(new Set([
@@ -1950,21 +1963,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                               <div
                                 key={conflict.key}
                                 className={`rounded-xl border p-3 text-xs flex items-start justify-between gap-3 ${
-                                  conflict.type === "db-cross-stage"
-                                    ? "bg-rose-50 border-rose-200 text-rose-800"
-                                    : conflict.type === "auto-rename"
-                                      ? "bg-purple-50 border-purple-200 text-purple-800"
-                                      : conflict.type === "db-full-duplicate"
-                                        ? "bg-slate-100 border-slate-300 text-slate-700"
-                                        : "bg-amber-50 border-amber-200 text-amber-800"
+                                  conflict.type === "auto-rename"
+                                    ? "bg-purple-50 border-purple-200 text-purple-800"
+                                    : "bg-slate-100 border-slate-300 text-slate-700"
                                 }`}
                               >
                                 <div className="flex-1">
                                   <p className="font-black text-[10px] uppercase tracking-wider mb-0.5 opacity-60">
-                                    {conflict.type === "db-cross-stage" ? "DB Conflict"
-                                      : conflict.type === "auto-rename" ? "Auto Renamed"
-                                      : conflict.type === "db-full-duplicate" ? "100% Duplicate"
-                                      : "Both Stages"}
+                                    {conflict.type === "auto-rename" ? "Auto Renamed"
+                                      : "100% Duplicate"}
                                   </p>
                                   <p className="leading-relaxed">{conflict.detail}</p>
                                 </div>

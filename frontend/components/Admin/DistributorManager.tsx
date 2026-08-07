@@ -493,6 +493,15 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
   // password visibility toggles
   const [showPasswordEdit, setShowPasswordEdit] = useState(false);
 
+  // --- Separate "Update Login Credentials" modal state (kept independent
+  // from the profile-edit form so saving profile changes never touches
+  // login email/password) ---
+  const [showCredentialsModal, setShowCredentialsModal] = useState(false);
+  const [credEmail, setCredEmail] = useState("");
+  const [credPassword, setCredPassword] = useState("");
+  const [showCredPassword, setShowCredPassword] = useState(false);
+  const [credSaving, setCredSaving] = useState(false);
+
   React.useEffect(() => {
     if (view !== "LIST") {
       // avoid persisting sensitive password in draft storage
@@ -595,7 +604,11 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       setCreatingLoading(true);
       setError(null);
 
-      // Prepare payload
+      // Prepare payload — profile fields only. Login email/password are
+      // intentionally excluded here for edits; they're only set at creation
+      // time or via the separate "Update Login Credentials" modal, so that
+      // saving a profile change (name, address, GST, etc.) can never
+      // accidentally overwrite login credentials.
       const payload: any = {
         name: formData.name || "",
         email: formData.email || "",
@@ -608,14 +621,16 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
         discountPercentage: Number(formData.discountPercentage) || 0,
         creditLimit: Number(formData.creditLimit) || 0,
         tag: formData.tag || "online",
-        loginEmail: formData.loginEmail || "",
-        loginEnabled: editingId ? formData.loginEnabled : !!(formData.loginEmail && formData.loginPassword),
         isActive: true,
       };
 
-      // Only include password if it's provided (important for edits to avoid reset)
-      if (formData.loginPassword && formData.loginPassword.trim().length > 0) {
-        payload.loginPassword = formData.loginPassword;
+      if (!editingId) {
+        // New distributor — login credentials are set as part of creation.
+        payload.loginEmail = formData.loginEmail || "";
+        payload.loginEnabled = !!(formData.loginEmail && formData.loginPassword);
+        if (formData.loginPassword && formData.loginPassword.trim().length > 0) {
+          payload.loginPassword = formData.loginPassword;
+        }
       }
 
       let updatedDistributor = null;
@@ -704,6 +719,33 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       const errorMsg = err.message || "Failed to update login status";
       setError(errorMsg);
       console.error("Error toggling login:", err);
+    }
+  };
+
+  const handleUpdateCredentials = async () => {
+    if (!selectedDistributor?.id) return;
+    try {
+      setCredSaving(true);
+      const payload: any = { loginEmail: credEmail || "" };
+      if (credPassword.trim().length > 0) {
+        payload.loginPassword = credPassword;
+      }
+      const updated: any = await distributorService.updateDistributor(
+        selectedDistributor.id,
+        payload
+      );
+      const normalized = { ...updated, id: updated._id || updated.id };
+      setSelectedDistributor(normalized);
+      setDistributors((prev) =>
+        prev.map((d) => (d.id === normalized.id ? { ...d, ...normalized } : d))
+      );
+      toast.success("Login credentials updated");
+      setShowCredentialsModal(false);
+      setCredPassword("");
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to update login credentials");
+    } finally {
+      setCredSaving(false);
     }
   };
 
@@ -1097,50 +1139,55 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                 </div>
               </div>
 
-              {/* Login Credentials */}
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4 border-b pb-2">
-                  Login Credentials
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <Field label="Login Email" icon={<Mail size={14} />}>
-                    <input
-                      type="email"
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none"
-                      value={formData.loginEmail}
-                      onChange={(e) =>
-                        setFormData({ ...formData, loginEmail: e.target.value })
-                      }
-                    />
-                  </Field>
-                  <Field label="Login Password" icon={<Wallet size={14} />}>
-                    <div className="relative">
+              {/* Login Credentials — only set at creation time. For an
+                  existing distributor, use the separate "Update Login
+                  Credentials" action on the Details page instead, so
+                  profile edits here never touch login email/password. */}
+              {!editingId && (
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4 border-b pb-2">
+                    Login Credentials
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <Field label="Login Email" icon={<Mail size={14} />}>
                       <input
-                        type={showPasswordEdit ? "text" : "password"}
+                        type="email"
                         className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none"
-                        value={formData.loginPassword}
+                        value={formData.loginEmail}
                         onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            loginPassword: e.target.value,
-                          })
+                          setFormData({ ...formData, loginEmail: e.target.value })
                         }
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowPasswordEdit((v) => !v)}
-                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-700"
-                      >
-                        {showPasswordEdit ? (
-                          <EyeOff size={16} />
-                        ) : (
-                          <Eye size={16} />
-                        )}
-                      </button>
-                    </div>
-                  </Field>
+                    </Field>
+                    <Field label="Login Password" icon={<Wallet size={14} />}>
+                      <div className="relative">
+                        <input
+                          type={showPasswordEdit ? "text" : "password"}
+                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                          value={formData.loginPassword}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              loginPassword: e.target.value,
+                            })
+                          }
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPasswordEdit((v) => !v)}
+                          className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-700"
+                        >
+                          {showPasswordEdit ? (
+                            <EyeOff size={16} />
+                          ) : (
+                            <Eye size={16} />
+                          )}
+                        </button>
+                      </div>
+                    </Field>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             <div className="bg-slate-50 px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
@@ -1279,9 +1326,23 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
 
               {/* Login Credentials */}
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4">
-                  Login Credentials
-                </h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
+                    Login Credentials
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCredEmail(d.loginEmail || "");
+                      setCredPassword("");
+                      setShowCredPassword(false);
+                      setShowCredentialsModal(true);
+                    }}
+                    className="text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors"
+                  >
+                    Update Login Credentials
+                  </button>
+                </div>
 
                 <div className="space-y-4">
                   <InfoRow
@@ -1456,6 +1517,81 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
             </div>
           </div>
         </div>
+
+        {showCredentialsModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-black/50"
+              onClick={() => !credSaving && setShowCredentialsModal(false)}
+            />
+            <div className="relative z-10 w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+              <h2 className="text-lg font-bold text-slate-900 mb-1">
+                Update Login Credentials
+              </h2>
+              <p className="text-xs text-slate-500 mb-5">
+                Changes here only affect {d.companyName}'s login email/password
+                — no other profile fields are touched.
+              </p>
+              <div className="space-y-4">
+                <Field label="Login Email" icon={<Mail size={14} />}>
+                  <input
+                    type="email"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                    value={credEmail}
+                    onChange={(e) => setCredEmail(e.target.value)}
+                  />
+                </Field>
+                <Field label="New Login Password" icon={<Wallet size={14} />}>
+                  <div className="relative">
+                    <input
+                      type={showCredPassword ? "text" : "password"}
+                      placeholder="Leave blank to keep current password"
+                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                      value={credPassword}
+                      onChange={(e) => setCredPassword(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCredPassword((v) => !v)}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-700"
+                    >
+                      {showCredPassword ? (
+                        <EyeOff size={16} />
+                      ) : (
+                        <Eye size={16} />
+                      )}
+                    </button>
+                  </div>
+                </Field>
+              </div>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={credSaving}
+                  onClick={() => setShowCredentialsModal(false)}
+                  className="px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={credSaving}
+                  onClick={handleUpdateCredentials}
+                  className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {credSaving ? (
+                    <>
+                      <Loader size={16} className="animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    "Save"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </>
     );
   }

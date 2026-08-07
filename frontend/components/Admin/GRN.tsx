@@ -33,6 +33,7 @@ import {
   X,
   Plus,
   Link2,
+  Copy,
 } from "lucide-react";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
@@ -2057,10 +2058,18 @@ const GRN: React.FC = () => {
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5">
                   Carton Barcode — print &amp; paste this label on the box
                 </p>
-                <div className="rounded-2xl border-2 border-dashed border-orange-300 bg-orange-50 px-4 py-3 text-center">
+                <div className="flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-orange-300 bg-orange-50 px-4 py-3">
                   <span className="text-lg font-black tracking-wider text-orange-700 font-mono">
                     {cartonConfirmPopup.barcode}
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => { navigator.clipboard.writeText(cartonConfirmPopup.barcode); toast.success('Copied'); }}
+                    title="Copy barcode"
+                    className="shrink-0 rounded-lg p-1.5 text-orange-500 hover:bg-orange-100 hover:text-orange-700 transition-colors"
+                  >
+                    <Copy size={16} />
+                  </button>
                 </div>
               </div>
               <div>

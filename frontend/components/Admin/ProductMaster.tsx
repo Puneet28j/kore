@@ -14,6 +14,7 @@ import {
   Grid3X3,
   Star,
   ArrowUp,
+  ArrowLeft,
 } from "lucide-react";
 import { AssortmentType, Article, Variant } from "../../types";
 import { ASSORTMENTS } from "../../constants";
@@ -898,6 +899,16 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     <div className="w-full space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
+          {onCancelEdit && (
+            <button
+              type="button"
+              onClick={onCancelEdit}
+              className="p-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 transition-all shadow-sm"
+              title="Back"
+            >
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-lg shadow-indigo-600/20">
             <Package size={22} />
           </div>

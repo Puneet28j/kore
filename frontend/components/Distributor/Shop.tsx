@@ -734,7 +734,7 @@ const Shop: React.FC<ShopProps> = ({
   goToCart,
   user,
 }) => {
-  const cartItemsCount = cart.reduce((sum, item) => sum + item.pairCount, 0);
+  const cartItemsCount = cart.reduce((sum, item) => sum + item.cartonCount, 0);
   const discountPercentage = user?.discountPercentage || 0;
   const distributorTag = user?.tag;
   const [priceView, setPriceView] = useState<PriceView>("pair");

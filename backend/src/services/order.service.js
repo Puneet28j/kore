@@ -314,7 +314,7 @@ const getOrdersByDistributor = async (
                     {
                       $in: [
                         "$status",
-                        ["BOOKED", "PFD", "RFD", "OFD", "PARTIAL"],
+                        ["BOOKED", "PFD", "RFD", "PARTIAL"],
                       ],
                     },
                     1,
@@ -479,6 +479,7 @@ const updateOrderStatus = async (
     driverMobile = null,
     grossWeightKg = null,
     outScannedCartons = null,
+    itemDispatchCounts = null,
   } = {}
 ) => {
   try {
@@ -489,7 +490,6 @@ const updateOrderStatus = async (
       "BOOKED",
       "PFD",
       "RFD",
-      "OFD",
       "RECEIVED",
       "PARTIAL",
       "CANCELLED",
@@ -518,8 +518,8 @@ const updateOrderStatus = async (
       updateData.deliveryAgentMobile = deliveryAgentMobile;
     if (deliveryNote) updateData.deliveryNote = deliveryNote;
 
-    // Dispatch fields — saved when BOOKED → PFD
-    if (status === "PFD") {
+    // Dispatch fields — saved when dispatching (BOOKED/PARTIAL → PFD/PARTIAL)
+    if (status === "PFD" || (status === "PARTIAL" && ["BOOKED", "PARTIAL"].includes(order.status))) {
       if (vehicleNo) updateData.vehicleNo = vehicleNo;
       if (lrNo) updateData.lrNo = lrNo;
       if (transporterName) updateData.transporterName = transporterName;
@@ -529,6 +529,21 @@ const updateOrderStatus = async (
       if (grossWeightKg) updateData.grossWeightKg = grossWeightKg;
       if (outScannedCartons) updateData.outScannedCartons = outScannedCartons;
       updateData.dispatchedAt = new Date();
+
+      // Update per-item fulfilledCartonCount using the frontend-computed map
+      // (variantId → cartonCount dispatched). This is reliable since the frontend
+      // generates barcodes per item and knows exactly which scanned CTN maps to which item.
+      if (itemDispatchCounts && Object.keys(itemDispatchCounts).length > 0) {
+        for (const item of order.items) {
+          const key = item.variantId?.toString() || item.articleId?.toString();
+          const dispatched = itemDispatchCounts[key] || 0;
+          if (dispatched > 0) {
+            item.fulfilledCartonCount = (item.fulfilledCartonCount || 0) + dispatched;
+          }
+        }
+        updateData.items = order.items;
+        order.markModified("items");
+      }
     }
 
     // Booking commitment fields — saved when admin confirms (PENDING → BOOKED)
@@ -566,46 +581,55 @@ const updateOrderStatus = async (
       let batchAmount = 0;
       let batchCartons = 0;
       let batchPairs = 0;
-
       let allFulfilled = true;
 
-      for (const item of order.items) {
-        const remainingCartons = item.cartonCount - (item.fulfilledCartonCount || 0);
-        if (remainingCartons > 0) {
-          const remainingPairs = item.pairCount - (item.fulfilledPairCount || 0);
+      // Build a map of cartons already recorded in previous fulfillment batches per item
+      const prevBatchCartons = {};
+      for (const batch of (order.fulfillmentHistory || [])) {
+        for (const bItem of batch.items || []) {
+          const key = bItem.variantId?.toString() || bItem.articleId?.toString();
+          if (key) prevBatchCartons[key] = (prevBatchCartons[key] || 0) + (bItem.cartonCount || 0);
+        }
+      }
 
-          // Build batch size quantities from what remains unfulfilled
+      for (const item of order.items) {
+        // fulfilledCartonCount is cumulative (all dispatch cycles).
+        // This batch should only record what's NEW since the last receive.
+        const key = item.variantId?.toString() || item.articleId?.toString();
+        const totalDispatched = item.fulfilledCartonCount || 0;
+        const alreadyRecorded = prevBatchCartons[key] || 0;
+        const dispatchedCartons = Math.max(0, totalDispatched - alreadyRecorded);
+
+        if (dispatchedCartons > 0) {
+          const ratio = dispatchedCartons / (item.cartonCount || 1);
+          const dispatchedPairs = Math.round(item.pairCount * ratio);
+
           const orderedSizes = item.sizeQuantities
             ? Object.fromEntries(item.sizeQuantities)
             : {};
-          const fulfilledSizes = item.fulfilledSizeQuantities
-            ? Object.fromEntries(item.fulfilledSizeQuantities)
-            : {};
+
+          // Proportional size quantities based on cartons dispatched
           const batchSizeQtys = {};
           for (const [size, qty] of Object.entries(orderedSizes)) {
-            const rem = Math.max(0, Number(qty) - (fulfilledSizes[size] || 0));
-            if (rem > 0) batchSizeQtys[size] = rem;
+            const proportional = Math.round(Number(qty) * ratio);
+            if (proportional > 0) batchSizeQtys[size] = proportional;
           }
 
           currentBatchItems.push({
             variantId: item.variantId,
             articleId: item.articleId,
-            cartonCount: remainingCartons,
-            pairCount: remainingPairs,
+            cartonCount: dispatchedCartons,
+            pairCount: dispatchedPairs,
             sizeQuantities: batchSizeQtys,
           });
 
           const perPairPrice = item.price / (item.pairCount || 1);
-          batchAmount += remainingPairs * perPairPrice;
-          batchCartons += remainingCartons;
-          batchPairs += remainingPairs;
-
-          // update fulfilled counts to fully fulfilled
-          item.fulfilledCartonCount = item.cartonCount;
-          item.fulfilledPairCount = item.pairCount;
-          item.fulfilledSizeQuantities = orderedSizes;
+          batchAmount += dispatchedPairs * perPairPrice;
+          batchCartons += dispatchedCartons;
+          batchPairs += dispatchedPairs;
         }
 
+        // allFulfilled is false if any item has less dispatched than ordered
         if ((item.fulfilledCartonCount || 0) < item.cartonCount) {
           allFulfilled = false;
         }
@@ -633,7 +657,7 @@ const updateOrderStatus = async (
 
       // Determine final status
       updateData.status = allFulfilled ? "RECEIVED" : "PARTIAL";
-      if (!order.deliveredAt) updateData.deliveredAt = new Date();
+      updateData.deliveredAt = new Date();
       updateData.items = order.items;
       updateData.fulfillmentHistory = order.fulfillmentHistory;
       order.markModified("items");
@@ -704,7 +728,7 @@ const processReturn = async (orderId, returnData) => {
     const order = await Order.findById(orderId);
     if (!order) throw new Error("Order not found");
 
-    const validStatuses = ["RECEIVED", "PARTIAL", "OFD"];
+    const validStatuses = ["RECEIVED", "PARTIAL"];
     if (!validStatuses.includes(order.status)) {
       throw new Error("Only orders with delivered items can be returned");
     }

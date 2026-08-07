@@ -919,7 +919,7 @@ const App: React.FC = () => {
         prev.map((o) => {
           if (o.id === orderId || (o as any)._id === orderId) {
             // dispatch: deduct actual + release reserved (only once)
-            if (status === OrderStatus.OFD && o.status !== OrderStatus.OFD) {
+            if (status === OrderStatus.PFD && o.status !== OrderStatus.PFD) {
               setInventory((invs) =>
                 invs.map((inv) => {
                   const item = o.items.find(
@@ -1251,7 +1251,6 @@ const STATUS_CHIP: Record<string, { label: string; color: string }> = {
   BOOKED: { label: "Booked", color: "bg-indigo-100 text-indigo-700" },
   PFD: { label: "PFD", color: "bg-purple-100 text-purple-700" },
   RFD: { label: "RFD", color: "bg-sky-100 text-sky-700" },
-  OFD: { label: "In Transit", color: "bg-amber-100 text-amber-700" },
   RECEIVED: { label: "Received", color: "bg-emerald-100 text-emerald-700" },
   PARTIAL: { label: "Partial", color: "bg-orange-100 text-orange-700" },
   CANCELLED: { label: "Cancelled", color: "bg-rose-100 text-rose-700" },
@@ -1281,8 +1280,7 @@ const DistributorDashboard: React.FC<{
       (o) =>
         o.status === OrderStatus.BOOKED ||
         o.status === OrderStatus.PFD ||
-        o.status === OrderStatus.RFD ||
-        o.status === OrderStatus.OFD
+        o.status === OrderStatus.RFD
     ).length;
   const preOrderCount =
     dashboardStats?.preOrderCount ??
@@ -1455,7 +1453,7 @@ const DistributorDashboard: React.FC<{
             <div className="divide-y divide-slate-50">
               {recentOrders.map((order) => {
                 const isTransit =
-                  order.status === OrderStatus.OFD ||
+                  order.status === OrderStatus.RFD ||
                   order.status === OrderStatus.RECEIVED;
                 const chip = STATUS_CHIP[order.status];
                 return (

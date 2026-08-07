@@ -123,7 +123,6 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   BOOKED:   { label: "Booked",   color: "bg-slate-100 text-slate-600" },
   PFD:      { label: "PFD",      color: "bg-violet-100 text-violet-700" },
   RFD:      { label: "RFD",      color: "bg-blue-100 text-blue-700" },
-  OFD:      { label: "OFD",      color: "bg-amber-100 text-amber-700" },
   RECEIVED: { label: "Received", color: "bg-emerald-100 text-emerald-700" },
   PARTIAL:  { label: "Partial",  color: "bg-orange-100 text-orange-700" },
 };

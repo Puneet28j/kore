@@ -109,6 +109,7 @@ class DistributorOrderService {
       driverMobile?: string;
       grossWeightKg?: number;
       outScannedCartons?: string[];
+      itemDispatchCounts?: Record<string, number>;
     } = {}
   ): Promise<Order | undefined> {
     const formData = new FormData();
@@ -135,6 +136,7 @@ class DistributorOrderService {
     if (options.driverMobile)    formData.append("driverMobile",    options.driverMobile);
     if (options.grossWeightKg)   formData.append("grossWeightKg",   String(options.grossWeightKg));
     if (options.outScannedCartons) formData.append("outScannedCartons", JSON.stringify(options.outScannedCartons));
+    if (options.itemDispatchCounts) formData.append("itemDispatchCounts", JSON.stringify(options.itemDispatchCounts));
 
     if (options.files) {
       Object.entries(options.files).forEach(([key, file]) => {

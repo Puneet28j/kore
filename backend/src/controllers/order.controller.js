@@ -83,7 +83,7 @@ const updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status, receiverName, receiverMobile, deliveryAgentName, deliveryAgentMobile, deliveryNote,
           expectedDispatchDate, bookingPriority, adminNote, stockStatus,
-          vehicleNo, lrNo, transporterName, eWayBillNo, driverName, driverMobile, grossWeightKg, outScannedCartons } = req.body;
+          vehicleNo, lrNo, transporterName, eWayBillNo, driverName, driverMobile, grossWeightKg, outScannedCartons, itemDispatchCounts } = req.body;
 
     const docs = {};
     if (req.files) {
@@ -113,6 +113,7 @@ const updateOrderStatus = async (req, res) => {
       driverMobile: driverMobile || null,
       grossWeightKg: grossWeightKg ? Number(grossWeightKg) : null,
       outScannedCartons: outScannedCartons ? JSON.parse(outScannedCartons) : null,
+      itemDispatchCounts: itemDispatchCounts ? JSON.parse(itemDispatchCounts) : null,
     });
 
     emitOrderUpdate(updatedOrder);

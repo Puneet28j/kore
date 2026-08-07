@@ -280,8 +280,8 @@ export const useKoreStore = () => {
         if (o.id === orderId) {
           // If transitioning to Dispatched, deduct from actual stock
           if (
-            newStatus === OrderStatus.OFD &&
-            o.status !== OrderStatus.OFD
+            newStatus === OrderStatus.PFD &&
+            o.status !== OrderStatus.PFD
           ) {
             setInventory((inv) =>
               inv.map((i) => {

@@ -226,7 +226,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   const currentBookingMap = variant.bookingMap || {};
   const currentPOMap = stockData?.poMap || {};
   const currentLiveStockMap = stockData?.liveStockMap || {};
-  const currentBlockedStockMap: Record<string, number> = {};
+  const currentBlockedStockMap: Record<string, number> = stockData?.blockedStockMap || {};
 
   const totalAssortment = Object.values(currentAssortmentMap).reduce(
     (s: number, v) => s + (Number(v) || 0),
@@ -244,7 +244,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
     return s + (Number(v) || 0);
   }, 0);
 
-  const totalBlocked = 0;
+  const totalBlocked = Object.values(currentBlockedStockMap).reduce((s: number, v) => s + (Number(v) || 0), 0);
 
   // Assortment-aware live stock calculation
   const calculateAssortmentCartons = (stockMap: Record<string, number>) => {
@@ -752,9 +752,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                             >
                               {available}
                             </span>
-                            {/* {blocked > 0 && (
+                            {blocked > 0 && (
                               <span className="text-[10px] font-bold text-rose-500">(-{blocked} blk)</span>
-                            )} */}
+                            )}
                           </div>
                           {/* <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">Live: {qty}</p> */}
                         </div>
@@ -764,29 +764,28 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 </div>
               </div>
 
-              {/* Right Column - Booking Breakdown */}
-              {/* <div className="space-y-3">
+              {/* Middle Column - Blocked (Booked) Breakdown */}
+              <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black text-emerald-600 uppercase tracking-wider flex items-center gap-1.5">
-                    <ShoppingBag size={14} /> Booked Qty
+                  <h4 className="text-xs font-black text-rose-600 uppercase tracking-wider flex items-center gap-1.5">
+                    <ShoppingBag size={14} /> Blocked (Booked)
                   </h4>
                   <span className="text-[10px] font-bold text-slate-400">
-                    per size
+                    pairs
                   </span>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {sizes.map((sz) => {
                     const cleanSz = sz.trim();
-                    const bookedQty = Number(currentBookingMap[cleanSz] ?? currentBookingMap[sz]) || 0;
-                    const statusColor = bookedQty === 0 ? "slate" : "emerald";
+                    const blockedQty = Number(currentBlockedStockMap[cleanSz] ?? currentBlockedStockMap[sz]) || 0;
 
                     return (
                       <div
                         key={sz}
                         className={`p-3 rounded-xl border transition-all hover:shadow-md ${
-                          statusColor === "emerald"
-                            ? "bg-emerald-50/60 border-emerald-200"
+                          blockedQty > 0
+                            ? "bg-rose-50/60 border-rose-200"
                             : "bg-slate-50/60 border-slate-200"
                         }`}
                       >
@@ -796,19 +795,19 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                           </span>
                           <div
                             className={`text-xl font-black leading-none ${
-                              bookedQty > 0
-                                ? "text-emerald-600"
+                              blockedQty > 0
+                                ? "text-rose-600"
                                 : "text-slate-300"
                             }`}
                           >
-                            {bookedQty}
+                            {blockedQty}
                           </div>
                         </div>
                       </div>
                     );
                   })}
                 </div>
-              </div> */}
+              </div>
 
               {/* Third Column - PO Breakdown */}
               <div className="space-y-3">

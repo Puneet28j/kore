@@ -34,7 +34,6 @@ const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.BOOKED]:    'Booked',
   [OrderStatus.PFD]:       'Dispatched',
   [OrderStatus.RFD]:       'In Transit',
-  [OrderStatus.OFD]:       'Out for Delivery',
   [OrderStatus.RECEIVED]:  'Delivered',
   [OrderStatus.PARTIAL]:   'Partial',
   [OrderStatus.CANCELLED]: 'Cancelled',
@@ -46,7 +45,6 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
     [OrderStatus.BOOKED]:    'bg-indigo-50 text-indigo-500 border-indigo-100',
     [OrderStatus.PFD]:       'bg-amber-50 text-amber-500 border-amber-100',
     [OrderStatus.RFD]:       'bg-blue-50 text-blue-500 border-blue-100',
-    [OrderStatus.OFD]:       'bg-emerald-50 text-emerald-500 border-emerald-100',
     [OrderStatus.RECEIVED]:  'bg-green-100 text-green-700 border-green-200',
     [OrderStatus.PARTIAL]:   'bg-orange-100 text-orange-700 border-orange-200',
     [OrderStatus.CANCELLED]: 'bg-rose-50 text-rose-600 border-rose-200',
@@ -140,7 +138,6 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
     { label: 'Booked',     val: statusCounts.BOOKED    || 0, color: 'text-indigo-600',  bg: 'bg-indigo-50',  border: 'border-indigo-100',filter: OrderStatus.BOOKED    },
     { label: 'Dispatched', val: statusCounts.PFD       || 0, color: 'text-amber-600',   bg: 'bg-amber-50',   border: 'border-amber-100', filter: OrderStatus.PFD       },
     { label: 'In Transit', val: statusCounts.RFD       || 0, color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-100',  filter: OrderStatus.RFD       },
-    { label: 'Out for Del',val: statusCounts.OFD       || 0, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100',filter: OrderStatus.OFD      },
     { label: 'Delivered',  val: statusCounts.RECEIVED  || 0, color: 'text-green-700',   bg: 'bg-green-50',   border: 'border-green-100', filter: OrderStatus.RECEIVED  },
     { label: 'Partial',    val: statusCounts.PARTIAL   || 0, color: 'text-orange-600',  bg: 'bg-orange-50',  border: 'border-orange-100',filter: OrderStatus.PARTIAL   },
   ];
@@ -258,7 +255,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
             const fulfilled = order.items.reduce((acc, item) => acc + (item.fulfilledCartonCount || 0), 0);
             const total = order.totalCartons;
             const progress = total > 0 ? Math.round((fulfilled / total) * 100) : 0;
-            const isTransitioning = order.status === OrderStatus.PARTIAL || (order.status === OrderStatus.OFD && fulfilled > 0);
+            const isTransitioning = order.status === OrderStatus.PARTIAL;
 
             return (
               <div
@@ -306,12 +303,6 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
                       </span>
                     )}
 
-                    {/* OFD delivery agent */}
-                    {order.status === OrderStatus.OFD && order.deliveryAgentName && (
-                      <span className="hidden sm:flex items-center gap-1 px-2 py-1 bg-emerald-50 border border-emerald-100 rounded-lg text-[9px] font-bold text-emerald-700">
-                        <Truck size={9} /> {order.deliveryAgentName}
-                      </span>
-                    )}
 
                     {/* Bill download */}
                     {order.status === OrderStatus.RECEIVED && order.billUrl && (
@@ -392,25 +383,6 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
                   </div>
                 )}
 
-                {/* Mobile: delivery agent */}
-                {order.status === OrderStatus.OFD && (order.deliveryAgentName || order.deliveryNote) && (
-                  <div className="sm:hidden px-5 pb-3">
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg">
-                      <Truck size={10} className="text-emerald-600 shrink-0" />
-                      <div className="flex flex-wrap gap-x-3">
-                        {order.deliveryAgentName && (
-                          <p className="text-[10px] font-bold text-emerald-700">Agent: <span className="font-black">{order.deliveryAgentName}</span></p>
-                        )}
-                        {order.deliveryAgentMobile && (
-                          <a href={`tel:${order.deliveryAgentMobile}`} onClick={e => e.stopPropagation()}
-                            className="text-[10px] font-black text-emerald-700 flex items-center gap-1 hover:underline">
-                            <Phone size={9} /> {order.deliveryAgentMobile}
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
 
                 {/* Sleek progress edge */}
                 {isTransitioning && (

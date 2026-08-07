@@ -235,6 +235,7 @@ export interface Order {
   grossWeightKg?: number;
   outScannedCartons?: string[];
   dispatchedAt?: string;
+  deliveredAt?: string;
 }
 
 export interface MovementRecord {

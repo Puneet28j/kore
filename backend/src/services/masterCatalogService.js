@@ -866,6 +866,28 @@ exports.getVariantStock = async (variantId) => {
 
   console.log(`[DEBUG DYNAMIC] Returned per size:`, totalReturned);
 
+  // 5a. BLOCKED: quantities from BOOKED/PENDING orders (reserved but not yet dispatched)
+  const bookedOrders = await Order.find({
+    "items.variantId": variantId,
+    status: { $in: ["BOOKED", "PENDING"] }
+  }).lean();
+
+  const blockedStockMap = {};
+  bookedOrders.forEach(order => {
+    const item = (order.items || []).find(i => i.variantId && i.variantId.toString() === variantId.toString());
+    if (item && item.sizeQuantities) {
+      const entries = item.sizeQuantities instanceof Map
+        ? Array.from(item.sizeQuantities.entries())
+        : Object.entries(item.sizeQuantities);
+      entries.forEach(([size, qty]) => {
+        const cleanSz = size.trim();
+        blockedStockMap[cleanSz] = (blockedStockMap[cleanSz] || 0) + Number(qty || 0);
+      });
+    }
+  });
+
+  console.log(`[DEBUG DYNAMIC] Blocked per size (BOOKED/PENDING):`, blockedStockMap);
+
   // 5. Combine: Live Stock = sizeMap.qty (canonical) - Dispatched + Returned
   // sizeMap.qty is written by BOTH GRN submit ($inc) and manual stockMovement.
   // Using GRN-derived totalReceived was ignoring manual inward/outward movements.
@@ -906,7 +928,7 @@ exports.getVariantStock = async (variantId) => {
     });
   });
 
-  return { poMap, liveStockMap };
+  return { poMap, liveStockMap, blockedStockMap };
 };
 
 // Reset Variant Stock - Surgical Purge of Receipts and Fulfillments

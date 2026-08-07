@@ -341,7 +341,6 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
               "BOOKED",
               "PFD",
               "RFD",
-              "OFD",
               "PARTIAL",
               "RECEIVED",
               "CANCELLED",
@@ -385,9 +384,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             const total = order.totalCartons;
             const progress =
               total > 0 ? Math.round((fulfilled / total) * 100) : 0;
-            const isTransitioning =
-              order.status === OrderStatus.PARTIAL ||
-              (order.status === OrderStatus.OFD && fulfilled > 0);
+            const isTransitioning = order.status === OrderStatus.PARTIAL;
 
             return (
               <div
@@ -564,7 +561,6 @@ const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.BOOKED]: "Booked",
   [OrderStatus.PFD]: "Dispatched",
   [OrderStatus.RFD]: "In Transit",
-  [OrderStatus.OFD]: "Out for Delivery",
   [OrderStatus.RECEIVED]: "Delivered",
   [OrderStatus.PARTIAL]: "Partially Delivered",
   [OrderStatus.CANCELLED]: "Cancelled",
@@ -580,9 +576,6 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
     },
     [OrderStatus.PFD]: { color: "bg-amber-50 text-amber-500 border-amber-100" },
     [OrderStatus.RFD]: { color: "bg-blue-50 text-blue-500 border-blue-100" },
-    [OrderStatus.OFD]: {
-      color: "bg-emerald-50 text-emerald-500 border-emerald-100",
-    },
     [OrderStatus.RECEIVED]: {
       color: "bg-green-100 text-green-700 border-green-200",
     },
@@ -613,15 +606,13 @@ const OrderProgress: React.FC<{
     OrderStatus.BOOKED,
     OrderStatus.PFD,
     OrderStatus.RFD,
-    OrderStatus.OFD,
     OrderStatus.RECEIVED,
   ];
 
   let currentIndex = stages.indexOf(status);
 
-  // Custom handling for PARTIAL status to show progress between OFD and RECEIVED
   if (status === OrderStatus.PARTIAL) {
-    currentIndex = 3.5;
+    currentIndex = 2.5;
   }
 
   return (

@@ -77,6 +77,7 @@ exports.updateDistributor = async (req, res, next) => {
       data: distributor,
     });
   } catch (err) {
+    console.error("[updateDistributor] ERROR:", err.status || 500, err.message, err.stack);
     next(err);
   }
 };

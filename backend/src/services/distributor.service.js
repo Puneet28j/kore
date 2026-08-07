@@ -308,6 +308,7 @@ exports.getDistributorById = async (id) => {
 
 exports.updateDistributor = async (id, body) => {
   ensureValidId(id, "distributor id");
+  console.log("[updateDistributor] id:", id, "body:", body);
 
   const distributor = await Distributor.findOne({ _id: id, isDeleted: false });
   if (!distributor) {
@@ -315,6 +316,7 @@ exports.updateDistributor = async (id, body) => {
     err.status = 404;
     throw err;
   }
+  console.log("[updateDistributor] found distributor:", distributor.companyName, "existing userId:", distributor.userId, "loginEnabled:", distributor.loginEnabled);
 
   if (body.name !== undefined && !String(body.name).trim()) {
     const err = new Error("name cannot be empty");
@@ -330,14 +332,26 @@ exports.updateDistributor = async (id, body) => {
 
   // Guard against a dangling userId (the linked User doc was deleted, e.g. by
   // a DB reset script) — without this, the "sync linked user" block below
-  // silently no-ops against a nonexistent _id and login stays broken forever.
-  // Only auto-recreate when this call explicitly supplies fresh credentials
-  // (via the "Update Login Credentials" flow), so unrelated profile edits
-  // (name/address/GST) don't start failing just because login is broken.
-  if (distributor.userId && body.loginEmail && body.loginPassword) {
+  // silently no-ops against a nonexistent _id, the caller gets a false
+  // "success", and login stays broken forever.
+  if (distributor.userId && (body.loginEmail !== undefined || body.loginPassword !== undefined)) {
     const linkedUserExists = await User.exists({ _id: distributor.userId });
+    console.log("[updateDistributor] checked linked user exists:", !!linkedUserExists);
     if (!linkedUserExists) {
-      distributor.userId = undefined;
+      if (body.loginEmail && body.loginPassword) {
+        // Enough info to recreate — clear the stale reference so the
+        // "create new user" path below runs instead of a silent no-op.
+        console.log("[updateDistributor] dangling userId detected — clearing so a new User gets created");
+        distributor.userId = undefined;
+      } else {
+        // Not enough info to recreate (e.g. only email given, password left
+        // blank to "keep current" — but there is no current account).
+        const err = new Error(
+          "This distributor's login account no longer exists — provide both a login email and a new password to recreate it."
+        );
+        err.status = 400;
+        throw err;
+      }
     }
   }
 
@@ -351,11 +365,14 @@ exports.updateDistributor = async (id, body) => {
 
   await distributor.save();
 
+  console.log("[updateDistributor] hadUser:", hadUser, "loginEnabled:", distributor.loginEnabled);
+
   // if login has been enabled and there is no user yet, create one
   if (distributor.loginEnabled && !hadUser) {
     const loginEmail = body.loginEmail || distributor.email;
     const loginPassword = body.loginPassword;
     if (!loginEmail || !loginPassword) {
+      console.log("[updateDistributor] cannot create user — missing loginEmail or loginPassword. loginEmail:", loginEmail, "loginPassword present:", !!loginPassword);
       const err = new Error(
         "loginEmail and loginPassword are required when enabling login"
       );
@@ -370,6 +387,7 @@ exports.updateDistributor = async (id, body) => {
       isActive: distributor.isActive,
     });
     const user = await User.create(userPayload);
+    console.log("[updateDistributor] created new User:", user._id, user.email);
     distributor.userId = user._id;
     if (loginPassword) distributor.loginPasswordPlain = String(loginPassword);
     await distributor.save();
@@ -377,6 +395,7 @@ exports.updateDistributor = async (id, body) => {
 
   // sync linked user basic fields and credentials
   if (distributor.userId) {
+    console.log("[updateDistributor] syncing linked user:", distributor.userId);
     const userPatch = {};
     if (body.name !== undefined) userPatch.name = String(body.name).trim();
 
@@ -410,6 +429,8 @@ exports.updateDistributor = async (id, body) => {
         (userPatch.isActive ?? distributor.isActive);
     }
 
+    console.log("[updateDistributor] userPatch to apply:", userPatch);
+
     if (Object.keys(userPatch).length) {
       // if updating email we must avoid conflicts
       if (userPatch.email) {
@@ -419,15 +440,17 @@ exports.updateDistributor = async (id, body) => {
         }).lean();
 
         if (exists) {
+          console.log("[updateDistributor] email conflict — another user already has:", userPatch.email);
           const err = new Error("Email already in use by another user");
           err.status = 400;
           throw err;
         }
       }
 
-      await User.findByIdAndUpdate(distributor.userId, userPatch, {
+      const patchResult = await User.findByIdAndUpdate(distributor.userId, userPatch, {
         returnDocument: 'after',
       });
+      console.log("[updateDistributor] findByIdAndUpdate result (null means no matching User doc):", patchResult);
     }
 
     // Push instant logout via socket if password was reset
@@ -448,6 +471,7 @@ exports.updateDistributor = async (id, body) => {
     const linkedUser = await User.findById(distributor.userId, "email").lean();
     result.loginEmail = linkedUser?.email || "";
   }
+  console.log("[updateDistributor] returning result.loginEmail:", result.loginEmail, "userId:", result.userId);
 
   return result;
 };

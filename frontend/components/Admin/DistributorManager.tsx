@@ -733,11 +733,14 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       if (credPassword.trim().length > 0) {
         payload.loginPassword = credPassword;
       }
+      console.log("[UpdateLoginCredentials] sending payload:", payload, "for distributor id:", selectedDistributor.id);
       const updated: any = await distributorService.updateDistributor(
         selectedDistributor.id,
         payload
       );
+      console.log("[UpdateLoginCredentials] response from server:", updated);
       const normalized = { ...updated, id: updated._id || updated.id };
+      console.log("[UpdateLoginCredentials] normalized (loginEmail =", normalized.loginEmail, "):", normalized);
       setSelectedDistributor(normalized);
       setDistributors((prev) =>
         prev.map((d) => (d.id === normalized.id ? { ...d, ...normalized } : d))
@@ -746,6 +749,7 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       setShowCredentialsModal(false);
       setCredPassword("");
     } catch (err: any) {
+      console.error("[UpdateLoginCredentials] FAILED:", err);
       toast.error(err?.message || "Failed to update login credentials");
     } finally {
       setCredSaving(false);

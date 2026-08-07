@@ -308,15 +308,38 @@ function resolveStage(raw: string | undefined): "AVAILABLE" | "WISHLIST" {
   return s === "wishlist" || s === "preorder" ? "WISHLIST" : "AVAILABLE";
 }
 
-// Group by (name + stage) — key format: "ArticleName|||AVAILABLE" or "ArticleName|||WISHLIST"
+// Normalize gender — same identity dimension as stage: "Echo" MEN and "Echo" WOMEN
+// are distinct articles, not the same one with conflicting data.
+function resolveGender(raw: string | undefined): string {
+  return (raw || "MEN").trim().toUpperCase();
+}
+
+// Article identity = name + gender + listing_status (stage). Two entries differing on
+// ANY of these are legitimately different articles, not duplicates/conflicts.
+function findExistingMaster(
+  articles: Article[],
+  name: string,
+  gender: string,
+  stage: string
+): Article | undefined {
+  return articles.find(
+    (a) =>
+      a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
+      resolveGender(a.category) === gender &&
+      (a.status || "AVAILABLE") === stage
+  );
+}
+
+// Group by (name + stage + gender) — key format: "ArticleName|||AVAILABLE|||MEN"
 // ALSO splits same-name groups where the same color+size appears with DIFFERENT assortments
 // into separate masters: "ArticleName", "ArticleName2", "ArticleName3", etc. (not "ArticleName-2")
 function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
-  // Step 1: basic grouping by name + stage
+  // Step 1: basic grouping by name + stage + gender
   const raw: Record<string, CsvRow[]> = {};
   rows.forEach((r) => {
     const stage = resolveStage(r.listing_status as string | undefined);
-    const key = `${r.name}|||${stage}`;
+    const gender = resolveGender(r.gender as string | undefined);
+    const key = `${r.name}|||${stage}|||${gender}`;
     (raw[key] = raw[key] || []).push(r);
   });
 
@@ -326,7 +349,7 @@ function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
   // Step 2: for each group, detect assortment collisions and split into sub-groups
   const result: Record<string, CsvRow[]> = {};
   Object.entries(raw).forEach(([key, groupRows]) => {
-    const [name, stage] = key.split("|||");
+    const [name, stage, gender] = key.split("|||");
 
     // Assign each row to the first sub-group where its color+size isn't already taken
     // with a different assortment. Same color+size + same assortment = same variant (OK).
@@ -354,7 +377,7 @@ function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
       const renamed = sg.map((r) =>
         idx === 0 ? r : { ...r, name: newName, _isAutoRenamed: true }
       );
-      result[`${newName}|||${stage}`] = renamed;
+      result[`${newName}|||${stage}|||${gender}`] = renamed;
     });
   });
 
@@ -460,6 +483,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     const processedRows = Object.values(groups).flat();
 
     // ── Conflict detection ──────────────────────────────────────────────────
+    // Article identity = name + gender + listing_status (stage). Same name in a
+    // different stage or gender is NOT a conflict — it's a legitimately distinct
+    // article, so there's no "DB cross-stage" / "both stages" check anymore.
     const conflicts: CsvConflict[] = [];
 
     // Check: same article name exists in opposite stage in DB
@@ -910,7 +936,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             new Set(duplicateRows.map((r) => `${r.color} (${r.size})`))
           );
 
-          // All variants already exist → skip entirely
+          // Duplicate rows aren't recreated as new variants, but a CSV row can still carry
+          // a corrected SKU for an otherwise-identical existing variant — update it in place
+          // rather than silently discarding the new sku_ctn value.
+          const duplicateRowByKey = new Map(
+            duplicateRows.map((r) => [makeVariantKey(r), r])
+          );
+          const skuUpdateLabels: string[] = [];
+
+          // All variants already exist → nothing new, but SKUs may still need updating
           if (newRows.length === 0) {
             skipped++;
             warnings.push(

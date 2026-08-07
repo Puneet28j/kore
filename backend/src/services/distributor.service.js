@@ -210,7 +210,12 @@ exports.createDistributor = async (body) => {
     await session.commitTransaction();
     session.endSession();
 
-    return await Distributor.findById(createdDistributor._id).lean();
+    const created = await Distributor.findById(createdDistributor._id).lean();
+    if (created?.userId) {
+      const linkedUser = await User.findById(created.userId, "email").lean();
+      created.loginEmail = linkedUser?.email || "";
+    }
+    return created;
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
@@ -427,7 +432,12 @@ exports.updateDistributor = async (id, body) => {
   const { emitDistributorUpdate } = require("../socket");
   emitDistributorUpdate(distributor._id);
 
-  return distributor.toObject();
+  const result = distributor.toObject();
+  if (distributor.userId) {
+    const linkedUser = await User.findById(distributor.userId, "email").lean();
+    result.loginEmail = linkedUser?.email || "";
+  }
+  return result;
 };
 
 exports.toggleDistributorStatus = async (id) => {

@@ -166,7 +166,22 @@ const normalizeVariants = (variantsRaw) => {
   });
 };
 
+// Strip gender letter from a base string (e.g. "ARM-NVY-M-" → "ARM-NVY-")
+// A gender segment is a single letter immediately before the size range.
+function stripGenderFromBase(base) {
+  // base ends with "-" (e.g. "ARM-NVY-M-")
+  const withoutTrail = base.endsWith("-") ? base.slice(0, -1) : base;
+  const segments = withoutTrail.split("-");
+  const last = segments[segments.length - 1] || "";
+  if (last.length === 1 && /^[A-Za-z]$/.test(last)) {
+    // Remove the single-letter gender segment and restore trailing dash
+    return withoutTrail.slice(0, -(last.length + 1)) + "-";
+  }
+  return base;
+}
+
 // Auto-generate per-size SKUs from carton SKU (e.g. slk-blk-5-9 → {5:slk-blk-5, 6:slk-blk-6 ...})
+// Gender letter in SKU (e.g. ARM-NVY-M-6-10) is stripped from per-pair SKUs → ARM-NVY-6 etc.
 function autoGenerateSizeSkus(ctnSku, sizeRange, sizeKeys) {
   if (!ctnSku || !sizeKeys.length) return {};
   const result = {};
@@ -181,6 +196,7 @@ function autoGenerateSizeSkus(ctnSku, sizeRange, sizeKeys) {
     if (m) base = m[1] + "-";
   }
   if (base !== null) {
+    base = stripGenderFromBase(base);
     sizeKeys.forEach(sz => { result[sz] = `${base}${sz}`; });
   } else {
     sizeKeys.forEach(sz => { result[sz] = `${ctnSku}-${sz}`; });

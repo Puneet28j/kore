@@ -121,7 +121,7 @@ export const grnService = {
       return {
         itemName: it.itemName || "",
         variantId: it.variantId || "",
-        color: it.skuCompany || "",
+        color: it.color || "",
         sizeRange: "Variable",
         cartonCount: itemCartons,
         sizeMap,
@@ -179,11 +179,12 @@ export const grnService = {
     const primaryPODoc = primaryRes.data;
 
     // Build scanKey → poItem map (scanKeys mirror what GRN.tsx puts in scanState)
-    // Primary items: scanKey = itemName
-    // Linked items:  scanKey = "${linkedMongoId}::itemName"
+    // Primary items: scanKey = variantId || itemName (itemName alone collides
+    // whenever a PO has multiple variants of the same article)
+    // Linked items:  scanKey = "${linkedMongoId}::${variantId || itemName}"
     const allPOItems: Record<string, any> = {};
     (primaryPODoc.items || []).forEach((it: any) => {
-      allPOItems[it.itemName] = it;
+      allPOItems[it.variantId || it.itemName] = it;
     });
 
     for (const linkedMongoId of linkedPoIds) {
@@ -191,7 +192,7 @@ export const grnService = {
         const lRes = await apiFetch(`/purchase-orders/${linkedMongoId}`);
         if (lRes.data) {
           (lRes.data.items || []).forEach((it: any) => {
-            allPOItems[`${linkedMongoId}::${it.itemName}`] = it;
+            allPOItems[`${linkedMongoId}::${it.variantId || it.itemName}`] = it;
           });
         }
       } catch {}

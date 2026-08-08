@@ -44,6 +44,7 @@ import {
   MockPORef,
 } from "../../services/grnService";
 import SearchableSelect from "../SearchableSelect";
+import SectionCard from "../ui/SectionCard";
 import { formatAssortment } from "../../utils/assortmentUtils";
 
 /* ═══════════════════ Types ═══════════════════ */
@@ -155,6 +156,10 @@ const GRN: React.FC = () => {
 
   // Collapsible state for items in All Items Status
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+
+  /* ── Items rail: search + article grouping (scales to large item counts) ── */
+  const [itemSearch, setItemSearch] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   /* ── Scan UX state ── */
   const [lastScannedSize, setLastScannedSize] = useState<string>("");
@@ -455,17 +460,19 @@ const GRN: React.FC = () => {
 
             const state: ScanState = {};
             data.items.forEach((item) => {
-              state[item.itemName] = Array.from(
+              // itemName alone isn't unique across a PO's items — match the
+              // variantId-first key used everywhere else (_scanKey, getDoneKey).
+              state[item.variantId || item.itemName] = Array.from(
                 { length: item.cartonCount || 1 },
                 () => ({})
               );
             });
             setScanState(state);
-            
+
             // Auto-select first item if not selected and find its first pending carton
             if (data.items.length > 0) {
               const firstItem = data.items[0];
-              setSelectedItemName(firstItem.itemName);
+              setSelectedItemName(firstItem.variantId || firstItem.itemName);
               
               const itemDoneIndices = doneMap[firstItem.variantId || firstItem.itemName] || [];
               let firstPending = 0;
@@ -499,14 +506,17 @@ const GRN: React.FC = () => {
       ...item,
       _poId: selectedPOId,
       _poNo: poDetail?.poNo || "",
-      _scanKey: item.itemName,
+      // itemName alone isn't unique — a PO commonly has multiple variants of
+      // the same article (e.g. several "Echo" colors/sizes), which would
+      // otherwise collide onto one scanState entry. Matches getDoneKey().
+      _scanKey: item.variantId || item.itemName,
     }));
     const linked: POItemExtended[] = linkedPODetails.flatMap((pd) =>
       pd.items.map((item) => ({
         ...item,
         _poId: pd.id,
         _poNo: pd.poNo,
-        _scanKey: `${pd.id}::${item.itemName}`,
+        _scanKey: `${pd.id}::${item.variantId || item.itemName}`,
       }))
     );
     return [...primary, ...linked];
@@ -654,6 +664,58 @@ const GRN: React.FC = () => {
     const scanned = Object.values(carton).reduce((s, q) => s + q, 0);
     return { total: Math.max(total, 24), scanned };
   };
+
+  /* ── Items rail: per-item progress, search filter, article grouping ──
+     Groups same-article variants together (collapsible) and sorts
+     incomplete items/groups first, so the list stays usable however many
+     line items the PO has. */
+  const itemsWithProgress = useMemo(() => {
+    return allPOItems.map((item) => {
+      const totalCartons = item.cartonCount || 1;
+      const doneIndices = doneCartons[getDoneKey(item)] || [];
+      const doneCnt = doneIndices.length;
+      const sessionDone = (scanState[item._scanKey] || []).filter((c, idx) =>
+        Object.values(c).reduce((s, q) => s + q, 0) >= 24 && !doneIndices.includes(idx)
+      ).length;
+      const totalDone = doneCnt + sessionDone;
+      const allDone = totalDone >= totalCartons;
+      const pairsScanned = getItemProgress(item._scanKey).scanned;
+      return { item, totalCartons, totalDone, allDone, pairsScanned };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allPOItems, doneCartons, scanState, selectedPOId]);
+
+  const filteredGroupedItems = useMemo(() => {
+    const q = itemSearch.trim().toLowerCase();
+    const matches = (row: (typeof itemsWithProgress)[number]) => {
+      if (!q) return true;
+      const { item } = row;
+      if (item.itemName.toLowerCase().includes(q)) return true;
+      if ((item.color || "").toLowerCase().includes(q)) return true;
+      if ((item.sku || "").toLowerCase().includes(q)) return true;
+      return Object.values(item.sizeMap).some((d) => (d.sku || "").toLowerCase().includes(q));
+    };
+
+    const filtered = itemsWithProgress.filter(matches);
+
+    const groupsMap = new Map<string, typeof filtered>();
+    filtered.forEach((row) => {
+      const key = row.item.itemName;
+      if (!groupsMap.has(key)) groupsMap.set(key, []);
+      groupsMap.get(key)!.push(row);
+    });
+
+    const groups = Array.from(groupsMap.entries()).map(([name, rows]) => {
+      // Incomplete items first within a group
+      const sortedRows = [...rows].sort((a, b) => Number(a.allDone) - Number(b.allDone));
+      const groupDone = sortedRows.every((r) => r.allDone);
+      return { name, rows: sortedRows, groupDone };
+    });
+
+    // Groups with pending work first, fully-received groups last
+    groups.sort((a, b) => Number(a.groupDone) - Number(b.groupDone));
+    return groups;
+  }, [itemsWithProgress, itemSearch]);
 
   /* ── Scan handler ── */
   const handleScan = () => {
@@ -820,7 +882,7 @@ const GRN: React.FC = () => {
       // Initialise scanState for linked PO's items (prefixed keys)
       const linkedState: ScanState = {};
       data.items.forEach((item) => {
-        linkedState[`${poId}::${item.itemName}`] = Array.from(
+        linkedState[`${poId}::${item.variantId || item.itemName}`] = Array.from(
           { length: item.cartonCount || 1 },
           () => ({})
         );
@@ -853,7 +915,7 @@ const GRN: React.FC = () => {
 
     setScanState((prev) => {
       const updated = { ...prev };
-      detail.items.forEach((item) => { delete updated[`${poId}::${item.itemName}`]; });
+      detail.items.forEach((item) => { delete updated[`${poId}::${item.variantId || item.itemName}`]; });
       return updated;
     });
     setDoneCartons((prev) => {
@@ -1322,78 +1384,130 @@ const GRN: React.FC = () => {
                     icon={<Package size={18} className="text-indigo-600" />}
                     title={`3. Items (${allPOItems.length})`}
                   >
-                    <div className="space-y-2">
-                      {allPOItems.map((item) => {
-                        const totalCartons = item.cartonCount || 1;
-                        const doneIndices = doneCartons[getDoneKey(item)] || [];
-                        const doneCnt = doneIndices.length;
-                        const isSelected = selectedItemName === item._scanKey;
-                        const ip = getItemProgress(item._scanKey);
-                        const sessionDone = (scanState[item._scanKey] || []).filter((c, idx) =>
-                          Object.values(c).reduce((s, q) => s + q, 0) >= 24 && !doneIndices.includes(idx)
-                        ).length;
-                        const totalDone = doneCnt + sessionDone;
-                        const allDone = totalDone >= totalCartons;
-                        const ratio = formatAssortment(Object.fromEntries(
-                          Object.entries(item.sizeMap).map(([sz, d]) => [sz, d.qty])
-                        ));
-                        const isLinked = item._poId !== selectedPOId;
+                    <div className="mb-3 relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={itemSearch}
+                        onChange={(e) => setItemSearch(e.target.value)}
+                        placeholder="Search article, color, SKU..."
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-8 text-xs font-medium outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      />
+                      {itemSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setItemSearch("")}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1 custom-scrollbar">
+                      {filteredGroupedItems.map((group) => {
+                        const isCollapsed = collapsedGroups.has(group.name);
+                        const groupDoneCount = group.rows.filter((r) => r.allDone).length;
 
                         return (
-                          <button
-                            key={item._scanKey}
-                            type="button"
-                            onClick={() => {
-                              setSelectedItemName(item._scanKey);
-                              setScanInput("");
-                              const dI = doneCartons[getDoneKey(item)] || [];
-                              let fp = 0;
-                              while (dI.includes(fp) && fp < totalCartons) fp++;
-                              setCurrentCartonIdx(fp >= totalCartons ? 0 : fp);
-                            }}
-                            className={`w-full text-left rounded-2xl border p-3 transition-all ${
-                              isSelected
-                                ? "border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100"
-                                : "border-slate-200 bg-white hover:border-indigo-200 hover:bg-slate-50"
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <p className={`text-xs font-bold leading-tight break-all ${isSelected ? "text-indigo-900" : "text-slate-800"}`}>
-                                    {item.itemName}
-                                  </p>
-                                  {isLinked && (
-                                    <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-teal-100 px-1.5 py-0.5 text-[9px] font-bold text-teal-700 border border-teal-200">
-                                      <Link2 size={8} /> {item._poNo}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[10px] text-slate-500 mt-0.5">{item.color}{ratio ? ` · ${ratio}` : ""}</p>
+                          <div key={group.name} className="rounded-2xl border border-slate-200 overflow-hidden">
+                            <button
+                              type="button"
+                              onClick={() => setCollapsedGroups((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(group.name)) next.delete(group.name);
+                                else next.add(group.name);
+                                return next;
+                              })}
+                              className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors ${
+                                group.groupDone ? "bg-emerald-50/60 hover:bg-emerald-50" : "bg-slate-50 hover:bg-slate-100"
+                              }`}
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                {isCollapsed ? <ChevronRight size={14} className="text-slate-400 shrink-0" /> : <ChevronDown size={14} className="text-slate-400 shrink-0" />}
+                                <p className="text-xs font-black text-slate-800 truncate">{group.name}</p>
                               </div>
-                              {allDone ? (
-                                <CheckCircle2 size={15} className="text-emerald-500 shrink-0 mt-0.5" />
-                              ) : totalDone > 0 ? (
-                                <span className="shrink-0 text-[10px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full border border-amber-200">
-                                  {totalDone}/{totalCartons}
-                                </span>
-                              ) : null}
-                            </div>
-                            <div className="mt-2">
-                              <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full rounded-full transition-all ${allDone ? "bg-emerald-500" : isLinked ? "bg-teal-400" : "bg-indigo-400"}`}
-                                  style={{ width: `${Math.min(100, (totalDone / totalCartons) * 100)}%` }}
-                                />
+                              <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                                group.groupDone ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
+                              }`}>
+                                {groupDoneCount}/{group.rows.length}
+                              </span>
+                            </button>
+
+                            {!isCollapsed && (
+                              <div className="space-y-2 p-2 pt-0">
+                                {group.rows.map(({ item, totalCartons, totalDone, allDone, pairsScanned }) => {
+                                  const isSelected = selectedItemName === item._scanKey;
+                                  const ratio = formatAssortment(Object.fromEntries(
+                                    Object.entries(item.sizeMap).map(([sz, d]) => [sz, d.qty])
+                                  ));
+                                  const isLinked = item._poId !== selectedPOId;
+
+                                  return (
+                                    <button
+                                      key={item._scanKey}
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedItemName(item._scanKey);
+                                        setScanInput("");
+                                        const dI = doneCartons[getDoneKey(item)] || [];
+                                        let fp = 0;
+                                        while (dI.includes(fp) && fp < totalCartons) fp++;
+                                        setCurrentCartonIdx(fp >= totalCartons ? 0 : fp);
+                                      }}
+                                      className={`w-full text-left rounded-2xl border p-3 mt-2 transition-all ${
+                                        isSelected
+                                          ? "border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100"
+                                          : "border-slate-200 bg-white hover:border-indigo-200 hover:bg-slate-50"
+                                      }`}
+                                    >
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            <span className={`text-xs font-bold leading-tight ${isSelected ? "text-indigo-900" : "text-slate-800"}`}>
+                                              {item.color || "—"}
+                                            </span>
+                                            {isLinked && (
+                                              <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-teal-100 px-1.5 py-0.5 text-[9px] font-bold text-teal-700 border border-teal-200">
+                                                <Link2 size={8} /> {item._poNo}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <p className="text-[10px] font-mono text-slate-400 mt-0.5 break-all">{item.sku || "—"}</p>
+                                          <p className="text-[10px] text-slate-500 mt-0.5">{ratio}</p>
+                                        </div>
+                                        {allDone ? (
+                                          <CheckCircle2 size={15} className="text-emerald-500 shrink-0 mt-0.5" />
+                                        ) : totalDone > 0 ? (
+                                          <span className="shrink-0 text-[10px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full border border-amber-200">
+                                            {totalDone}/{totalCartons}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <div className="mt-2">
+                                        <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full transition-all ${allDone ? "bg-emerald-500" : isLinked ? "bg-teal-400" : "bg-indigo-400"}`}
+                                            style={{ width: `${Math.min(100, (totalDone / totalCartons) * 100)}%` }}
+                                          />
+                                        </div>
+                                        <div className="flex justify-between mt-0.5">
+                                          <span className="text-[9px] text-slate-400">{totalDone}/{totalCartons} ctns</span>
+                                          <span className="text-[9px] text-slate-400">{pairsScanned} prs</span>
+                                        </div>
+                                      </div>
+                                    </button>
+                                  );
+                                })}
                               </div>
-                              <div className="flex justify-between mt-0.5">
-                                <span className="text-[9px] text-slate-400">{totalDone}/{totalCartons} ctns</span>
-                                <span className="text-[9px] text-slate-400">{ip.scanned} prs</span>
-                              </div>
-                            </div>
-                          </button>
+                            )}
+                          </div>
                         );
                       })}
+
+                      {filteredGroupedItems.length === 0 && (
+                        <p className="text-center text-xs text-slate-400 py-8 italic">No items match "{itemSearch}".</p>
+                      )}
                     </div>
                   </SectionCard>
                 </div>
@@ -1772,6 +1886,58 @@ const GRN: React.FC = () => {
                     </SectionCard>
                   </div>
                 </div>
+
+                {/* Basic Information — captured in step 2 at submit time, was
+                    saved but never shown back here */}
+                <SectionCard
+                  icon={<User size={18} className="text-slate-600" />}
+                  title="GRN Basic Information"
+                >
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">GRN Date</p>
+                      <p className="font-black text-slate-900">{formatDate(viewingGRN.grnDate)}</p>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">Received By</p>
+                      <p className="font-black text-slate-900">{viewingGRN.receivedBy || "—"}</p>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">Mobile No</p>
+                      <p className="font-black text-slate-900">{viewingGRN.receivedByMobile || "—"}</p>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">Warehouse / Location</p>
+                      <p className="font-black text-slate-900">{viewingGRN.warehouse || "—"}</p>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">Invoice No(s)</p>
+                      <p className="font-black text-slate-900 break-all">
+                        {viewingGRN.vendorInvoiceNos?.length ? viewingGRN.vendorInvoiceNos.join(", ") : "—"}
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">Challan No(s)</p>
+                      <p className="font-black text-slate-900 break-all">
+                        {viewingGRN.vendorChallanNos?.length ? viewingGRN.vendorChallanNos.join(", ") : "—"}
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">Vehicle No</p>
+                      <p className="font-black text-slate-900">{viewingGRN.vehicleNo || "—"}</p>
+                    </div>
+                    <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">E-Way Bill No</p>
+                      <p className="font-black text-slate-900">{viewingGRN.eWayBillNo || "—"}</p>
+                    </div>
+                    {viewingGRN.remarks && (
+                      <div className="flex flex-col gap-1 p-3 rounded-2xl bg-slate-50 border border-slate-100 sm:col-span-2 lg:col-span-4">
+                        <p className="text-xs font-bold text-slate-400 uppercase tracking-tight">Remarks</p>
+                        <p className="font-black text-slate-900 whitespace-pre-wrap">{viewingGRN.remarks}</p>
+                      </div>
+                    )}
+                  </div>
+                </SectionCard>
               </div>
             ) : (
               /* ── History List View ── */
@@ -2122,27 +2288,6 @@ const GRN: React.FC = () => {
 export default GRN;
 
 /* ═══════════════════ Sub-Components ═══════════════════ */
-
-const SectionCard: React.FC<{
-  title: string;
-  icon?: React.ReactNode;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-}> = ({ title, icon, action, children, className = "" }) => {
-  return (
-    <div className={`rounded-3xl border border-slate-200 bg-white shadow-sm relative ${className}`}>
-      <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
-        <div className="flex items-center gap-2 min-w-0">
-          {icon}
-          <p className="font-black text-slate-900 break-all leading-tight">{title}</p>
-        </div>
-        {action}
-      </div>
-      <div className="p-5 relative">{children}</div>
-    </div>
-  );
-};
 
 const TabButton: React.FC<{
   active: boolean;

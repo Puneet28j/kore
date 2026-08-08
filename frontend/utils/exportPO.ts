@@ -81,7 +81,11 @@ const buildPOLineItems = (po: PurchaseOrder): POLineItem[] => {
   const rows: POLineItem[] = [];
   let siNo = 0;
 
-  po.items.filter((item) => item.itemName?.trim() && item.sku?.trim()).forEach((item) => {
+  // A missing top-level (carton) SKU doesn't mean the item is empty — rows
+  // below fall back to each size's own sizeMap SKU. Requiring item.sku here
+  // used to silently drop legitimate, priced items from the export (and
+  // their amount from the total) whenever that field was left blank.
+  po.items.filter((item) => item.itemName?.trim()).forEach((item) => {
     const parts = item.itemName.split("-").map((p) => p.trim());
     const description = parts[0] || item.itemName;
     const color = item.color || (parts.length > 1 ? parts[1] : "");
@@ -96,10 +100,19 @@ const buildPOLineItems = (po: PurchaseOrder): POLineItem[] => {
         sizeMap = item.sizeMap as any;
       }
     }
-    // mrp/basePrice are stored per carton (24 pairs); rows below are per pair.
-    const mrpPerPair = (item.mrp || 0) / 24;
-    const ratePerPair = (item.basePrice || 0) / 24;
     const validSizes = Object.entries(sizeMap).filter(([, d]) => d && d.qty > 0);
+    // sizeMap holds the PER-CARTON assortment (e.g. 4,8,8,8,4), not the
+    // order total — scale each size's qty by the number of cartons ordered.
+    const cartons = item.cartonCount || 1;
+    // mrp/basePrice are stored per carton; derive the per-pair rate from
+    // this item's actual pairs-per-carton (sum of its assortment) instead
+    // of assuming a fixed 24 — assortments aren't always 24 pairs/carton.
+    const pairsPerCarton =
+      validSizes.length > 0
+        ? validSizes.reduce((s, [, d]) => s + (d.qty || 0), 0) || 24
+        : 24;
+    const mrpPerPair = (item.mrp || 0) / pairsPerCarton;
+    const ratePerPair = (item.basePrice || 0) / pairsPerCarton;
 
     const pushRow = (productCode: string, qty: number) => {
       siNo += 1;
@@ -123,9 +136,9 @@ const buildPOLineItems = (po: PurchaseOrder): POLineItem[] => {
     };
 
     if (validSizes.length > 0) {
-      // sizeMap qty already reflects the final per-size pair count.
+      // Scale the per-carton assortment by cartons ordered to get the total.
       validSizes.forEach(([, data]) => {
-        pushRow(data.sku || item.sku, data.qty || 0);
+        pushRow(data.sku || item.sku, (data.qty || 0) * cartons);
       });
     } else {
       pushRow(item.sku, item.quantity);
@@ -266,6 +279,9 @@ export const exportPOToPDF = async (
     styles: { fontSize: 7, cellPadding: 3, textColor: [0, 0, 0], lineColor: [0, 0, 0], lineWidth: 0.5, valign: "middle", halign: "center", overflow: "linebreak", minCellHeight: 34 },
     headStyles: { fillColor: [240, 245, 240], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 7, halign: "center", valign: "middle" },
     footStyles: { fontSize: 7.5, textColor: [0, 0, 0], lineColor: [0, 0, 0], lineWidth: 0.5 },
+    // Only show Logistic Charges/Total once, on the last page — by default
+    // autoTable repeats the foot row at the bottom of every page.
+    showFoot: "lastPage",
     columnStyles: {
       0: { cellWidth: 24 },
       1: { cellWidth: 58, halign: "left" },

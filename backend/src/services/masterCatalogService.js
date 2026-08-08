@@ -141,8 +141,17 @@ const normalizeVariants = (variantsRaw) => {
     const ctnSku     = (v.sku || "").trim();
     const sizeRange  = (v.sizeRange || "").trim();
     const derivedSizeSkus = autoGenerateSizeSkus(ctnSku, sizeRange, Object.keys(sizeQuantities));
-    // Merge: explicit sizeSkus take priority over derived ones
-    const finalSizeSkus = { ...derivedSizeSkus, ...sizeSkus };
+    // Derived (gender-stripped) SKUs win whenever a carton SKU is present —
+    // otherwise a stale/incorrectly-formatted value sent by the client would
+    // silently override the correct auto-generated one. Falls back to the
+    // client-sent sizeSkus only when there's no ctnSku to derive from.
+    const finalSizeSkus = { ...sizeSkus, ...derivedSizeSkus };
+
+    // Keep sizeMap's per-size sku in sync with finalSizeSkus — this is what
+    // PO/GRN/exports actually read from, so it must match, not just sizeSkus.
+    Object.keys(sizeMap).forEach((size) => {
+      if (finalSizeSkus[size]) sizeMap[size].sku = finalSizeSkus[size];
+    });
 
     return {
       _id: v._id || v.id || undefined,
@@ -518,7 +527,9 @@ exports.update = async (req, id) => {
         if (v.tag) matched.tag = v.tag;
         if (v.onlineMrp !== undefined) matched.onlineMrp = v.onlineMrp;
         if (v.offlineMrp !== undefined) matched.offlineMrp = v.offlineMrp;
-        // sku + sizeSkus: only update if new sku provided (preserve manual edits otherwise)
+        // sku + sizeSkus: only update if new sku provided (preserve manual edits otherwise).
+        // v.sizeSkus/v.sizeMap are already correctly derived (gender stripped) and kept
+        // in sync by normalizeVariants() above, so just apply them as-is here.
         if (v.sku) { matched.sku = v.sku; matched.sizeSkus = v.sizeSkus; }
 
         existingById.delete(matched._id.toString());

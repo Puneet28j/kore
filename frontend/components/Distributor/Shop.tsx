@@ -268,8 +268,9 @@ const ArticleCard: React.FC<{
       gallery = mediaMatch.images.map((img: any) =>
         getImageUrl(typeof img === "object" ? img.url : img)
       );
-    } else {
-      // Flat article-level images — primaryImage first, then secondaryImages
+    } else if (colorMedia.length === 0) {
+      // Legacy article with no per-color images at all — fall back to the
+      // flat/article-level images (primaryImage + secondaryImages).
       gallery = [
         getImageUrl(article.imageUrl),
         ...(article.secondaryImages || []).map((s: any) =>
@@ -277,6 +278,9 @@ const ArticleCard: React.FC<{
         ),
       ];
     }
+    // else: other colors on this article DO have dedicated images but this
+    // one doesn't — leave gallery empty rather than showing another color's
+    // photo (falling back to article.imageUrl here misrepresents the item).
 
     // Strip empty strings and deduplicate — prevents blank broken-image slots
     const seen = new Set<string>();

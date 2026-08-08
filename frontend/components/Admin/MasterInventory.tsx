@@ -797,6 +797,11 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                               cm.color.toLowerCase() ===
                                               variant.color.toLowerCase()
                                           );
+                                          // Only fall back to the article-level cover when
+                                          // there's no per-color image AND no colorMedia
+                                          // configured at all — otherwise a color without its
+                                          // own photo should stay blank, not borrow another
+                                          // color's image.
                                           const vImg =
                                             matched &&
                                             matched.images &&
@@ -805,7 +810,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                               : variant.images &&
                                                 variant.images.length > 0
                                               ? variant.images[0]
-                                              : article?.imageUrl;
+                                              : colorMedia.length === 0
+                                              ? article?.imageUrl
+                                              : "";
                                           return vImg ? (
                                             <img
                                               src={getImageUrl(vImg)}

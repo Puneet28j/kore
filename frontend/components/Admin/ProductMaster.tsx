@@ -15,6 +15,10 @@ import {
   Star,
   ArrowUp,
   ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  Search,
+  AlertTriangle,
 } from "lucide-react";
 import { AssortmentType, Article, Variant } from "../../types";
 import { ASSORTMENTS } from "../../constants";
@@ -79,6 +83,10 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   const [sizeRanges, setSizeRanges] = useState<SizeRangeEntry[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [excludedCombinations, setExcludedCombinations] = useState<Set<string>>(new Set());
+
+  // ── Product Variants section: collapsible per-color groups + search ──
+  const [collapsedColors, setCollapsedColors] = useState<Set<string>>(new Set());
+  const [colorSearch, setColorSearch] = useState("");
 
   const [categories, setCategories] = useState<any[]>([]);
   const [brands, setBrands] = useState<any[]>([]);
@@ -296,15 +304,27 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
   const parseSizeRange = (range: string): string[] => {
     const parts = range.split("-").map((s) => s.trim());
-    if (parts.length === 2) {
-      const start = parseInt(parts[0]);
-      const end = parseInt(parts[1]);
-      if (!isNaN(start) && !isNaN(end) && start <= end) {
-        const sizes: string[] = [];
-        for (let i = start; i <= end; i++) sizes.push(String(i));
-        return sizes;
-      }
+    if (parts.length !== 2) return [range];
+    const start = parseInt(parts[0]);
+    const end = parseInt(parts[1]);
+    if (isNaN(start) || isNaN(end)) return [range];
+
+    if (start <= end) {
+      const sizes: string[] = [];
+      for (let i = start; i <= end; i++) sizes.push(String(i));
+      return sizes;
     }
+
+    // Kids wrap-around range, e.g. "11-1" or "13-4": sizes run start → 13
+    // (child sizing), then wrap to 01 → end (junior sizing, zero-padded so
+    // they sort after 13 and don't collide with adult sizes 1-13).
+    if (start >= 1 && start <= 13 && end >= 1 && end <= 13) {
+      const sizes: string[] = [];
+      for (let i = start; i <= 13; i++) sizes.push(String(i));
+      for (let i = 1; i <= end; i++) sizes.push(String(i).padStart(2, "0"));
+      return sizes;
+    }
+
     return [range];
   };
 
@@ -340,17 +360,28 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
     setVariants((prev) => {
       const newVariants: Variant[] = [];
+      // Track which existing variants have already been claimed by an
+      // earlier (color, rangeEntry) pair this pass, so duplicate range
+      // labels don't let two different rangeEntry ids both match the same
+      // stored variant and silently drop the other one.
+      const claimed = new Set<string>();
 
       selectedColors.forEach((color) => {
         sizeRanges.forEach((rangeEntry, idx) => {
+          // Match by color + sizeRange label only — sizeRangeId is a
+          // client-generated id re-created on every load/edit and isn't
+          // stable, so requiring it here caused existing variants (with
+          // their sku/price/assortment) to go unmatched and get silently
+          // replaced by a blank variant on routine master edits.
           const existing = prev.find(
             (v: any) =>
               v.color === color &&
               v.sizeRange === rangeEntry.label &&
-              v.sizeRangeId === rangeEntry.id
+              !claimed.has(v.id)
           );
 
           if (existing) {
+            claimed.add(existing.id);
             newVariants.push({ ...existing }); // preserve user-edited itemName
           } else {
             const comboKey = `${color}|||${rangeEntry.label}`;
@@ -377,7 +408,13 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
       return newVariants;
     });
-  }, [editingId, selectedColors, sizeRanges, formData.artname, formData.mrp, formData.hsnCode, excludedCombinations]);
+    // Deliberately NOT depending on formData.artname/mrp/hsnCode — those are
+    // only used as defaults for brand-new variants (read fresh via closure
+    // whenever this does run); depending on them made routine edits to the
+    // article's name/MRP/HSN rebuild the entire variants array and risk
+    // dropping existing sku/price/assortment data if the match above missed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId, selectedColors, sizeRanges, excludedCombinations]);
 
   const updateVariantField = (id: string, field: keyof Variant, value: any) => {
     setVariants((prev) =>
@@ -748,6 +785,11 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       if (total > 0 && total % 24 !== 0) {
         return toast.error(
           `Total quantity for variant "${v.itemName}" must be a multiple of 24 (Current: ${total})`
+        );
+      }
+      if (total > 0 && !v.sku?.trim()) {
+        return toast.error(
+          `Carton SKU is required for variant "${v.itemName}" before it can be saved.`
         );
       }
     }
@@ -1310,8 +1352,22 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                 </span>
               </h3>
 
-              <div className="space-y-10">
-                {selectedColors.map((color) => {
+              {selectedColors.length > 4 && (
+                    <div className="relative mb-4">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={colorSearch}
+                        onChange={(e) => setColorSearch(e.target.value)}
+                        placeholder="Search color..."
+                        className="w-full sm:w-72 rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-3 text-xs font-medium outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      />
+                    </div>
+                  )}
+                  <div className="space-y-4">
+                {selectedColors
+                  .filter((c) => c.toLowerCase().includes(colorSearch.trim().toLowerCase()))
+                  .map((color) => {
                   const colorVariants = variants.filter((v) => v.color === color);
                   if (colorVariants.length === 0) return null;
 
@@ -1323,22 +1379,48 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                     )
                   ).sort((a, b) => Number(a) - Number(b));
 
+                  const isCollapsed = collapsedColors.has(color);
+                  const imageCount = colorMedia[color]?.previews.length || 0;
+                  const missingSku = colorVariants.some((v) => {
+                    const total = Object.values(v.sizeQuantities).reduce((s, q) => s + (q || 0), 0);
+                    return total > 0 && !v.sku?.trim();
+                  });
+
                   return (
-                    <div key={color} className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <div className="h-px flex-1 bg-slate-100" />
-                        <div className="flex items-center gap-2 px-3 py-1 bg-slate-50 border border-slate-200 rounded-full">
-                          <div className="w-2 h-2 rounded-full bg-indigo-500" />
-                          <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">
-                            Color: {color}
+                    <div key={color} className="rounded-2xl border border-slate-200 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setCollapsedColors((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(color)) next.delete(color);
+                          else next.add(color);
+                          return next;
+                        })}
+                        className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors text-left"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isCollapsed ? <ChevronRight size={16} className="text-slate-400 shrink-0" /> : <ChevronDown size={16} className="text-slate-400 shrink-0" />}
+                          <div className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />
+                          <span className="text-xs font-bold text-slate-700 uppercase tracking-wide truncate">
+                            {color}
                           </span>
-                          <span className="text-[10px] font-medium text-slate-400">
-                            ({colorVariants.length} items)
+                          <span className="text-[10px] font-medium text-slate-400 shrink-0">
+                            ({colorVariants.length} items · {imageCount} img{imageCount === 1 ? "" : "s"})
                           </span>
                         </div>
-                        <div className="h-px flex-1 bg-slate-100" />
-                      </div>
+                        {missingSku ? (
+                          <span className="shrink-0 flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                            <AlertTriangle size={10} /> Missing SKU
+                          </span>
+                        ) : (
+                          <span className="shrink-0 flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                            <CheckCircle2 size={10} /> Complete
+                          </span>
+                        )}
+                      </button>
 
+                      {!isCollapsed && (
+                      <div className="p-4 space-y-4">
                       <div className="bg-slate-50/50 p-6 rounded-2xl border border-dashed border-slate-200">
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-2">
@@ -1372,7 +1454,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                         </div>
 
                         {(colorMedia[color]?.previews.length || 0) > 0 ? (
-                          <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
                             {colorMedia[color].previews.map((src, idx) => (
                               <div
                                 key={idx}
@@ -1457,7 +1539,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                       </div>
 
                       <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
-                        <table className="w-full text-left border-collapse min-w-[1000px]">
+                        <table className="w-full text-left border-collapse min-w-[1140px]">
                           <thead>
                             <tr className="bg-slate-50 border-b border-slate-200">
                               <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-12 text-center">
@@ -1465,6 +1547,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                               </th>
                               <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[200px]">
                                 Item Variation Name
+                              </th>
+                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[140px]">
+                                Carton SKU <span className="text-rose-500">*</span>
                               </th>
                               <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32">
                                 <div className="flex flex-col gap-1 text-indigo-600">
@@ -1580,6 +1665,29 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                         Range: {v.sizeRange}
                                       </span>
                                     </div>
+                                  </td>
+
+                                  <td className="px-4 py-4">
+                                    {(() => {
+                                      const total = Object.values(v.sizeQuantities).reduce((s, q) => s + (q || 0), 0);
+                                      const skuMissing = total > 0 && !v.sku?.trim();
+                                      return (
+                                        <input
+                                          type="text"
+                                          disabled={loading}
+                                          placeholder="e.g. ECH-BLK-M-5-8"
+                                          className={`w-full p-2 text-xs font-bold bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 ${
+                                            skuMissing
+                                              ? "border-rose-300 text-rose-600 placeholder:text-rose-300"
+                                              : "border-slate-200 text-slate-700"
+                                          }`}
+                                          value={v.sku || ""}
+                                          onChange={(e) =>
+                                            updateVariantField(v.id, "sku", e.target.value)
+                                          }
+                                        />
+                                      );
+                                    })()}
                                   </td>
 
                                   <td className="px-4 py-4">
@@ -1723,6 +1831,8 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                         />
                         <span className="text-[10px] text-slate-400 whitespace-nowrap">Press Enter</span>
                       </div>
+                      </div>
+                      )}
                     </div>
                   );
                 })}

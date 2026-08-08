@@ -2067,12 +2067,16 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                                             cm.color.toLowerCase() ===
                                             v.color.toLowerCase()
                                         );
+                                        // Only fall back to the article-level cover when this
+                                        // article has NO per-color images at all — if other
+                                        // colors do have dedicated photos, a blank here should
+                                        // stay blank rather than borrow another color's image.
                                         const vImg =
-                                          matched &&
-                                          matched.images &&
-                                          matched.images.length > 0
+                                          matched && matched.images && matched.images.length > 0
                                             ? matched.images[0].url
-                                            : article.imageUrl;
+                                            : colorMedia.length === 0
+                                              ? article.imageUrl
+                                              : "";
 
                                         return vImg ? (
                                           <img
@@ -2206,11 +2210,11 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                                         v.color.toLowerCase()
                                     );
                                     const vImg =
-                                      matched &&
-                                      matched.images &&
-                                      matched.images.length > 0
+                                      matched && matched.images && matched.images.length > 0
                                         ? matched.images[0].url
-                                        : article.imageUrl;
+                                        : colorMedia.length === 0
+                                          ? article.imageUrl
+                                          : "";
 
                                     return vImg ? (
                                       <img

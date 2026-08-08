@@ -1,18 +1,29 @@
 /**
- * Migration: regenerate per-pair (size) SKUs for all variants
+ * One-off repair script.
  *
- * Strips gender letter (M/F/W/K) before the size range from the base so that
- * carton SKU "ARM-NVY-M-6-10" produces per-pair SKUs "ARM-NVY-6" … "ARM-NVY-10"
- * instead of the old "ARM-NVY-M-6" … "ARM-NVY-M-10".
+ * Per-size SKUs used to be derived by stripping only the trailing size-range
+ * from the carton SKU (e.g. "ECH-BLK-M-5-8" -> "ECH-BLK-M-5"), leaving the
+ * single-letter gender code ("M"/"W"/"K") baked into every per-pair SKU.
+ * The generation logic (frontend + backend) now also strips that gender
+ * segment ("ECH-BLK-M-5-8" -> "ECH-BLK-5"), but existing MasterCatalog
+ * variants were never regenerated, so PO/GRN/exports — which read the
+ * stored sizeSkus/sizeMap directly — still show the old format.
  *
- * Run: node src/scripts/regenerateSizeSkus.js
+ * This script regenerates variant.sizeSkus and variant.sizeMap[size].sku
+ * for every MasterCatalog variant from its current carton sku + sizeRange,
+ * leaving qty/blockedQty and everything else untouched.
+ *
+ * Usage:
+ *   node src/scripts/regenerateSizeSkus.js            # dry run — report only
+ *   node src/scripts/regenerateSizeSkus.js --apply     # actually update
  */
-const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, "../../.env") });
-
+require("dotenv").config();
 const mongoose = require("mongoose");
 const MasterCatalog = require("../models/MasterCatalog");
 
+const APPLY = process.argv.includes("--apply");
+
+// Mirrors autoGenerateSizeSkus/stripGenderFromBase in masterCatalogService.js
 function stripGenderFromBase(base) {
   const withoutTrail = base.endsWith("-") ? base.slice(0, -1) : base;
   const segments = withoutTrail.split("-");
@@ -36,76 +47,71 @@ function autoGenerateSizeSkus(ctnSku, sizeRange, sizeKeys) {
   }
   if (base !== null) {
     base = stripGenderFromBase(base);
-    sizeKeys.forEach(sz => { result[sz] = `${base}${sz}`; });
+    sizeKeys.forEach((sz) => { result[sz] = `${base}${sz}`; });
   } else {
-    sizeKeys.forEach(sz => { result[sz] = `${ctnSku}-${sz}`; });
+    sizeKeys.forEach((sz) => { result[sz] = `${ctnSku}-${sz}`; });
   }
   return result;
 }
 
 (async () => {
-  if (!process.env.MONGO_URI) {
-    console.error("MONGO_URI not set in .env");
-    process.exit(1);
-  }
-
   await mongoose.connect(process.env.MONGO_URI);
-  console.log("Connected to:", process.env.MONGO_URI.split("@")[1]);
+  console.log(`Mode: ${APPLY ? "APPLY (writing changes)" : "DRY RUN (report only)"}`);
 
   const catalogs = await MasterCatalog.find({ isDeleted: false });
-  console.log(`\nFound ${catalogs.length} catalog(s). Regenerating per-pair SKUs...`);
-
-  let catalogsUpdated = 0;
-  let variantsUpdated = 0;
+  let variantsChanged = 0;
+  let articlesChanged = 0;
 
   for (const catalog of catalogs) {
-    let modified = false;
+    let touched = false;
 
     for (const variant of catalog.variants) {
       const ctnSku = (variant.sku || "").trim();
-      if (!ctnSku) continue;
+      const sizeRange = (variant.sizeRange || "").trim();
+      const sizeKeys = variant.sizeQuantities instanceof Map
+        ? [...variant.sizeQuantities.keys()]
+        : Object.keys(variant.sizeQuantities || {});
+      if (!ctnSku || !sizeKeys.length) continue;
 
-      const sizeKeys = variant.sizeQuantities
-        ? Array.from(variant.sizeQuantities.keys())
-        : [];
-      if (!sizeKeys.length) continue;
+      const regen = autoGenerateSizeSkus(ctnSku, sizeRange, sizeKeys);
 
-      const newSizeSkus = autoGenerateSizeSkus(ctnSku, variant.sizeRange || "", sizeKeys);
+      const currentSizeSkus = variant.sizeSkus instanceof Map
+        ? Object.fromEntries(variant.sizeSkus)
+        : { ...(variant.sizeSkus || {}) };
 
-      for (const sz of sizeKeys) {
-        const oldVal = variant.sizeSkus?.get ? variant.sizeSkus.get(sz) : (variant.sizeSkus?.[sz] || "");
-        const newVal = newSizeSkus[sz] || "";
-        if (oldVal !== newVal) {
-          console.log(`  [${catalog.articleName}] variant "${variant.itemName || variant.color}" size ${sz}: "${oldVal}" → "${newVal}"`);
-          if (variant.sizeSkus?.set) {
-            variant.sizeSkus.set(sz, newVal);
-          } else {
-            if (!variant.sizeSkus) variant.sizeSkus = {};
-            variant.sizeSkus[sz] = newVal;
-          }
-          // Also update sizeMap.sku if present
-          if (variant.sizeMap?.get) {
+      const diffs = sizeKeys.filter((sz) => (currentSizeSkus[sz] || "") !== (regen[sz] || ""));
+      if (!diffs.length) continue;
+
+      touched = true;
+      variantsChanged++;
+      console.log(`- ${catalog.articleName} / ${variant.color} (${ctnSku}, ${sizeRange}):`);
+      diffs.forEach((sz) => console.log(`    size ${sz}: "${currentSizeSkus[sz] || ""}" -> "${regen[sz]}"`));
+
+      if (APPLY) {
+        sizeKeys.forEach((sz) => {
+          if (variant.sizeSkus instanceof Map) variant.sizeSkus.set(sz, regen[sz]);
+          else { variant.sizeSkus = variant.sizeSkus || {}; variant.sizeSkus[sz] = regen[sz]; }
+
+          if (variant.sizeMap instanceof Map) {
             const cell = variant.sizeMap.get(sz);
-            if (cell) { cell.sku = newVal; variant.sizeMap.set(sz, cell); }
-          } else if (variant.sizeMap?.[sz]) {
-            variant.sizeMap[sz].sku = newVal;
+            if (cell) variant.sizeMap.set(sz, { ...(cell.toObject ? cell.toObject() : cell), sku: regen[sz] });
+          } else if (variant.sizeMap && variant.sizeMap[sz]) {
+            variant.sizeMap[sz].sku = regen[sz];
           }
-          modified = true;
-          variantsUpdated++;
-        }
+        });
       }
     }
 
-    if (modified) {
-      catalog.markModified("variants");
-      await catalog.save();
-      catalogsUpdated++;
+    if (touched) {
+      articlesChanged++;
+      if (APPLY) await catalog.save();
     }
   }
 
-  console.log(`\n✅ Done. ${variantsUpdated} variant(s) updated across ${catalogsUpdated} catalog(s).`);
-  process.exit(0);
+  console.log(`\nTotal: ${variantsChanged} variant(s) across ${articlesChanged} article(s) ${APPLY ? "updated" : "would be updated (dry run — rerun with --apply to write)"}`);
+
+  await mongoose.disconnect();
 })().catch((err) => {
-  console.error("Migration failed:", err);
+  console.error("ERROR:", err);
   process.exit(1);
 });

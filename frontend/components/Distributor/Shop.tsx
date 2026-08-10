@@ -86,7 +86,7 @@ const isVariantInStock = (v: Variant): boolean => {
   const sizes = Object.keys(baseBreakdown);
 
   if (sizes.length === 0) {
-    const entries =
+    const entries: [string, any][] =
       typeof (sizeMap as any).entries === "function"
         ? Array.from((sizeMap as any).entries())
         : Object.entries(sizeMap);

@@ -25,6 +25,11 @@ export const masterCatalogService = {
     return apiFetch(`/master-catalog/stock-totals${qs}`);
   },
 
+  // { variantId: totalBookedPairs } across all variants with a BOOKED/PENDING order.
+  async getBookedMap(): Promise<{ data: Record<string, number> }> {
+    return apiFetch(`/master-catalog/booked-map`);
+  },
+
   async createMasterItem(formData: FormData) {
     const token = localStorage.getItem("kore_token");
     const API_BASE_URL =

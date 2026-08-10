@@ -35,7 +35,7 @@ import { formatAssortment } from "../../utils/assortmentUtils";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
 
-type CatalogStatus = "AVAILABLE" | "WISHLIST";
+type CatalogStatus = "AVAILABLE" | "PREORDER";
 
 type CatalogueForm = {
   name: string;
@@ -134,7 +134,7 @@ type ConflictResolution = "skip" | "import" | "info";
 interface CsvConflict {
   key: string; // groupKey "Name|||STAGE" for blocking; "⚠type:..." for info
   name: string;
-  csvStage: "AVAILABLE" | "WISHLIST";
+  csvStage: "AVAILABLE" | "PREORDER";
   type:
     | "db-cross-stage" // DB has same name in opposite stage
     | "csv-both-stages" // CSV has same name in both stages
@@ -346,14 +346,14 @@ function getMissingColumns(firstLine: string): string[] {
 //   return g;
 // }
 
-// Normalize listing_status → "WISHLIST" or "AVAILABLE"
-// Accepts: wishlist, preorder, pre-order, pre_order, "pre order" → all = WISHLIST
-function resolveStage(raw: string | undefined): "AVAILABLE" | "WISHLIST" {
+// Normalize listing_status → "PREORDER" or "AVAILABLE"
+// Accepts: wishlist, preorder, pre-order, pre_order, "pre order" → all = PREORDER
+function resolveStage(raw: string | undefined): "AVAILABLE" | "PREORDER" {
   const s = (raw || "")
     .trim()
     .toLowerCase()
     .replace(/[\s_-]/g, "");
-  return s === "wishlist" || s === "preorder" ? "WISHLIST" : "AVAILABLE";
+  return s === "wishlist" || s === "preorder" ? "PREORDER" : "AVAILABLE";
 }
 
 // Normalize gender — same identity dimension as stage: "Echo" MEN and "Echo" WOMEN
@@ -568,7 +568,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     // Check: same article name exists in opposite stage in DB
     Object.keys(groups).forEach((key) => {
       const [name, stage] = key.split("|||");
-      const opposite = stage === "AVAILABLE" ? "WISHLIST" : "AVAILABLE";
+      const opposite = stage === "AVAILABLE" ? "PREORDER" : "AVAILABLE";
       const existsInOpposite = articles.some(
         (a) =>
           a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
@@ -578,7 +578,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         conflicts.push({
           key,
           name,
-          csvStage: stage as "AVAILABLE" | "WISHLIST",
+          csvStage: stage as "AVAILABLE" | "PREORDER",
           type: "db-cross-stage",
           detail: `"${name}" already exists as ${opposite} in the database. Importing as ${stage} will create a duplicate cross-stage entry.`,
           resolution: "import",
@@ -601,9 +601,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             conflicts.push({
               key,
               name,
-              csvStage: key.split("|||")[1] as "AVAILABLE" | "WISHLIST",
+              csvStage: key.split("|||")[1] as "AVAILABLE" | "PREORDER",
               type: "csv-both-stages",
-              detail: `"${name}" appears in both AVAILABLE and WISHLIST in this CSV.`,
+              detail: `"${name}" appears in both AVAILABLE and PREORDER in this CSV.`,
               resolution: "import",
             });
           }
@@ -621,7 +621,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         conflicts.push({
           key: k,
           name,
-          csvStage: stage as "AVAILABLE" | "WISHLIST",
+          csvStage: stage as "AVAILABLE" | "PREORDER",
           type: "auto-rename",
           detail: `"${name}" was auto-renamed — the original article already had the same color+size with a different assortment distribution. Importing creates a new separate master. Skip to ignore and fix your CSV instead.`,
           resolution: "import",
@@ -662,7 +662,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           conflicts.push({
             key,
             name,
-            csvStage: stage as "AVAILABLE" | "WISHLIST",
+            csvStage: stage as "AVAILABLE" | "PREORDER",
             type: "db-full-duplicate",
             detail: `"${name}" is a 100% duplicate — every color+size combo (${duplicateLabels.join(
               ", "
@@ -674,7 +674,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         conflicts.push({
           key: `⚠dbdup:${key}`,
           name,
-          csvStage: stage as "AVAILABLE" | "WISHLIST",
+          csvStage: stage as "AVAILABLE" | "PREORDER",
           type: "db-partial-duplicate",
           detail: `"${name}" — ${
             duplicateLabels.length
@@ -754,7 +754,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         conflicts.push({
           key: `⚠dup:${key}`,
           name,
-          csvStage: stage as "AVAILABLE" | "WISHLIST",
+          csvStage: stage as "AVAILABLE" | "PREORDER",
           type: "csv-duplicate-row",
           detail: `"${name}" has ${
             dups.length
@@ -831,7 +831,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       const warnings: string[] = [];
 
       for (const groupKey of keys) {
-        // groupKey = "ArticleName|||AVAILABLE" or "ArticleName|||WISHLIST"
+        // groupKey = "ArticleName|||AVAILABLE" or "ArticleName|||PREORDER"
         const [name, groupStage] = groupKey.split("|||");
         const rows = groups[groupKey];
         const firstRow = rows[0];
@@ -964,7 +964,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           .map(buildVariant);
 
         const soleColor = firstRow.sole_color?.trim() || "";
-        const stage = groupStage as "AVAILABLE" | "WISHLIST";
+        const stage = groupStage as "AVAILABLE" | "PREORDER";
         // Flexible date: accept any format, convert to YYYY-MM-DD
         const expectedDate = parseFlexibleDate(firstRow.expected_date);
 
@@ -985,7 +985,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         fd.append("unitId", unitDoc._id);
         fd.append("stage", stage);
         if (soleColor) fd.append("soleColor", soleColor);
-        if (stage === "WISHLIST" && expectedDate)
+        if (stage === "PREORDER" && expectedDate)
           fd.append("expectedAvailableDate", expectedDate);
         if (Object.keys(colorImageUrls).length > 0) {
           fd.append("colorImageUrls", JSON.stringify(colorImageUrls));
@@ -1091,6 +1091,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             onlineMrp: v.onlineMrp || 0,
             offlineMrp: v.offlineMrp || 0,
             sku: v.sku || "",
+            // Round-trip GRN-promotion state — omitting these would make the
+            // backend fall back to the article's stage, silently undoing an
+            // already-promoted variant on the next CSV import.
+            stage: v.stage,
+            expectedAvailableDate: v.expectedAvailableDate,
           }));
 
           const allVariants = [...existingVariants, ...newVariantsOnly];
@@ -1165,7 +1170,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     sizeRange: "",
     sizeBreakup: {},
     images: [],
-    catalogStatus: "WISHLIST",
+    catalogStatus: "PREORDER",
     expectedAvailableDate: "",
   });
 
@@ -1539,7 +1544,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
         sizeRange: "",
         sizeBreakup: {},
         images: [],
-        catalogStatus: "WISHLIST",
+        catalogStatus: "PREORDER",
         expectedAvailableDate: "",
       });
     }
@@ -1560,7 +1565,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
       return toast.error("Total pairs must be 24, 48, 72... (multiple of 24)");
     }
     if (
-      formData.catalogStatus === "WISHLIST" &&
+      formData.catalogStatus === "PREORDER" &&
       !formData.expectedAvailableDate
     ) {
       return toast.error(
@@ -1592,7 +1597,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
       images: storedImages,
       status: formData.catalogStatus,
       expectedDate:
-        formData.catalogStatus === "WISHLIST"
+        formData.catalogStatus === "PREORDER"
           ? formData.expectedAvailableDate
           : "",
     };
@@ -1704,11 +1709,11 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
         </button>
         <button
           onClick={() => {
-            setActiveTab("WISHLIST");
+            setActiveTab("PREORDER");
             setCurrentPage(1);
           }}
           className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "WISHLIST"
+            activeTab === "PREORDER"
               ? "bg-amber-500 text-white shadow"
               : "text-slate-600 hover:bg-slate-50"
           }`}
@@ -1789,18 +1794,26 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
         )}
 
         {filteredMasters.map((article) => {
+          // A mixed PREORDER article (some variants GRN-promoted, some not)
+          // now matches BOTH tabs at the query level (see masterCatalogService.list) —
+          // only show the variants relevant to THIS tab, same as Master Stock.
+          const tabVariants = (article.variants || []).filter(
+            (v) => (v.stage || article.status) === activeTab
+          );
+          if (tabVariants.length === 0) return null;
+
           const isExpanded = expandedIds.has(article.id);
           const status = (article.status || "AVAILABLE") as CatalogStatus;
-          const variantCount = article.variants?.length || 0;
+          const variantCount = tabVariants.length;
           const cover = imgSrc(article.imageUrl);
 
           // Calculate price ranges (per-carton = per-pair × 24)
           const costPrices =
-            article.variants
-              ?.map((v) => v.costPrice || 0)
+            tabVariants
+              .map((v) => v.costPrice || 0)
               .filter((p) => p > 0) || [];
           const mrpPrices =
-            article.variants?.map((v) => v.mrp || 0).filter((p) => p > 0) || [];
+            tabVariants.map((v) => v.mrp || 0).filter((p) => p > 0) || [];
 
           const formatCtnRange = (prices: number[], fallback: number) => {
             const pts = prices.length ? prices : fallback > 0 ? [fallback] : [];
@@ -1826,12 +1839,12 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
 
           // Unique colors across variants
           const variantColors = Array.from(
-            new Set(article.variants?.map((v) => v.color).filter(Boolean))
+            new Set(tabVariants.map((v) => v.color).filter(Boolean))
           );
 
           // Master-level total stock
           const masterTotalPairs =
-            article.variants?.reduce(
+            tabVariants.reduce(
               (s, v) =>
                 s +
                 Object.values(v.sizeMap || {}).reduce(
@@ -1878,7 +1891,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                         {article.productCategory}
                       </span>
                     )}
-                    {status === "WISHLIST" && article.expectedDate && (
+                    {status === "PREORDER" && article.expectedDate && (
                       <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 text-[9px] font-bold flex items-center gap-1 border border-rose-100/50">
                         <CalendarDays size={8} />
                         ETA:{" "}
@@ -2047,7 +2060,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                              {article.variants!.map((v) => {
+                              {tabVariants.map((v) => {
                                 const vName =
                                   v.itemName || `${article.name} - ${v.color}`;
                                 return (
@@ -2192,7 +2205,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
 
                         {/* Mobile variant cards */}
                         <div className="md:hidden p-3 space-y-2">
-                          {article.variants!.map((v) => {
+                          {tabVariants.map((v) => {
                             const vName =
                               v.itemName || `${article.name} - ${v.color}`;
                             return (
@@ -2690,9 +2703,9 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                             const isWishlist =
                               resolveStage(
                                 r.listing_status as string | undefined
-                              ) === "WISHLIST";
+                              ) === "PREORDER";
                             const groupKey = `${r.name}|||${
-                              isWishlist ? "WISHLIST" : "AVAILABLE"
+                              isWishlist ? "PREORDER" : "AVAILABLE"
                             }`;
                             const conflict = csvConflicts.find(
                               (c) => c.key === groupKey
@@ -2780,7 +2793,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                                         : "bg-emerald-100 text-emerald-700"
                                     }`}
                                   >
-                                    {isWishlist ? "WISHLIST" : "AVAILABLE"}
+                                    {isWishlist ? "PREORDER" : "AVAILABLE"}
                                   </span>
                                 </td>
                                 <td className="px-3 py-2">
@@ -3090,11 +3103,11 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                         onClick={() =>
                           setFormData((p) => ({
                             ...p,
-                            catalogStatus: "WISHLIST",
+                            catalogStatus: "PREORDER",
                           }))
                         }
                         className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
-                          formData.catalogStatus === "WISHLIST"
+                          formData.catalogStatus === "PREORDER"
                             ? "bg-rose-600 text-white border-rose-600"
                             : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
                         }`}
@@ -3106,7 +3119,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                       ✅ Rule: <b>Catalogue → Wish</b> not allowed. Only{" "}
                       <b>Wish → Catalogue</b>.
                     </p>
-                    {formData.catalogStatus === "WISHLIST" && (
+                    {formData.catalogStatus === "PREORDER" && (
                       <div className="mt-4">
                         <Field
                           label="Expected Available Date"

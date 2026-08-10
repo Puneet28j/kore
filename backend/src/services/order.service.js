@@ -35,6 +35,43 @@ const generateNextOrderNumber = async (prefix = "OR") => {
   return `${prefix}-${String(next).padStart(5, "0")}`;
 };
 
+// Directly adjusts MasterCatalog.variants[].sizeMap[size].qty for a set of
+// order items — this IS the live/available stock shown in Catalogue, Master
+// Inventory and Stock Report, so booking/cancelling an order must keep it in
+// sync immediately (sign = -1 to deduct on booking, +1 to restore on cancel).
+const adjustVariantStock = async (items, sign) => {
+  for (const item of items || []) {
+    if (!item.variantId) continue;
+    const sizeQuantities = item.sizeQuantities
+      ? (item.sizeQuantities instanceof Map
+          ? Object.fromEntries(item.sizeQuantities)
+          : item.sizeQuantities)
+      : {};
+    if (!Object.keys(sizeQuantities).length) continue;
+
+    try {
+      const catalog = await MasterCatalog.findOne({
+        "variants._id": item.variantId,
+      });
+      if (!catalog) continue;
+      const variant = catalog.variants.id(item.variantId);
+      if (!variant || !variant.sizeMap) continue;
+
+      Object.entries(sizeQuantities).forEach(([size, qty]) => {
+        const cell = variant.sizeMap.get(size);
+        if (!cell) return;
+        cell.qty = Math.max(0, (cell.qty || 0) + sign * Number(qty || 0));
+        variant.sizeMap.set(size, cell);
+      });
+
+      catalog.markModified("variants");
+      await catalog.save();
+    } catch (err) {
+      console.error("[adjustVariantStock] Failed for variant", item.variantId, err.message);
+    }
+  }
+};
+
 const generateNextReturnNumber = async () => {
   const lastRet = await Return.findOne()
     .sort({ createdAt: -1 })
@@ -87,48 +124,8 @@ const createOrder = async (distributorId, orderData) => {
     const finalAmount = totalAmount - discountAmount;
     const gstAmount = Math.round(((finalAmount * gstRate) / 100) * 100) / 100;
 
-    // Credit limit validation — skip for pre-orders (not confirmed yet)
-    const isPreOrder = orderData.orderType === "PREORDER";
-    if (!isPreOrder) {
-      if (creditLimit === 0) {
-        throw new Error(
-          "You have no credit limit to book an order. Please contact administrator."
-        );
-      }
-      const pendingOrders = await Order.aggregate([
-        {
-          $match: {
-            distributorId: distributor._id,
-            status: {
-              $nin: ["RECEIVED", "CANCELLED", "PRE_BOOKED", "CONFIRMED"],
-            },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalPending: {
-              $sum: { $ifNull: ["$finalAmount", "$totalAmount"] },
-            },
-          },
-        },
-      ]);
-      const pendingValue = pendingOrders[0]?.totalPending || 0;
-      if (pendingValue + finalAmount > creditLimit) {
-        const available = creditLimit - pendingValue;
-        throw new Error(
-          `Credit limit exceeded. Available credit: ₹${
-            available > 0 ? available.toLocaleString() : 0
-          }. Required: ₹${finalAmount.toLocaleString()}`
-        );
-      }
-    }
-
     // Use provided date or fallback to today
     const orderDate = date || new Date().toISOString().split("T")[0];
-
-    const orderType = orderData.orderType || "REGULAR";
-    const initialStatus = orderType === "PREORDER" ? "PRE_BOOKED" : "BOOKED";
 
     // Sanitize items: ensure articleId/variantId are valid ObjectId strings
     const sanitizedItems = (items || []).map((item) => {
@@ -147,34 +144,150 @@ const createOrder = async (distributorId, orderData) => {
       return sanitized;
     });
 
-    // Generate order number immediately for BOOKED orders
-    let orderNumber;
-    if (initialStatus === "BOOKED") {
-      try {
-        const distUser = await User.findById(distributorId)
-          .select("distributorId")
-          .lean();
-        let prefix = "OR";
-        if (distUser?.distributorId) {
-          const Distributor = require("../models/Distributor");
-          const dist = await Distributor.findById(distUser.distributorId)
-            .select("companyName")
-            .lean();
-          if (dist?.companyName) prefix = getCompanyPrefix(dist.companyName);
-        }
-        orderNumber = await generateNextOrderNumber(prefix);
-      } catch {
-        orderNumber = await generateNextOrderNumber("OR");
+    // Resolve each item's bookingType server-side from the variant's
+    // CURRENT effective stage — never trust a client-supplied flag. A cart
+    // can freely mix RFD and pre-order items; they end up in ONE order here,
+    // distinguished per-item so RFD items are dispatchable immediately while
+    // pre-order items wait (see scanCarton / promotePreOrderItems).
+    const articleIdsForStage = [
+      ...new Set(sanitizedItems.map((i) => String(i.articleId)).filter(Boolean)),
+    ];
+    const catalogsForStage = articleIdsForStage.length
+      ? await MasterCatalog.find({ _id: { $in: articleIdsForStage } })
+          .select("stage variants._id variants.stage")
+          .lean()
+      : [];
+    const stageByVariant = {};
+    catalogsForStage.forEach((cat) => {
+      (cat.variants || []).forEach((v) => {
+        stageByVariant[String(v._id)] = v.stage || cat.stage;
+      });
+    });
+    sanitizedItems.forEach((item) => {
+      item.bookingType =
+        item.variantId && stageByVariant[String(item.variantId)] === "PREORDER"
+          ? "PREORDER"
+          : "REGULAR";
+    });
+
+    const regularItems = sanitizedItems.filter((i) => i.bookingType === "REGULAR");
+    const preorderItems = sanitizedItems.filter((i) => i.bookingType === "PREORDER");
+
+    // Credit limit only applies to the REGULAR portion — pre-order items
+    // aren't a stock commitment yet. creditAmount (stored below) is what
+    // future orders' pending-credit sum reads, so a mixed order only ever
+    // counts its regular slice against the distributor's limit.
+    let creditAmount = 0;
+    if (regularItems.length > 0) {
+      const regularTotalAmount = regularItems.reduce((s, i) => s + i.price, 0);
+      const regularDiscountAmount = (regularTotalAmount * discountPercentage) / 100;
+      creditAmount = regularTotalAmount - regularDiscountAmount;
+
+      if (creditLimit === 0) {
+        throw new Error(
+          "You have no credit limit to book an order. Please contact administrator."
+        );
+      }
+      const pendingOrders = await Order.aggregate([
+        {
+          $match: {
+            distributorId: distributor._id,
+            status: { $nin: ["RECEIVED", "CANCELLED", "PRE_BOOKED", "CONFIRMED"] },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalPending: {
+              $sum: {
+                $ifNull: ["$creditAmount", { $ifNull: ["$finalAmount", "$totalAmount"] }],
+              },
+            },
+          },
+        },
+      ]);
+      const pendingValue = pendingOrders[0]?.totalPending || 0;
+      if (pendingValue + creditAmount > creditLimit) {
+        const available = creditLimit - pendingValue;
+        throw new Error(
+          `Credit limit exceeded. Available credit: ₹${
+            available > 0 ? available.toLocaleString() : 0
+          }. Required: ₹${creditAmount.toLocaleString()}`
+        );
       }
     }
 
+    // Pre-order items are capped by the Purchase Orders raised for each
+    // variant: total active pre-booked pairs (existing PRE_BOOKED/CONFIRMED
+    // orders + still-PREORDER items on active orders + this order) must
+    // never exceed what's planned on POs. No stock check — pre-orders are
+    // booked against incoming stock, not sizeMap.qty.
+    if (preorderItems.length > 0) {
+      const masterCatalogService = require("./masterCatalogService");
+      const capItems = preorderItems.filter((i) => i.variantId);
+      const articleIds = [...new Set(capItems.map((i) => String(i.articleId)))];
+      if (articleIds.length) {
+        const [plannedMap, preBookedMap] = await Promise.all([
+          masterCatalogService.getPoPlannedQtyMap(articleIds),
+          masterCatalogService.getPreBookedQtyMap(articleIds),
+        ]);
+
+        const requestedByVariant = {};
+        capItems.forEach((item) => {
+          const key = String(item.variantId);
+          const requested =
+            item.pairCount ||
+            Object.values(item.sizeQuantities || {}).reduce(
+              (s, q) => s + Number(q || 0),
+              0
+            );
+          requestedByVariant[key] = (requestedByVariant[key] || 0) + requested;
+        });
+
+        for (const [variantId, requested] of Object.entries(requestedByVariant)) {
+          const planned = plannedMap.totals[variantId] || 0;
+          const alreadyBooked = preBookedMap.totals[variantId] || 0;
+          const remaining = Math.max(0, planned - alreadyBooked);
+          if (requested > remaining) {
+            throw new Error(
+              planned === 0
+                ? "This item cannot be pre-booked yet — no Purchase Order has been raised for it."
+                : `Pre-order limit reached. Only ${remaining} pair(s) can still be pre-booked for this item (planned ${planned}, already pre-booked ${alreadyBooked}).`
+            );
+          }
+        }
+      }
+    }
+
+    // Every order books immediately (status BOOKED, orderNumber assigned) —
+    // there's no separate PRE_BOOKED holding state anymore. A pure-preorder
+    // order simply has zero items ready to scan until their GRN lands; a
+    // mixed order can dispatch its RFD items right away.
+    let orderNumber;
+    try {
+      const distUser = await User.findById(distributorId)
+        .select("distributorId")
+        .lean();
+      let prefix = "OR";
+      if (distUser?.distributorId) {
+        const Distributor = require("../models/Distributor");
+        const dist = await Distributor.findById(distUser.distributorId)
+          .select("companyName")
+          .lean();
+        if (dist?.companyName) prefix = getCompanyPrefix(dist.companyName);
+      }
+      orderNumber = await generateNextOrderNumber(prefix);
+    } catch {
+      orderNumber = await generateNextOrderNumber("OR");
+    }
+
     const order = new Order({
-      orderType,
+      orderType: "REGULAR",
       distributorId,
       distributorName: distrName,
       date: orderDate,
-      status: initialStatus,
-      ...(orderNumber ? { orderNumber } : {}),
+      status: "BOOKED",
+      orderNumber,
       items: sanitizedItems,
       totalAmount: Number(totalAmount) || 0,
       totalCartons: Number(totalCartons) || 0,
@@ -182,11 +295,19 @@ const createOrder = async (distributorId, orderData) => {
       discountPercentage,
       discountAmount,
       finalAmount: isNaN(finalAmount) ? 0 : finalAmount,
+      creditAmount: isNaN(creditAmount) ? 0 : creditAmount,
       gstRate,
       gstAmount: isNaN(gstAmount) ? 0 : gstAmount,
     });
 
     const savedOrder = await order.save();
+
+    // Deduct live stock immediately for REGULAR items only — pre-order
+    // items have no real stock yet; their deduction happens later, per
+    // item, the moment promotePreOrderItems() flips them (see grn.service).
+    if (regularItems.length > 0) {
+      await adjustVariantStock(regularItems, -1);
+    }
 
     // Notify: new order placed
     const distUser = await User.findById(savedOrder.distributorId)
@@ -276,7 +397,14 @@ const getOrdersByDistributor = async (
     // Use ObjectId cast so the aggregate $match works correctly (Mongoose find() auto-casts, aggregate() does not)
     const distObjId = new mongoose.Types.ObjectId(distributorId);
     const baseQ = { distributorId: distObjId, status: { $nin: PREORDER_STATUSES } };
-    const preOrderQ = { distributorId: distObjId, status: { $in: PREORDER_STATUSES } };
+    // "Has pre-orders" now means: an active order still carrying at least
+    // one PREORDER-tagged item (awaiting its GRN) — not a dead order-level
+    // status, since every order books immediately regardless of mix.
+    const preOrderQ = {
+      distributorId: distObjId,
+      status: { $nin: ["RECEIVED", "CANCELLED"] },
+      items: { $elemMatch: { bookingType: "PREORDER" } },
+    };
 
     const [items, total, allStats, statusAgg, preOrderCount] =
       await Promise.all([
@@ -376,6 +504,7 @@ const getAllOrders = async ({
   endDate,
   sortBy = "createdAt",
   sortDesc = "true",
+  orderType = "",
 } = {}) => {
   try {
     const p = normalizePage(page);
@@ -383,8 +512,11 @@ const getAllOrders = async ({
     const skip = (p - 1) * l;
 
     const q = {};
+    // Sales Orders shows regular AND preorder orders together (tagged in the
+    // UI) — no default status exclusion. Explicit status/orderType filters
+    // (tab clicks) still narrow the list as before.
     if (status) q.status = status;
-    else q.status = { $nin: PREORDER_STATUSES };
+    if (orderType) q.orderType = orderType;
     if (startDate || endDate) {
       q.createdAt = {};
       if (startDate) q.createdAt.$gte = new Date(startDate);
@@ -503,6 +635,7 @@ const updateOrderStatus = async (
     if (!order) {
       throw new Error("Order not found");
     }
+    const previousStatus = order.status;
 
     const updateData = { status };
     if (billUrl) updateData.billUrl = billUrl;
@@ -518,15 +651,12 @@ const updateOrderStatus = async (
       updateData.deliveryAgentMobile = deliveryAgentMobile;
     if (deliveryNote) updateData.deliveryNote = deliveryNote;
 
-    // Dispatch fields — saved when dispatching (BOOKED/PARTIAL → PFD/PARTIAL)
+    // Dispatch fields — saved when the warehouse finishes scanning
+    // (BOOKED/PARTIAL → PFD/PARTIAL). Vehicle/transporter details are NOT
+    // collected here anymore — those are captured one step later, when the
+    // order moves PFD/PARTIAL → RFD (see block below), so scanning alone is
+    // enough to flip the order to "Dispatched".
     if (status === "PFD" || (status === "PARTIAL" && ["BOOKED", "PARTIAL"].includes(order.status))) {
-      if (vehicleNo) updateData.vehicleNo = vehicleNo;
-      if (lrNo) updateData.lrNo = lrNo;
-      if (transporterName) updateData.transporterName = transporterName;
-      if (eWayBillNo) updateData.eWayBillNo = eWayBillNo;
-      if (driverName) updateData.driverName = driverName;
-      if (driverMobile) updateData.driverMobile = driverMobile;
-      if (grossWeightKg) updateData.grossWeightKg = grossWeightKg;
       if (outScannedCartons) updateData.outScannedCartons = outScannedCartons;
       updateData.dispatchedAt = new Date();
 
@@ -536,6 +666,7 @@ const updateOrderStatus = async (
       // blockedStockMap (no longer BOOKED) but nothing is subtracted from live stock, making stock appear to increase.
       if (itemDispatchCounts && Object.keys(itemDispatchCounts).length > 0) {
         for (const item of order.items) {
+          if (item.bookingType === "PREORDER") continue;
           const key = item.variantId?.toString() || item.articleId?.toString();
           const dispatched = itemDispatchCounts[key] || 0;
           if (dispatched > 0) {
@@ -569,6 +700,20 @@ const updateOrderStatus = async (
       }
     }
 
+    // Transport/vehicle details — saved one step later, when the order
+    // leaves the dispatch area (PFD/PARTIAL → RFD / "In Transit"). Split out
+    // from the scan step above so warehouse scanning alone can flip the
+    // order to "Dispatched" without needing vehicle info up front.
+    if (status === "RFD" && ["PFD", "PARTIAL"].includes(order.status)) {
+      if (vehicleNo) updateData.vehicleNo = vehicleNo;
+      if (lrNo) updateData.lrNo = lrNo;
+      if (transporterName) updateData.transporterName = transporterName;
+      if (eWayBillNo) updateData.eWayBillNo = eWayBillNo;
+      if (driverName) updateData.driverName = driverName;
+      if (driverMobile) updateData.driverMobile = driverMobile;
+      if (grossWeightKg) updateData.grossWeightKg = grossWeightKg;
+    }
+
     // Booking commitment fields — saved when admin confirms (PENDING → BOOKED)
     if (status === "BOOKED") {
       if (expectedDispatchDate)
@@ -576,6 +721,17 @@ const updateOrderStatus = async (
       if (bookingPriority) updateData.bookingPriority = bookingPriority;
       if (adminNote !== null) updateData.adminNote = adminNote;
       if (stockStatus) updateData.stockStatus = stockStatus;
+    }
+
+    // Deduct live stock the first time an order reaches BOOKED via this path.
+    // A regular order already gets deducted at createOrder (initialStatus is
+    // BOOKED from the start), so this only fires for released preorders —
+    // those start PRE_BOOKED (skipped, not a commitment yet) then get
+    // released to PENDING, and never pass through createOrder's BOOKED
+    // branch. Without this they'd be confirmed/dispatched without ever
+    // reducing sizeMap.qty.
+    if (status === "BOOKED" && previousStatus === "PENDING") {
+      await adjustVariantStock(order.items, -1);
     }
 
     // Generate orderNumber when admin confirms (BOOKED) — keeps sequence clean
@@ -694,6 +850,30 @@ const updateOrderStatus = async (
       updateData.receivingNoteUrl = null;
     }
 
+    // Restore live stock on cancellation — only the undispatched remainder
+    // (ordered minus already-fulfilled), since dispatched pairs already left
+    // the warehouse and aren't affected by cancelling the order.
+    if (
+      status === "CANCELLED" &&
+      !["PRE_BOOKED", "PENDING", "CONFIRMED", "CANCELLED"].includes(previousStatus)
+    ) {
+      const restoreItems = (order.items || []).map((item) => {
+        const ordered = item.sizeQuantities instanceof Map
+          ? Object.fromEntries(item.sizeQuantities)
+          : (item.sizeQuantities || {});
+        const fulfilled = item.fulfilledSizeQuantities instanceof Map
+          ? Object.fromEntries(item.fulfilledSizeQuantities)
+          : (item.fulfilledSizeQuantities || {});
+        const remaining = {};
+        Object.entries(ordered).forEach(([size, qty]) => {
+          const left = Number(qty || 0) - Number(fulfilled[size] || 0);
+          if (left > 0) remaining[size] = left;
+        });
+        return { variantId: item.variantId, sizeQuantities: remaining };
+      });
+      await adjustVariantStock(restoreItems, 1);
+    }
+
     // Apply updates to the order object
     Object.assign(order, updateData);
 
@@ -742,6 +922,260 @@ const updateOrderStatus = async (
     return updatedOrder;
   } catch (error) {
     throw new Error(`Failed to update order status: ${error.message}`);
+  }
+};
+
+// ── Per-carton dispatch lifecycle ─────────────────────────────────────────
+// No fixed "batch" object is created at scan time — every scanned carton is
+// tracked individually (order.cartonTracking) and immediately visible in the
+// Dispatched pool. Transport and Receive each act on a user-chosen SUBSET of
+// that pool (however many cartons are selected at submit time), recorded as
+// their own transitShipments / fulfillmentHistory entry — so a single order
+// can have several shipments and several receipt confirmations over time.
+
+// One carton per call — see the frontend for why (frozen barcode baseline;
+// syncing per scan means the "remaining" denominator used to derive labels
+// like SKU-CT0002 doesn't shift mid-session).
+const scanCarton = async (orderId, { cartonCode, itemKey }) => {
+  try {
+    if (!cartonCode || !itemKey) throw new Error("cartonCode and itemKey are required");
+
+    const order = await Order.findById(orderId);
+    if (!order) throw new Error("Order not found");
+    if (!["BOOKED", "PARTIAL"].includes(order.status)) {
+      throw new Error(`Cannot scan cartons for an order in ${order.status} status`);
+    }
+    if ((order.cartonTracking || []).some((c) => c.code === cartonCode)) {
+      throw new Error(`Carton ${cartonCode} already scanned`);
+    }
+
+    const item = order.items.find(
+      (i) => (i.variantId?.toString() || i.articleId?.toString()) === itemKey
+    );
+    if (!item) throw new Error("Item not found on this order");
+    if (item.bookingType === "PREORDER") {
+      throw new Error(
+        "This item is still a pre-order — its stock hasn't arrived yet (pending GRN)"
+      );
+    }
+    const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
+    if (remaining <= 0) throw new Error("All cartons for this item are already scanned");
+
+    // Distribute this single carton across sizes proportionally — same
+    // ratio-based math the old batch dispatch used, just recomputed fresh
+    // per carton (before/after deltas telescope to the exact right total
+    // regardless of how many separate calls this happens across).
+    const orderedSizes = item.sizeQuantities instanceof Map
+      ? Object.fromEntries(item.sizeQuantities)
+      : (item.sizeQuantities || {});
+    const ratioBefore = (item.fulfilledCartonCount || 0) / (item.cartonCount || 1);
+    item.fulfilledCartonCount = (item.fulfilledCartonCount || 0) + 1;
+    const ratioAfter = item.fulfilledCartonCount / (item.cartonCount || 1);
+    Object.entries(orderedSizes).forEach(([size, qty]) => {
+      const before = Math.round(Number(qty) * ratioBefore);
+      const after = Math.round(Number(qty) * ratioAfter);
+      const delta = after - before;
+      if (delta <= 0) return;
+      if (!item.fulfilledSizeQuantities) item.fulfilledSizeQuantities = new Map();
+      const prev = item.fulfilledSizeQuantities instanceof Map
+        ? (item.fulfilledSizeQuantities.get(size) || 0)
+        : (item.fulfilledSizeQuantities[size] || 0);
+      if (item.fulfilledSizeQuantities instanceof Map) item.fulfilledSizeQuantities.set(size, prev + delta);
+      else item.fulfilledSizeQuantities[size] = prev + delta;
+    });
+    order.markModified("items");
+
+    if (!order.cartonTracking) order.cartonTracking = [];
+    const isFirstScan = order.cartonTracking.length === 0;
+    order.cartonTracking.push({ code: cartonCode, itemKey, status: "DISPATCHED", dispatchedAt: new Date() });
+    order.markModified("cartonTracking");
+
+    if (order.status === "BOOKED") order.status = "PARTIAL";
+    if (!order.dispatchedAt) order.dispatchedAt = new Date();
+
+    await order.save();
+    const updatedOrder = await Order.findById(orderId).populate({
+      path: "distributorId",
+      populate: { path: "distributorId" },
+    });
+
+    if (isFirstScan) {
+      const distUser = await User.findById(order.distributorId).select("email phone").lean();
+      notification.dispatch("ORDER_DISPATCHED", {
+        data: {
+          "Order #": updatedOrder.orderNumber || String(orderId),
+          Distributor: updatedOrder.distributorName,
+        },
+        distributorEmail: distUser?.email,
+        distributorPhone: distUser?.phone,
+      });
+    }
+
+    return updatedOrder;
+  } catch (error) {
+    throw new Error(`Failed to scan carton: ${error.message}`);
+  }
+};
+
+// Moves a user-selected subset of currently-Dispatched cartons to In Transit,
+// recording one transitShipments entry for exactly that selection.
+const submitTransit = async (orderId, {
+  cartonCodes, vehicleNo, lrNo, transporterName, eWayBillNo,
+  driverName, driverMobile, grossWeightKg, invoiceUrl, ewayBillUrl, transportBillUrl,
+}) => {
+  try {
+    if (!Array.isArray(cartonCodes) || cartonCodes.length === 0) {
+      throw new Error("Select at least one carton");
+    }
+    const order = await Order.findById(orderId);
+    if (!order) throw new Error("Order not found");
+
+    const trackingByCode = new Map((order.cartonTracking || []).map((c) => [c.code, c]));
+    for (const code of cartonCodes) {
+      const entry = trackingByCode.get(code);
+      if (!entry) throw new Error(`Carton ${code} not found on this order`);
+      if (entry.status !== "DISPATCHED") throw new Error(`Carton ${code} is not in Dispatched status`);
+    }
+
+    if (!order.transitShipments) order.transitShipments = [];
+    order.transitShipments.push({
+      cartonCodes, vehicleNo, lrNo, transporterName, eWayBillNo,
+      driverName, driverMobile, grossWeightKg, invoiceUrl, ewayBillUrl, transportBillUrl,
+      createdAt: new Date(),
+    });
+    const newShipmentId = order.transitShipments[order.transitShipments.length - 1]._id;
+
+    cartonCodes.forEach((code) => {
+      const entry = trackingByCode.get(code);
+      entry.status = "IN_TRANSIT";
+      entry.transitShipmentId = newShipmentId;
+    });
+    order.markModified("cartonTracking");
+    order.markModified("transitShipments");
+
+    await order.save();
+    const updatedOrder = await Order.findById(orderId).populate({
+      path: "distributorId",
+      populate: { path: "distributorId" },
+    });
+
+    const distUser = await User.findById(order.distributorId).select("email phone").lean();
+    notification.dispatch("ORDER_IN_TRANSIT", {
+      data: {
+        "Order #": updatedOrder.orderNumber || String(orderId),
+        Distributor: updatedOrder.distributorName,
+        Cartons: cartonCodes.length,
+      },
+      distributorEmail: distUser?.email,
+      distributorPhone: distUser?.phone,
+    });
+
+    return updatedOrder;
+  } catch (error) {
+    throw new Error(`Failed to submit transit details: ${error.message}`);
+  }
+};
+
+// Moves a user-selected subset of currently-In-Transit cartons to Received,
+// recording one fulfillmentHistory entry for exactly that selection. Order
+// status only flips to RECEIVED once every carton across every item has
+// reached Received — otherwise it stays PARTIAL, however many separate
+// receive submissions that takes.
+const receiveCartons = async (orderId, { cartonCodes, receiverName, receiverMobile, receivingNoteUrl }) => {
+  try {
+    if (!Array.isArray(cartonCodes) || cartonCodes.length === 0) {
+      throw new Error("Select at least one carton");
+    }
+    if (!receiverName || !receiverMobile) {
+      throw new Error("Receiver name and mobile are required");
+    }
+    const order = await Order.findById(orderId);
+    if (!order) throw new Error("Order not found");
+
+    const trackingByCode = new Map((order.cartonTracking || []).map((c) => [c.code, c]));
+    for (const code of cartonCodes) {
+      const entry = trackingByCode.get(code);
+      if (!entry) throw new Error(`Carton ${code} not found on this order`);
+      if (entry.status !== "IN_TRANSIT") throw new Error(`Carton ${code} is not In Transit`);
+    }
+
+    const countsByItem = {};
+    cartonCodes.forEach((code) => {
+      const entry = trackingByCode.get(code);
+      countsByItem[entry.itemKey] = (countsByItem[entry.itemKey] || 0) + 1;
+    });
+
+    const historyItems = [];
+    let totalAmount = 0, totalCartons = 0, totalPairs = 0;
+    Object.entries(countsByItem).forEach(([itemKey, count]) => {
+      const item = order.items.find(
+        (i) => (i.variantId?.toString() || i.articleId?.toString()) === itemKey
+      );
+      if (!item) return;
+      const ratio = count / (item.cartonCount || 1);
+      const pairCount = Math.round((item.pairCount || 0) * ratio);
+      const sizeQuantities = {};
+      const orderedSizes = item.sizeQuantities instanceof Map
+        ? Object.fromEntries(item.sizeQuantities)
+        : (item.sizeQuantities || {});
+      Object.entries(orderedSizes).forEach(([size, qty]) => {
+        const proportional = Math.round(Number(qty) * ratio);
+        if (proportional > 0) sizeQuantities[size] = proportional;
+      });
+      historyItems.push({
+        variantId: item.variantId, articleId: item.articleId,
+        cartonCount: count, pairCount, sizeQuantities,
+      });
+      const perPairPrice = item.price / (item.pairCount || 1);
+      totalAmount += pairCount * perPairPrice;
+      totalCartons += count;
+      totalPairs += pairCount;
+    });
+
+    if (!order.fulfillmentHistory) order.fulfillmentHistory = [];
+    const batchNumber = order.fulfillmentHistory.length + 1;
+    order.fulfillmentHistory.push({
+      batchNumber, date: new Date(), cartonCodes, items: historyItems,
+      totalAmount, totalCartons, totalPairs, receiverName, receiverMobile, receivingNoteUrl,
+    });
+
+    cartonCodes.forEach((code) => {
+      trackingByCode.get(code).status = "RECEIVED";
+    });
+    order.markModified("cartonTracking");
+    order.markModified("fulfillmentHistory");
+
+    const totalExpectedCartons = order.items.reduce((s, i) => s + (i.cartonCount || 0), 0);
+    const totalReceivedCartons = order.cartonTracking.filter((c) => c.status === "RECEIVED").length;
+    const allReceived = totalExpectedCartons > 0 && totalReceivedCartons >= totalExpectedCartons;
+    if (allReceived) {
+      order.status = "RECEIVED";
+      order.deliveredAt = new Date();
+    } else {
+      order.status = "PARTIAL";
+    }
+
+    await order.save();
+    const updatedOrder = await Order.findById(orderId).populate({
+      path: "distributorId",
+      populate: { path: "distributorId" },
+    });
+
+    if (allReceived) {
+      const distUser = await User.findById(order.distributorId).select("email phone").lean();
+      notification.dispatch("ORDER_DELIVERED", {
+        data: {
+          "Order #": updatedOrder.orderNumber || String(orderId),
+          Distributor: updatedOrder.distributorName,
+        },
+        distributorEmail: distUser?.email,
+        distributorPhone: distUser?.phone,
+      });
+    }
+
+    return updatedOrder;
+  } catch (error) {
+    throw new Error(`Failed to receive cartons: ${error.message}`);
   }
 };
 
@@ -996,33 +1430,92 @@ const editOrder = async (orderId, requesterId, requesterRole, { items }) => {
   return order;
 };
 
-// ── Pre-order: get all PRE_BOOKED / CONFIRMED ─────────────────────────────
-const getPreOrders = async ({
-  page = 1,
-  limit = 20,
-  search = "",
-  status = "",
-} = {}) => {
-  const q = { orderType: "PREORDER" };
-  if (status) q.status = status;
-  else q.status = { $in: ["PRE_BOOKED", "CONFIRMED"] };
-  if (search)
-    q.$or = [
-      { orderNumber: { $regex: search, $options: "i" } },
-      { distributorName: { $regex: search, $options: "i" } },
-    ];
+// ── Promote pre-order items once their stock arrives via GRN ──────────────
+// Called by grn.service after a GRN lands stock for `variantIds`. Unlike the
+// old whole-order release, this flips individual ITEMS: an order can be
+// mid-dispatch on its RFD items while one PREORDER item inside it is still
+// waiting. Oldest-order-first, walks every active order (not RECEIVED/
+// CANCELLED) holding a still-PREORDER item for one of these variants; if
+// that item's variant is now AVAILABLE with enough free stock, deducts the
+// stock (this item is "booking" for real at this exact moment, same as a
+// REGULAR item deducts at order creation) and flips bookingType to REGULAR
+// — no order-level status change needed, it simply becomes scannable.
+const promotePreOrderItems = async (variantIds) => {
+  const idStrs = [...new Set((variantIds || []).map(String))];
+  if (!idStrs.length) return [];
 
-  const total = await Order.countDocuments(q);
-  const items = await Order.find(q)
-    .sort({ createdAt: -1 })
-    .skip((page - 1) * limit)
-    .limit(limit)
-    .lean();
+  const candidates = await Order.find({
+    status: { $nin: ["RECEIVED", "CANCELLED"] },
+    items: { $elemMatch: { variantId: { $in: idStrs }, bookingType: "PREORDER" } },
+  }).sort({ createdAt: 1 });
+  if (!candidates.length) return [];
 
-  return {
-    items,
-    meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
-  };
+  const updatedOrders = [];
+  for (const order of candidates) {
+    let orderChanged = false;
+
+    for (const item of order.items) {
+      if (item.bookingType !== "PREORDER") continue;
+      if (!item.variantId || !idStrs.includes(String(item.variantId))) continue;
+
+      // Re-fetch fresh each time — sizeMap.qty always reflects the true free
+      // balance (REGULAR items deduct immediately at booking, so nothing
+      // else needs subtracting), and re-reading per item naturally earmarks
+      // stock across this whole pass without a separate in-memory map.
+      const catalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
+      const variant = catalog?.variants?.id(item.variantId);
+      if (!variant) continue;
+      const effectiveStage = variant.stage || catalog.stage;
+      if (effectiveStage !== "AVAILABLE") continue;
+
+      const sizeQuantities =
+        item.sizeQuantities instanceof Map
+          ? Object.fromEntries(item.sizeQuantities)
+          : item.sizeQuantities || {};
+
+      let coverable = true;
+      for (const [size, qty] of Object.entries(sizeQuantities)) {
+        const need = Number(qty || 0);
+        if (need <= 0) continue;
+        const cell = variant.sizeMap.get(String(size).trim());
+        if ((cell?.qty || 0) < need) {
+          coverable = false;
+          break;
+        }
+      }
+      if (!coverable) continue;
+
+      Object.entries(sizeQuantities).forEach(([size, qty]) => {
+        const need = Number(qty || 0);
+        if (need <= 0) return;
+        const cleanSize = String(size).trim();
+        const cell = variant.sizeMap.get(cleanSize) || { qty: 0, sku: "" };
+        cell.qty = Math.max(0, (cell.qty || 0) - need);
+        variant.sizeMap.set(cleanSize, cell);
+      });
+      catalog.markModified("variants");
+      await catalog.save();
+
+      item.bookingType = "REGULAR";
+      orderChanged = true;
+    }
+
+    if (!orderChanged) continue;
+
+    order.markModified("items");
+    await order.save();
+    updatedOrders.push(order);
+
+    activityLog.createLog({
+      action: "PREORDER_RELEASED",
+      entityType: "ORDER",
+      entityId: String(order._id),
+      description: `Pre-order item(s) in order #${order.orderNumber || order._id} became available — GRN stock arrived`,
+      metadata: { auto: true, distributorName: order.distributorName },
+    });
+  }
+
+  return updatedOrders;
 };
 
 // ── MRP / price propagation to PENDING + PRE_BOOKED orders ───────────────
@@ -1149,11 +1642,14 @@ module.exports = {
   getOrdersByDistributor,
   getAllOrders,
   updateOrderStatus,
+  scanCarton,
+  submitTransit,
+  receiveCartons,
   processReturn,
   getReturnHistory,
   deleteOrder,
   editOrder,
-  getPreOrders,
+  promotePreOrderItems,
   propagatePriceUpdate,
   getOrderStats,
   getDashboardMetrics,

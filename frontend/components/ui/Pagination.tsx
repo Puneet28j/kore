@@ -11,6 +11,28 @@ interface PaginationProps {
   onPageSizeChange?: (size: number) => void;
 }
 
+// Windowed page list with ellipsis, e.g. current=6,total=10 -> [1,'…',5,6,7,'…',10]
+function getPageList(current: number, total: number): (number | "…")[] {
+  const delta = 1;
+  const range: number[] = [];
+  for (let i = 1; i <= total; i++) {
+    if (i === 1 || i === total || (i >= current - delta && i <= current + delta)) {
+      range.push(i);
+    }
+  }
+  const withDots: (number | "…")[] = [];
+  let last = 0;
+  for (const i of range) {
+    if (last) {
+      if (i - last === 2) withDots.push(last + 1);
+      else if (i - last > 1) withDots.push("…");
+    }
+    withDots.push(i);
+    last = i;
+  }
+  return withDots;
+}
+
 const Pagination: React.FC<PaginationProps> = ({
   currentPage,
   totalPages,
@@ -63,22 +85,10 @@ const Pagination: React.FC<PaginationProps> = ({
             <ChevronLeft size={16} />
           </button>
 
-          {[...Array(totalPages)].map((_, i) => {
-            const page = i + 1;
-            if (
-              totalPages > 7 &&
-              page > 1 &&
-              page < totalPages &&
-              (page < currentPage - 1 || page > currentPage + 1)
-            ) {
-              if (page === currentPage - 2 || page === currentPage + 2) {
-                return (
-                  <span key={page} className="px-2 py-1.5 text-sm text-slate-400">…</span>
-                );
-              }
-              return null;
-            }
-            return (
+          {getPageList(currentPage, totalPages).map((page, i) =>
+            page === "…" ? (
+              <span key={`dots-${i}`} className="px-2 py-1.5 text-sm text-slate-400">…</span>
+            ) : (
               <button
                 key={page}
                 onClick={() => onPageChange(page)}
@@ -90,8 +100,8 @@ const Pagination: React.FC<PaginationProps> = ({
               >
                 {page}
               </button>
-            );
-          })}
+            )
+          )}
 
           <button
             onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}

@@ -299,7 +299,19 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                           <p className="font-semibold text-slate-900">
                             {item.itemName || "—"}
                           </p>
-                          <p className="text-[10px] text-slate-500">
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            {item.color && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-600 uppercase tracking-wider">
+                                {item.color}
+                              </span>
+                            )}
+                            {item.sku && (
+                              <span className="text-[10px] font-mono text-slate-400">
+                                {item.sku}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-500 mt-0.5">
                             Brand: {item.skuCompany || "—"}
                           </p>
                         </div>

@@ -115,6 +115,12 @@ const isVariantInStock = (v: Variant): boolean => {
   return stock > 0;
 };
 
+// A still-PREORDER variant has no real stock — its bookable amount is what
+// the Purchase Orders planned minus what distributors have already
+// pre-booked (both injected per variant by the backend list API).
+const remainingPlannedPairs = (v: Variant): number =>
+  Math.max(0, (Number(v.plannedPairs) || 0) - (Number(v.preBookedPairs) || 0));
+
 // ─── Amazon-style zoom hook ─────────────────────────────────────────────────
 const ZOOM_SIZE = 300;
 
@@ -192,9 +198,24 @@ const ArticleCard: React.FC<{
   );
   const totalPairs = totalPairsPerCarton * cartonCount;
 
-  // ── Stock cap logic (per variant, per size) ──────────────────────────────
+  // Effective stage of the SPECIFIC selected variant — a variant can have
+  // arrived (own GRN) while the article as a whole is still PREORDER.
+  const isPreOrderVariant =
+    (selectedVariant?.stage || article.status) === "PREORDER";
+
+  // ── Cap logic (per variant) ──────────────────────────────────────────────
+  // AVAILABLE variant: capped by real per-size stock. Still-PREORDER
+  // variant: no stock exists yet — capped by the PO-planned quantity minus
+  // what's already pre-booked (backend enforces the same cap on order
+  // creation).
   const maxCartonsFromStock = useMemo(() => {
     if (!selectedVariant) return 0;
+    if (isPreOrderVariant) {
+      if (totalPairsPerCarton <= 0) return 0;
+      return Math.floor(
+        remainingPlannedPairs(selectedVariant) / totalPairsPerCarton
+      );
+    }
     const sizeMap = selectedVariant.sizeMap || {};
     const sizes = Object.keys(baseBreakdown);
     if (sizes.length === 0) return 999; // no assortment data — no limit
@@ -207,7 +228,7 @@ const ArticleCard: React.FC<{
       min = Math.min(min, Math.floor(available / assortQty));
     }
     return min === Infinity ? 0 : min;
-  }, [selectedVariant, baseBreakdown]);
+  }, [selectedVariant, baseBreakdown, isPreOrderVariant, totalPairsPerCarton]);
 
   // Cartons already in cart for this specific variant
   const cartonsAlreadyInCart = useMemo(() => {
@@ -369,12 +390,18 @@ const ArticleCard: React.FC<{
   const handleAdd = () => {
     if (!selectedVariant || totalPairs === 0) return;
     if (isOutOfStock) {
-      toast.error("This variant is out of stock");
+      toast.error(
+        isPreOrderVariant
+          ? "This variant is fully pre-booked"
+          : "This variant is out of stock"
+      );
       return;
     }
     if (cartonCount > maxAdditionalCartons) {
       toast.error(
-        `Only ${maxAdditionalCartons} carton(s) available for this variant`
+        `Only ${maxAdditionalCartons} carton(s) can still be ${
+          isPreOrderVariant ? "pre-booked" : "added"
+        } for this variant`
       );
       return;
     }
@@ -384,7 +411,11 @@ const ArticleCard: React.FC<{
     });
     addToCart(article.id, selectedVariant.id, finalSizeQty);
     setCartonCount(1);
-    toast.success(`${article.name} (${color}) added to cart`);
+    toast.success(
+      `${article.name} (${color}) added to cart${
+        isPreOrderVariant ? " as pre-order" : ""
+      }`
+    );
   };
 
   return (
@@ -489,11 +520,11 @@ const ArticleCard: React.FC<{
             ))}
           </div>
 
-          {/* Out of Stock overlay */}
+          {/* Out of Stock / Fully Pre-Booked overlay */}
           {isOutOfStock && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 backdrop-blur-[2px]">
               <span className="bg-red-600 text-white text-xs font-black px-4 py-2 rounded-full shadow-lg tracking-widest uppercase">
-                Out of Stock
+                {isPreOrderVariant ? "Fully Pre-Booked" : "Out of Stock"}
               </span>
             </div>
           )}
@@ -564,12 +595,12 @@ const ArticleCard: React.FC<{
             </p>
             <span
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border-2 ${
-                articleStatus === "WISHLIST"
+                articleStatus === "PREORDER"
                   ? "bg-amber-600 text-white border-amber-600"
                   : "bg-indigo-600 text-white border-indigo-600"
               }`}
             >
-              {articleStatus === "WISHLIST" ? "Available in 30 Days" : "RFD"}
+              {articleStatus === "PREORDER" ? "Available in 30 Days" : "RFD"}
             </span>
           </div>
           <div className="bg-indigo-50 p-2 rounded-xl shrink-0">
@@ -713,6 +744,16 @@ const mapDocToArticle = (doc: any): Article => ({
     tag: v.tag,
     onlineMrp: v.onlineMrp,
     offlineMrp: v.offlineMrp,
+    // Per-variant override — falls back to the article's own stage below
+    // when a variant hasn't had its own GRN promotion yet.
+    stage: v.stage,
+    expectedAvailableDate: v.expectedAvailableDate,
+    // PO-derived planned + already pre-booked pairs (backend-injected) —
+    // caps pre-booking for still-PREORDER variants.
+    poPlannedQty: v.poPlannedQty || {},
+    plannedPairs: v.plannedPairs || 0,
+    preBookedPairs: v.preBookedPairs || 0,
+    poPendingPairs: v.poPendingPairs || 0,
   })),
 });
 
@@ -758,7 +799,7 @@ const Shop: React.FC<ShopProps> = ({
       let totalCount = 0;
 
       if (statusFilter === "ALL") {
-        // Fetch both AVAILABLE and WISHLIST (pre-book) items
+        // Fetch both AVAILABLE and PREORDER (pre-book) items
         const [resAvailable, resPreBook] = await Promise.all([
           masterCatalogService.listMasterItems({
             page: 1,
@@ -771,7 +812,7 @@ const Shop: React.FC<ShopProps> = ({
           masterCatalogService.listMasterItems({
             page: 1,
             limit: 1000,
-            stage: "WISHLIST",
+            stage: "PREORDER",
             q: search || undefined,
             gender: genderFilter !== "ALL" ? genderFilter : undefined,
             sort: sortOption,
@@ -878,7 +919,15 @@ const Shop: React.FC<ShopProps> = ({
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
-        if (inStockOnly && !isVariantInStock(v)) return;
+        const effStage = v.stage || article.status;
+        if (effStage === "PREORDER") {
+          // Still-PREORDER variant — sold against its PO planned quantity,
+          // no real stock exists yet. Hide it only once fully pre-booked
+          // (or when no PO has been raised for it at all).
+          if (remainingPlannedPairs(v) <= 0) return;
+        } else if (inStockOnly && !isVariantInStock(v)) {
+          return;
+        }
         if (!groups[v.color]) groups[v.color] = [];
         groups[v.color].push(v);
       });
@@ -888,6 +937,13 @@ const Shop: React.FC<ShopProps> = ({
           article,
           color,
           variants: colorVariants,
+          // "Available in 30 Days" only if EVERY variant of this color is
+          // still pending its own GRN — the moment even one has arrived,
+          // the card should reflect that (falls back to the article's own
+          // stage per variant until each has its own explicit value).
+          cardStage: colorVariants.every((v) => (v.stage || article.status) === "AVAILABLE")
+            ? "AVAILABLE"
+            : "PREORDER",
         }));
     });
   }, [backendArticles, distributorTag, inStockOnly]);
@@ -931,7 +987,7 @@ const Shop: React.FC<ShopProps> = ({
 
           {/* Availability Filter Pills */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
-            {["ALL", "AVAILABLE", "WISHLIST"].map((s) => (
+            {["ALL", "AVAILABLE", "PREORDER"].map((s) => (
               <button
                 key={s}
                 onClick={() => setStatusFilter(s)}
@@ -1022,7 +1078,7 @@ const Shop: React.FC<ShopProps> = ({
         <>
           {/* Product Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-            {colorGroups.map(({ article, color, variants }) => {
+            {colorGroups.map(({ article, color, variants, cardStage }) => {
               const inv = inventory.find((i) => i.articleId === article.id);
 
               return (
@@ -1035,7 +1091,7 @@ const Shop: React.FC<ShopProps> = ({
                   discountPercentage={discountPercentage}
                   priceView={priceView}
                   distributorTag={distributorTag}
-                  articleStatus={article.status}
+                  articleStatus={cardStage}
                 />
               );
             })}

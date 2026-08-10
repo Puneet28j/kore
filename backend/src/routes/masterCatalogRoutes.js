@@ -18,6 +18,7 @@ router.post("/", maybeUpload, compressImages, ctrl.createMasterCatalog);
 router.get("/", ctrl.getMasterCatalogList);
 // Must be registered before /:id so "stock-totals" is not treated as an id
 router.get("/stock-totals", ctrl.getStockTotals);
+router.get("/booked-map", ctrl.getBookedMap);
 // Stock aggregation — also before /:id
 router.get("/variants/:variantId/stock", ctrl.getVariantStock);
 router.post("/variants/:variantId/reset-stock", ctrl.resetVariantStock);

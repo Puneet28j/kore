@@ -72,6 +72,15 @@ const VariantSchema = new mongoose.Schema(
     sku: { type: String, trim: true, default: "" },
 
     isActive: { type: Boolean, default: true },
+
+    // Per-variant override of the article-level stage/expectedAvailableDate
+    // below — lets a PREORDER article's variants arrive (via GRN) and go
+    // AVAILABLE independently of each other. Left undefined (not defaulted
+    // to "AVAILABLE") on purpose: every reader falls back to the parent
+    // article's stage when a variant hasn't set its own yet, so existing
+    // data needs no migration.
+    stage: { type: String, enum: ["AVAILABLE", "PREORDER"], default: undefined },
+    expectedAvailableDate: { type: Date, default: undefined },
   },
   { _id: true }
 );
@@ -114,7 +123,7 @@ const MasterCatalogSchema = new mongoose.Schema(
 
     stage: {
       type: String,
-      enum: ["AVAILABLE", "WISHLIST"],
+      enum: ["AVAILABLE", "PREORDER"],
       default: "AVAILABLE",
     },
     expectedAvailableDate: { type: Date },
@@ -147,10 +156,10 @@ const MasterCatalogSchema = new mongoose.Schema(
 );
 
 MasterCatalogSchema.pre("validate", function () {
-  if (this.stage === "WISHLIST" && !this.expectedAvailableDate) {
+  if (this.stage === "PREORDER" && !this.expectedAvailableDate) {
     this.invalidate(
       "expectedAvailableDate",
-      "expectedAvailableDate is required when stage is WISHLIST"
+      "expectedAvailableDate is required when stage is PREORDER"
     );
   }
 });

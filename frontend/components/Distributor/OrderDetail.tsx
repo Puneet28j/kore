@@ -76,6 +76,29 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   const [currentOrder, setCurrentOrder] = useState<Order>(order);
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
 
+  // Per-carton dispatch pools — no fixed "batch" grouping. Each physical
+  // carton independently sits in one of these three states; Scan/Transport/
+  // Receive tabs each act on whichever pool is theirs, any time, in any
+  // order, however many times it takes.
+  const dispatchedCartons = (currentOrder.cartonTracking || []).filter(c => c.status === 'DISPATCHED');
+  const inTransitCartons  = (currentOrder.cartonTracking || []).filter(c => c.status === 'IN_TRANSIT');
+  const receivedCartons   = (currentOrder.cartonTracking || []).filter(c => c.status === 'RECEIVED');
+  const totalExpectedCartons = currentOrder.items.reduce((s, i) => s + (i.cartonCount || 0), 0);
+  // Still-PREORDER items have no real stock yet — they can't be scanned
+  // until their GRN lands and promotes them, so they're excluded from the
+  // scannable "remaining" count (see the separate Awaiting Stock panel).
+  const totalRemainingToScan = currentOrder.items.reduce(
+    (s, i) => i.bookingType === 'PREORDER'
+      ? s
+      : s + Math.max(0, i.cartonCount - (i.fulfilledCartonCount || 0)),
+    0
+  );
+  const awaitingStockItems = currentOrder.items.filter((i) => i.bookingType === 'PREORDER');
+
+  // All three tabs are usable independently and simultaneously (no locked
+  // wizard) — which one is on screen is just a plain view toggle.
+  const [dispatchTab, setDispatchTab] = useState<'scan' | 'transport' | 'receive'>('scan');
+
   // ── Edit / Cancel state ───────────────────────────────────────────────────
   const canEdit   = ['PENDING', 'PRE_BOOKED'].includes(currentOrder.status);
   const canCancel = ['PENDING', 'PRE_BOOKED', 'BOOKED'].includes(currentOrder.status);
@@ -204,22 +227,39 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   const [scanInput, setScanInput] = useState("");
   const [breakdownOpen, setBreakdownOpen] = useState(true);
 
-  // ── Dispatch state (BOOKED → PFD) ────────────────────────────────────────
+  // ── Dispatch state: per-carton lifecycle (no fixed batches) ─────────────
   const [dispatchForm, setDispatchForm] = useState({
     vehicleNo: '', lrNo: '', transporterName: '',
     eWayBillNo: '', driverName: '', driverMobile: '', grossWeightKg: '',
   });
   const [ctnScanInput, setCtnScanInput] = useState('');
-  const [scannedCTNs, setScannedCTNs] = useState<Set<string>>(new Set());
-  const [showDispatchForm, setShowDispatchForm] = useState(false);
+  const [scanSyncing, setScanSyncing] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<{ url: string; title: string } | null>(null);
+  // Which currently-Dispatched / currently-In-Transit cartons are checked
+  // for the NEXT transit/receive submission — defaults to "everything",
+  // user can uncheck some to leave them for a later shipment/confirmation.
+  const [selectedTransitCodes, setSelectedTransitCodes] = useState<Set<string>>(new Set());
+  const [selectedReceiveCodes, setSelectedReceiveCodes] = useState<Set<string>>(new Set());
 
-  // Reset scan + dispatch form whenever order status changes (e.g. after dispatch confirms)
   useEffect(() => {
-    setScannedCTNs(new Set());
-    setCtnScanInput('');
-    setShowDispatchForm(false);
-  }, [currentOrder.status, (currentOrder as any).dispatchedAt]);
+    setSelectedTransitCodes(prev => {
+      const next = new Set(prev);
+      dispatchedCartons.forEach(c => next.add(c.code));
+      [...next].forEach(code => { if (!dispatchedCartons.some(c => c.code === code)) next.delete(code); });
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentOrder.cartonTracking]);
+
+  useEffect(() => {
+    setSelectedReceiveCodes(prev => {
+      const next = new Set(prev);
+      inTransitCartons.forEach(c => next.add(c.code));
+      [...next].forEach(code => { if (!inTransitCartons.some(c => c.code === code)) next.delete(code); });
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentOrder.cartonTracking]);
 
   const handleScanSKU = (sku: string) => {
     if (!sku.trim()) return;
@@ -276,69 +316,6 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     });
   };
 
-  const handleAllocateAndProceed = async () => {
-    try {
-      setUploading(true);
-
-      if (scannedCTNs.size === 0) {
-        toast.error('Scan at least one carton before dispatching');
-        setUploading(false);
-        return;
-      }
-      if (!dispatchForm.vehicleNo.trim()) { toast.error('Vehicle No required'); setUploading(false); return; }
-      if (!dispatchForm.transporterName.trim()) { toast.error('Transporter Name required'); setUploading(false); return; }
-
-      const expectedCTNs = generateExpectedCTNs();
-      const allScanned = expectedCTNs.length === 0 || scannedCTNs.size >= expectedCTNs.length;
-      const targetStatus = allScanned ? OrderStatus.PFD : OrderStatus.PARTIAL;
-
-      // Compute per-item dispatch counts from scanned barcodes.
-      // Frontend knows exactly which barcode belongs to which item, so we
-      // send a variantId → cartonCount map instead of relying on backend SKU lookup.
-      const itemDispatchCounts: Record<string, number> = {};
-      currentOrder.items.forEach(item => {
-        const code = getItemCode(item);
-        const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
-        let count = 0;
-        for (let n = 1; n <= remaining; n++) {
-          if (scannedCTNs.has(`${code}-CT${String(n).padStart(4, '0')}`)) count++;
-        }
-        if (count > 0) itemDispatchCounts[item.variantId || item.articleId] = count;
-      });
-
-      const options: any = {
-        vehicleNo:          dispatchForm.vehicleNo.trim(),
-        lrNo:               dispatchForm.lrNo.trim(),
-        transporterName:    dispatchForm.transporterName.trim(),
-        itemDispatchCounts,
-      };
-      if (dispatchForm.eWayBillNo.trim())   options.eWayBillNo   = dispatchForm.eWayBillNo.trim();
-      if (dispatchForm.driverName.trim())   options.driverName   = dispatchForm.driverName.trim();
-      if (dispatchForm.driverMobile.trim()) options.driverMobile = dispatchForm.driverMobile.trim();
-      if (dispatchForm.grossWeightKg)       options.grossWeightKg = Number(dispatchForm.grossWeightKg);
-      options.outScannedCartons = [...scannedCTNs];
-
-      const files: Record<string, File> = {};
-      if (shippingFiles.invoice)       files.invoice       = shippingFiles.invoice;
-      if (shippingFiles.ewayBill)      files.ewayBill      = shippingFiles.ewayBill;
-      if (shippingFiles.transportBill) files.transportBill = shippingFiles.transportBill;
-      if (Object.keys(files).length)   options.files = files;
-
-      const updated = await distributorOrderService.updateOrderStatus(currentOrder.id, targetStatus, options);
-      if (updated) {
-        setCurrentOrder(updated);
-        toast.success(allScanned
-          ? 'Order dispatched successfully!'
-          : `Partial dispatch confirmed — ${scannedCTNs.size}/${expectedCTNs.length} cartons`);
-      }
-    } catch (err: any) {
-      console.error('Failed to dispatch order', err);
-      toast.error(err?.response?.data?.message || 'Failed to update order');
-    } finally {
-      setUploading(false);
-    }
-  };
-
   // ── CTN Out-Scan helpers ──────────────────────────────────────────────────
   const makeOrderShort = () =>
     (currentOrder.orderNumber || currentOrder.id.slice(-6).toUpperCase()).replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 8);
@@ -353,65 +330,133 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     return (article?.name || item.articleId || 'ITEM').replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 8);
   };
 
-  const generateExpectedCTNs = (): string[] => {
-    const all: string[] = [];
-    currentOrder.items.forEach(item => {
-      const ctn = item.cartonCount - (item.fulfilledCartonCount || 0);
-      const code = getItemCode(item);
-      for (let n = 1; n <= ctn; n++) all.push(`${code}-CT${String(n).padStart(4, '0')}`);
-    });
-    return all;
+  const getItemLabel = (itemKey: string) => {
+    const item = currentOrder.items.find(i => (i.variantId || i.articleId) === itemKey);
+    const article = item ? articles.find(a => a.id === item.articleId) : undefined;
+    const variant = article?.variants?.find(v => v.id === item?.variantId || (v as any)._id === item?.variantId);
+    if (article && variant) return `${article.name} — ${variant.color} (${variant.sizeRange})`;
+    return article?.name || itemKey;
   };
 
-  const handleCTNScan = (raw: string) => {
+  // Frozen per-item "remaining" snapshot, captured once for the lifetime of
+  // this view. Every scan now syncs to the backend immediately — if the
+  // expected-code numbering (CT0001, CT0002, ... derived from
+  // cartonCount - fulfilledCartonCount) were recomputed live off the
+  // post-sync order, the same label would shift to mean a different
+  // physical carton between scans. Freezing it keeps a barcode's meaning
+  // stable for as long as this order stays open on screen.
+  const scanBaselineRef = useRef<{ remaining: Record<string, number>; itemCodes: Record<string, string> } | null>(null);
+  const getScanBaseline = () => {
+    if (!scanBaselineRef.current) {
+      const remaining: Record<string, number> = {};
+      const itemCodes: Record<string, string> = {};
+      currentOrder.items.forEach(item => {
+        // Still-PREORDER items generate no valid scan codes — nothing has
+        // physically arrived for them yet (see awaitingStockItems).
+        if (item.bookingType === 'PREORDER') return;
+        const key = item.variantId || item.articleId;
+        remaining[key] = item.cartonCount - (item.fulfilledCartonCount || 0);
+        itemCodes[key] = getItemCode(item);
+      });
+      scanBaselineRef.current = { remaining, itemCodes };
+    }
+    return scanBaselineRef.current;
+  };
+
+  // Scan → syncs to the backend the instant it's recognized. No batch, no
+  // button — the carton appears in the Dispatched pool immediately.
+  const handleCTNScan = async (raw: string) => {
     const barcode = raw.trim().toUpperCase();
-    if (!barcode) return;
-    const expected = generateExpectedCTNs();
-    if (!expected.includes(barcode)) { toast.error(`Unknown CTN: ${barcode}`); setCtnScanInput(''); return; }
-    if (scannedCTNs.has(barcode)) { toast.info(`${barcode} already scanned`); setCtnScanInput(''); return; }
-    setScannedCTNs(prev => new Set([...prev, barcode]));
+    if (!barcode || scanSyncing) return;
+    if ((currentOrder.cartonTracking || []).some(c => c.code === barcode)) {
+      toast.info(`${barcode} already scanned`); setCtnScanInput(''); return;
+    }
+    const baseline = getScanBaseline();
+    let matchedItemKey: string | null = null;
+    for (const [itemKey, code] of Object.entries(baseline.itemCodes)) {
+      const remaining = baseline.remaining[itemKey] || 0;
+      for (let n = 1; n <= remaining; n++) {
+        if (`${code}-CT${String(n).padStart(4, '0')}` === barcode) { matchedItemKey = itemKey; break; }
+      }
+      if (matchedItemKey) break;
+    }
+    if (!matchedItemKey) { toast.error(`Unknown CTN: ${barcode}`); setCtnScanInput(''); return; }
+
     setCtnScanInput('');
-    toast.success(`CTN ${barcode} scanned ✓`);
+    setScanSyncing(true);
+    try {
+      const updated = await distributorOrderService.scanCarton(currentOrder.id, barcode, matchedItemKey);
+      if (updated) { setCurrentOrder(updated); toast.success(`CTN ${barcode} scanned ✓`); }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to scan carton');
+    } finally {
+      setScanSyncing(false);
+    }
   };
 
-  const handleUpdateStatus = async (newStatus: OrderStatus) => {
+  // Transport → submits the vehicle/transporter form for exactly the
+  // checked subset of the Dispatched pool.
+  const handleSubmitTransit = async () => {
+    const codes = [...selectedTransitCodes];
+    if (codes.length === 0) { toast.error('Select at least one carton'); return; }
+    if (!dispatchForm.vehicleNo.trim()) { toast.error('Vehicle No required'); return; }
+    if (!dispatchForm.transporterName.trim()) { toast.error('Transporter Name required'); return; }
     try {
       setUploading(true);
-      const options: any = {};
-      const updated = await distributorOrderService.updateOrderStatus(currentOrder.id, newStatus, options);
+      const files: { invoice?: File; ewayBill?: File; transportBill?: File } = {};
+      if (shippingFiles.invoice)       files.invoice       = shippingFiles.invoice;
+      if (shippingFiles.ewayBill)      files.ewayBill      = shippingFiles.ewayBill;
+      if (shippingFiles.transportBill) files.transportBill = shippingFiles.transportBill;
+
+      const updated = await distributorOrderService.submitTransit(currentOrder.id, codes, {
+        vehicleNo: dispatchForm.vehicleNo.trim(),
+        transporterName: dispatchForm.transporterName.trim(),
+        lrNo: dispatchForm.lrNo.trim() || undefined,
+        eWayBillNo: dispatchForm.eWayBillNo.trim() || undefined,
+        driverName: dispatchForm.driverName.trim() || undefined,
+        driverMobile: dispatchForm.driverMobile.trim() || undefined,
+        grossWeightKg: dispatchForm.grossWeightKg ? Number(dispatchForm.grossWeightKg) : undefined,
+        files: Object.keys(files).length ? files : undefined,
+      });
       if (updated) {
         setCurrentOrder(updated);
-        toast.success(`Order marked as ${STATUS_LABELS[newStatus]}!`);
+        setDispatchForm({ vehicleNo: '', lrNo: '', transporterName: '', eWayBillNo: '', driverName: '', driverMobile: '', grossWeightKg: '' });
+        setShippingFiles({});
+        toast.success(`${codes.length} carton(s) marked In Transit`);
       }
     } catch (err: any) {
-      console.error("Failed to update status", err);
-      toast.error(err?.response?.data?.message || "Failed to update status");
+      console.error('Failed to submit transit details', err);
+      toast.error(err?.response?.data?.message || 'Failed to submit transit details');
     } finally {
       setUploading(false);
     }
   };
 
-  const handleMarkAsReceived = async () => {
+  // Receive → confirms receipt for exactly the checked subset of the
+  // In Transit pool.
+  const handleSubmitReceive = async () => {
+    const codes = [...selectedReceiveCodes];
+    if (codes.length === 0) { toast.error('Select at least one carton'); return; }
     if (!receiverName || !receiverMobile) {
       toast.error("Please provide Receiver Name and Mobile Number");
       return;
     }
     try {
       setUploading(true);
-      const options: any = { receiverName, receiverMobile };
-      if (receivingNote) options.files = { receivingNote };
-      const updated = await distributorOrderService.updateOrderStatus(currentOrder.id, OrderStatus.RECEIVED, options);
+      const updated = await distributorOrderService.receiveCartons(currentOrder.id, codes, {
+        receiverName, receiverMobile, receivingNote: receivingNote || undefined,
+      });
       if (updated) {
         setCurrentOrder(updated);
         setReceivingNote(null);
         setReceivingNotePreview(null);
         setReceiverName("");
         setReceiverMobile("");
-        toast.success("Order marked as Received!");
+        toast.success(`${codes.length} carton(s) marked Received`);
       }
     } catch (err: any) {
-      console.error("Failed to mark as received", err);
-      toast.error(err?.response?.data?.message || "Failed to mark as received");
+      console.error("Failed to receive cartons", err);
+      toast.error(err?.response?.data?.message || "Failed to receive cartons");
     } finally {
       setUploading(false);
     }
@@ -425,6 +470,71 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
       toast.info(`${key.charAt(0).toUpperCase() + key.slice(1)} added`);
     }
   };
+
+  // Vehicle/transporter details form, shown in the Transport tab for
+  // whichever cartons are currently selected (see handleSubmitTransit).
+  const renderTransportForm = () => (
+    <>
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-100">
+          <Truck size={14} className="text-amber-500" />
+          <p className="text-[10px] font-black text-slate-700 uppercase tracking-widest">Transport Details</p>
+        </div>
+        <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {[
+            { key: 'vehicleNo',       label: 'Vehicle No',         placeholder: 'e.g. MH 04 AB 1234',  required: true },
+            { key: 'transporterName', label: 'Transporter Name',   placeholder: 'e.g. Gati / BlueDart',required: true },
+            { key: 'lrNo',            label: 'LR / Consignment No',placeholder: 'e.g. LR-20240601-001',required: false },
+            { key: 'eWayBillNo',      label: 'E-Way Bill No',      placeholder: 'e.g. 1234 5678 9012', required: false },
+            { key: 'driverName',      label: 'Driver Name',        placeholder: 'e.g. Ramesh Kumar',   required: false },
+            { key: 'driverMobile',    label: 'Driver Mobile',      placeholder: 'e.g. 9876543210',     required: false },
+          ].map(f => (
+            <div key={f.key}>
+              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1">
+                {f.label} {f.required && <span className="text-rose-400">*</span>}
+              </label>
+              <input
+                type="text"
+                value={(dispatchForm as any)[f.key]}
+                onChange={e => setDispatchForm(p => ({ ...p, [f.key]: e.target.value }))}
+                placeholder={f.placeholder}
+                className={`w-full px-3 py-2 bg-white border rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium ${f.required && !(dispatchForm as any)[f.key].trim() ? 'border-rose-200' : 'border-slate-200'}`}
+              />
+            </div>
+          ))}
+          <div>
+            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Gross Weight (KG)</label>
+            <input type="number" value={dispatchForm.grossWeightKg} onChange={e => setDispatchForm(p => ({ ...p, grossWeightKg: e.target.value }))} placeholder="e.g. 120" min="0" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium" />
+          </div>
+        </div>
+      </div>
+
+      {/* Supporting Docs */}
+      <div>
+        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+          <FileText size={11} /> Supporting Documents <span className="font-normal normal-case text-slate-300">(optional)</span>
+        </p>
+        <div className="grid grid-cols-3 gap-2">
+          {([
+            { ref: invoiceInputRef,   key: 'invoice',       label: 'Tax Invoice' },
+            { ref: ewayInputRef,      key: 'ewayBill',      label: 'E-Way Bill PDF' },
+            { ref: transportInputRef, key: 'transportBill', label: 'Transport Bill' },
+          ] as const).map(d => (
+            <div key={d.key}>
+              <input type="file" ref={d.ref} className="hidden" onChange={(e) => onShippingFileSelected(d.key, e)} />
+              <button onClick={() => d.ref.current?.click()} className={`w-full flex items-center gap-2 p-2.5 rounded-xl border-2 transition-all text-left ${(shippingFiles as any)[d.key] ? 'border-emerald-400 bg-emerald-50' : 'border-dashed border-slate-200 bg-slate-50 hover:bg-slate-100'}`}>
+                {(shippingFiles as any)[d.key] ? <CheckCircle size={13} className="text-emerald-500 shrink-0" /> : <Upload size={13} className="text-slate-400 shrink-0" />}
+                <div className="min-w-0">
+                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-wider">{d.label}</p>
+                  {(shippingFiles as any)[d.key] && <p className="text-[8px] text-emerald-600 truncate font-bold">{(shippingFiles as any)[d.key].name}</p>}
+                </div>
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
 
   const onReceivingNoteSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -972,34 +1082,25 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     toast.success("Excel Proforma Invoice downloaded!");
   };
 
-  // Post-receive PARTIAL: deliveredAt is set AND is more recent than dispatchedAt
-  // Post-dispatch PARTIAL: dispatchedAt is more recent (or deliveredAt not yet set)
-  const isPostReceivePartial = currentOrder.status === OrderStatus.PARTIAL && (() => {
-    const deliveredAt = currentOrder.deliveredAt;
-    const dispatchedAt = currentOrder.dispatchedAt;
-    if (!deliveredAt) return false;
-    if (!dispatchedAt) return true;
-    return new Date(deliveredAt) >= new Date(dispatchedAt);
-  })();
-
+  // With per-carton tracking, different cartons can be at different stages
+  // at once — this progress bar shows the FURTHEST any carton has gotten,
+  // derived straight from the pools rather than a single order-wide status.
+  const isPartiallyReceived = receivedCartons.length > 0 && receivedCartons.length < totalExpectedCartons;
   const statusSteps = [
     { label: 'Booked',      icon: <Package size={16} />,     activeColor: 'bg-indigo-600' },
     { label: 'Dispatched',  icon: <Truck size={16} />,       activeColor: 'bg-indigo-600' },
     { label: 'In Transit',  icon: <Truck size={16} />,       activeColor: 'bg-indigo-600' },
-    { label: isPostReceivePartial ? 'Partial Delivered' : 'Delivered', icon: <CheckCircle size={16} />, activeColor: isPostReceivePartial ? 'bg-amber-500' : 'bg-emerald-600' },
+    { label: isPartiallyReceived ? 'Partial Delivered' : 'Delivered', icon: <CheckCircle size={16} />, activeColor: isPartiallyReceived ? 'bg-amber-500' : 'bg-emerald-600' },
   ];
 
   const currentStatusIndex = (() => {
-    switch (currentOrder.status) {
-      case OrderStatus.PENDING:   return 0;
-      case OrderStatus.BOOKED:    return 0;
-      case OrderStatus.PFD:       return 1;
-      case OrderStatus.PARTIAL:   return isPostReceivePartial ? 3 : 1;
-      case OrderStatus.RFD:       return 2;
-      case OrderStatus.RECEIVED:  return 3;
-      case OrderStatus.CANCELLED: return -1;
-      default:                    return 0;
-    }
+    if (currentOrder.status === OrderStatus.CANCELLED) return -1;
+    if (currentOrder.status === OrderStatus.PENDING) return 0;
+    if (totalExpectedCartons > 0 && receivedCartons.length >= totalExpectedCartons) return 3;
+    if (receivedCartons.length > 0) return 3; // partially received — furthest point reached
+    if (inTransitCartons.length > 0) return 2;
+    if (dispatchedCartons.length > 0) return 1;
+    return 0;
   })();
 
   const getFullUrl = (path: string | undefined) => {
@@ -1170,7 +1271,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                       {isActive && index < currentStatusIndex ? <CheckCircle size={14} /> : step.icon}
                     </div>
                     <span className={`mt-2 text-[8px] font-bold uppercase tracking-wider ${
-                      isActive ? (index === 3 && isPostReceivePartial ? 'text-amber-500' : 'text-indigo-600') : 'text-slate-400'
+                      isActive ? (index === 3 && isPartiallyReceived ? 'text-amber-500' : 'text-indigo-600') : 'text-slate-400'
                     }`}>
                       {step.label}
                     </span>
@@ -1427,6 +1528,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <p className={`font-bold text-sm leading-tight ${isItemDeleted && editMode ? 'line-through text-slate-400' : 'text-slate-900'}`}>{article?.name}</p>
                                       <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[8px] font-black text-slate-500 uppercase tracking-tighter">{variant?.color || 'N/A'}</span>
+                                      <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border ${
+                                        item.bookingType === 'PREORDER'
+                                          ? 'bg-amber-50 text-amber-600 border-amber-200'
+                                          : 'bg-emerald-50 text-emerald-600 border-emerald-200'
+                                      }`}>
+                                        {item.bookingType === 'PREORDER' ? 'Pre-Order' : 'RFD'}
+                                      </span>
                                       {editMode && (
                                         <button
                                           onClick={() => toggleDeleteItem(itemKey)}
@@ -1513,6 +1621,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <p className={`font-bold text-sm leading-tight ${isAdminItemDeleted && editMode ? 'line-through text-slate-400' : 'text-slate-900'}`}>{article?.name}</p>
                                     <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[8px] font-black text-slate-500 uppercase tracking-tighter">{variant?.color || 'N/A'}</span>
+                                    <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border ${
+                                      item.bookingType === 'PREORDER'
+                                        ? 'bg-amber-50 text-amber-600 border-amber-200'
+                                        : 'bg-emerald-50 text-emerald-600 border-emerald-200'
+                                    }`}>
+                                      {item.bookingType === 'PREORDER' ? 'Pre-Order' : 'RFD'}
+                                    </span>
                                     {editMode && (
                                       <button
                                         onClick={() => toggleDeleteItem(adminItemKey)}
@@ -1573,505 +1688,315 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                   </div>}
 
                   {(() => {
-                    const itemsInBatch = currentOrder.items.filter(item =>
-                      (item.cartonCount - (item.fulfilledCartonCount || 0)) > 0
-                    ).length;
-                    const isPartialBatch = false;
+                    if (isDistributor || !['BOOKED', 'PARTIAL', 'PFD', 'RFD'].includes(currentOrder.status)) return null;
 
-                    const _expectedCTNsForBtn = generateExpectedCTNs();
-                    const ctnReady = _expectedCTNsForBtn.length === 0 || scannedCTNs.size >= _expectedCTNsForBtn.length;
-                    const dispatchFieldsReady = !!(dispatchForm.vehicleNo.trim() && dispatchForm.transporterName.trim());
-                    const allDocsUploaded = ctnReady && dispatchFieldsReady;
+                    const tabs: { key: 'scan' | 'transport' | 'receive'; label: string; count: number }[] = [
+                      { key: 'scan',      label: 'Scan Cartons',      count: totalRemainingToScan },
+                      { key: 'transport', label: 'Transport Details', count: dispatchedCartons.length },
+                      { key: 'receive',   label: 'Confirm Receipt',   count: inTransitCartons.length },
+                    ];
 
-                    if (isDistributor || ![OrderStatus.BOOKED, OrderStatus.PARTIAL, OrderStatus.PFD, OrderStatus.RFD].includes(currentOrder.status)) return null;
+                    const dispatchedByItem = new Map<string, typeof dispatchedCartons>();
+                    dispatchedCartons.forEach(c => {
+                      if (!dispatchedByItem.has(c.itemKey)) dispatchedByItem.set(c.itemKey, []);
+                      dispatchedByItem.get(c.itemKey)!.push(c);
+                    });
+                    const inTransitByItem = new Map<string, typeof inTransitCartons>();
+                    inTransitCartons.forEach(c => {
+                      if (!inTransitByItem.has(c.itemKey)) inTransitByItem.set(c.itemKey, []);
+                      inTransitByItem.get(c.itemKey)!.push(c);
+                    });
 
                     return (
                       <div className="p-6 bg-slate-50/50 border-t border-slate-100 space-y-5">
 
-                        {/* ── BOOKED: CTN scan → Dispatch Details ── */}
-                        {currentOrder.status === OrderStatus.BOOKED && (() => {
-                          const expectedCTNs = generateExpectedCTNs();
-                          const totalExpected = expectedCTNs.length;
-                          const totalScanned  = scannedCTNs.size;
-                          const allScanned    = totalExpected === 0 || totalScanned >= totalExpected;
-                          const dispatchFieldsReady = !!(dispatchForm.vehicleNo.trim() && dispatchForm.transporterName.trim());
-                          const canConfirm = dispatchFieldsReady;
-                          return (
-                            <div className="space-y-5">
-
-                              {/* Step indicator */}
-                              <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-sm font-black shrink-0">
-                                  {showDispatchForm ? '2' : '1'}
-                                </div>
-                                <div>
-                                  <p className="text-sm font-bold text-slate-900">{showDispatchForm ? 'Dispatch Details' : 'Scan Cartons'}</p>
-                                  <p className="text-[10px] font-medium text-slate-400">
-                                    {showDispatchForm
-                                      ? `${totalScanned}/${totalExpected} cartons scanned — fill transport details to confirm`
-                                      : 'Scan CTNs to prepare for dispatch. Partial scan allowed.'}
-                                  </p>
-                                </div>
-                              </div>
-
-                              {/* ── Phase 1: CTN scan ── */}
-                              {!showDispatchForm && (
-                                <>
-                                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                                    <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
-                                      <div className="flex items-center gap-2">
-                                        <Barcode size={14} className="text-indigo-500" />
-                                        <p className="text-[10px] font-black text-slate-700 uppercase tracking-widest">CTN Out-Scan</p>
-                                      </div>
-                                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${allScanned ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                                        {totalScanned}/{totalExpected} scanned
-                                      </span>
-                                    </div>
-                                    <div className="p-4 space-y-3">
-                                      <div className="flex gap-2">
-                                        <div className="relative flex-1">
-                                          <Barcode size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                          <input
-                                            type="text"
-                                            value={ctnScanInput}
-                                            onChange={e => setCtnScanInput(e.target.value.toUpperCase())}
-                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleCTNScan(ctnScanInput); }}}
-                                            placeholder="Scan carton barcode → Enter"
-                                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-500 text-xs font-mono font-bold"
-                                            autoComplete="off"
-                                          />
-                                        </div>
-                                        <button onClick={() => handleCTNScan(ctnScanInput)} className="px-3 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black hover:bg-indigo-700 transition-all">Scan</button>
-                                      </div>
-                                      {scannedCTNs.size > 0 ? (
-                                        <div>
-                                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Scanned — {scannedCTNs.size} CTN</p>
-                                          <div className="flex flex-wrap gap-1.5">
-                                            {[...scannedCTNs].map(ctnId => (
-                                              <span key={ctnId} className="px-2 py-1 rounded-lg text-[9px] font-black font-mono border bg-emerald-500 text-white border-emerald-500">✓ {ctnId}</span>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <p className="text-[10px] text-slate-400 text-center py-2">
-                                          {totalExpected === 0 ? 'No cartons to scan' : 'No cartons scanned yet — scan to begin'}
-                                        </p>
-                                      )}
-                                    </div>
-                                  </div>
-                                  {/* PI download + Go to Dispatch button */}
-                                  <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="flex gap-2 items-center flex-wrap">
-                                      <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
-                                      <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
-                                    </div>
-                                    <button
-                                      disabled={totalScanned === 0}
-                                      onClick={() => setShowDispatchForm(true)}
-                                      className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700 transition-all shadow-md active:scale-95 disabled:opacity-50"
-                                    >
-                                      <Truck size={14} />
-                                      {allScanned ? `Go to Dispatch (${totalScanned} CTN)` : `Go to Dispatch (${totalScanned}/${totalExpected} CTN)`}
-                                    </button>
-                                  </div>
-                                </>
+                        {/* Dispatch tabs — all three usable any time, independently.
+                            No batch grouping: every scanned carton sits in one of
+                            three live pools, and Transport/Receive act on
+                            whatever subset the user checks off each time. */}
+                        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-4">
+                          {tabs.map(t => (
+                            <button
+                              key={t.key}
+                              onClick={() => setDispatchTab(t.key)}
+                              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                                dispatchTab === t.key
+                                  ? 'bg-indigo-600 text-white shadow-sm'
+                                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                              }`}
+                            >
+                              {t.label}
+                              {t.count > 0 && (
+                                <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black ${
+                                  dispatchTab === t.key ? 'bg-white/20' : 'bg-indigo-100 text-indigo-700'
+                                }`}>
+                                  {t.count}
+                                </span>
                               )}
+                            </button>
+                          ))}
+                        </div>
 
-                              {/* ── Phase 2: Dispatch Details form ── */}
-                              {showDispatchForm && (
-                                <>
-                                  {/* Scanned CTNs summary (read-only) */}
-                                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 flex items-center justify-between">
+                        {/* ── Scan tab ── */}
+                        {dispatchTab === 'scan' && (
+                          <div className="space-y-5">
+                            {totalRemainingToScan > 0 ? (
+                              <>
+                                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                                  <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
                                     <div className="flex items-center gap-2">
-                                      <Barcode size={13} className="text-indigo-500" />
-                                      <span className="text-[10px] font-black text-indigo-700 uppercase tracking-widest">{totalScanned}/{totalExpected} Cartons Scanned</span>
+                                      <Barcode size={14} className="text-indigo-500" />
+                                      <p className="text-[10px] font-black text-slate-700 uppercase tracking-widest">CTN Out-Scan</p>
                                     </div>
-                                    <button onClick={() => setShowDispatchForm(false)} className="text-[9px] font-bold text-indigo-500 hover:text-indigo-700 underline">
-                                      ← Back to Scan
-                                    </button>
+                                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                                      {totalRemainingToScan} remaining
+                                    </span>
                                   </div>
-
-                                  {/* Dispatch Details form */}
-                                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                                    <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-100">
-                                      <Truck size={14} className="text-amber-500" />
-                                      <p className="text-[10px] font-black text-slate-700 uppercase tracking-widest">Dispatch Details</p>
-                                    </div>
-                                    <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                      {[
-                                        { key: 'vehicleNo',       label: 'Vehicle No',         placeholder: 'e.g. MH 04 AB 1234',  required: true },
-                                        { key: 'transporterName', label: 'Transporter Name',   placeholder: 'e.g. Gati / BlueDart',required: true },
-                                        { key: 'lrNo',            label: 'LR / Consignment No',placeholder: 'e.g. LR-20240601-001',required: false },
-                                        { key: 'eWayBillNo',      label: 'E-Way Bill No',      placeholder: 'e.g. 1234 5678 9012', required: false },
-                                        { key: 'driverName',      label: 'Driver Name',        placeholder: 'e.g. Ramesh Kumar',   required: false },
-                                        { key: 'driverMobile',    label: 'Driver Mobile',      placeholder: 'e.g. 9876543210',     required: false },
-                                      ].map(f => (
-                                        <div key={f.key}>
-                                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1">
-                                            {f.label} {f.required && <span className="text-rose-400">*</span>}
-                                          </label>
-                                          <input
-                                            type="text"
-                                            value={(dispatchForm as any)[f.key]}
-                                            onChange={e => setDispatchForm(p => ({ ...p, [f.key]: e.target.value }))}
-                                            placeholder={f.placeholder}
-                                            className={`w-full px-3 py-2 bg-white border rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium ${f.required && !(dispatchForm as any)[f.key].trim() ? 'border-rose-200' : 'border-slate-200'}`}
-                                          />
-                                        </div>
-                                      ))}
-                                      <div>
-                                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Gross Weight (KG)</label>
-                                        <input type="number" value={dispatchForm.grossWeightKg} onChange={e => setDispatchForm(p => ({ ...p, grossWeightKg: e.target.value }))} placeholder="e.g. 120" min="0" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium" />
+                                  <div className="p-4 space-y-3">
+                                    <div className="flex gap-2">
+                                      <div className="relative flex-1">
+                                        <Barcode size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                        <input
+                                          type="text"
+                                          value={ctnScanInput}
+                                          onChange={e => setCtnScanInput(e.target.value.toUpperCase())}
+                                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleCTNScan(ctnScanInput); }}}
+                                          placeholder="Scan carton barcode → Enter"
+                                          disabled={scanSyncing}
+                                          className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-500 text-xs font-mono font-bold disabled:opacity-50"
+                                          autoComplete="off"
+                                        />
                                       </div>
+                                      <button onClick={() => handleCTNScan(ctnScanInput)} disabled={scanSyncing} className="px-3 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black hover:bg-indigo-700 transition-all disabled:opacity-50 flex items-center gap-1.5">
+                                        {scanSyncing && <Loader2 size={11} className="animate-spin" />} Scan
+                                      </button>
                                     </div>
+                                    <p className="text-[10px] text-slate-400">Scanned cartons appear below immediately and are ready for Transport right away.</p>
                                   </div>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
+                                  <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="flex items-center gap-3 p-4 bg-emerald-50 border border-emerald-100 rounded-xl">
+                                <CheckCircle size={16} className="text-emerald-500 shrink-0" />
+                                <p className="text-sm font-bold text-emerald-700">All cartons scanned.</p>
+                              </div>
+                            )}
 
-                                  {/* Supporting Docs */}
-                                  <div>
-                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                                      <FileText size={11} /> Supporting Documents <span className="font-normal normal-case text-slate-300">(optional)</span>
-                                    </p>
-                                    <div className="grid grid-cols-3 gap-2">
-                                      {([
-                                        { ref: invoiceInputRef,   key: 'invoice',       label: 'Tax Invoice' },
-                                        { ref: ewayInputRef,      key: 'ewayBill',      label: 'E-Way Bill PDF' },
-                                        { ref: transportInputRef, key: 'transportBill', label: 'Transport Bill' },
-                                      ] as const).map(d => (
-                                        <div key={d.key}>
-                                          <input type="file" ref={d.ref} className="hidden" onChange={(e) => onShippingFileSelected(d.key, e)} />
-                                          <button onClick={() => d.ref.current?.click()} className={`w-full flex items-center gap-2 p-2.5 rounded-xl border-2 transition-all text-left ${(shippingFiles as any)[d.key] ? 'border-emerald-400 bg-emerald-50' : 'border-dashed border-slate-200 bg-slate-50 hover:bg-slate-100'}`}>
-                                            {(shippingFiles as any)[d.key] ? <CheckCircle size={13} className="text-emerald-500 shrink-0" /> : <Upload size={13} className="text-slate-400 shrink-0" />}
-                                            <div className="min-w-0">
-                                              <p className="text-[9px] font-black text-slate-500 uppercase tracking-wider">{d.label}</p>
-                                              {(shippingFiles as any)[d.key] && <p className="text-[8px] text-emerald-600 truncate font-bold">{(shippingFiles as any)[d.key].name}</p>}
-                                            </div>
-                                          </button>
-                                        </div>
+                            {/* Pre-order items on this same order — not scannable until their
+                                own GRN arrives and promotes them; RFD items above are unaffected. */}
+                            {awaitingStockItems.length > 0 && (
+                              <div className="bg-amber-50/60 rounded-2xl border border-amber-200 border-dashed p-4">
+                                <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                  <Clock size={12} /> Awaiting Stock — Pre-Order ({awaitingStockItems.length})
+                                </p>
+                                <div className="space-y-1.5">
+                                  {awaitingStockItems.map((item, idx) => {
+                                    const key = item.variantId || item.articleId;
+                                    return (
+                                      <div key={idx} className="flex items-center justify-between text-[11px]">
+                                        <span className="font-bold text-amber-800">{getItemLabel(key)}</span>
+                                        <span className="text-amber-600 font-mono">{item.cartonCount} ctn</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                <p className="text-[10px] text-amber-600/80 mt-2 italic">
+                                  Becomes scannable automatically once its GRN is submitted.
+                                </p>
+                              </div>
+                            )}
+
+                            {dispatchedCartons.length > 0 && (
+                              <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                                  Dispatched — awaiting transport ({dispatchedCartons.length})
+                                </p>
+                                {[...dispatchedByItem.entries()].map(([itemKey, cartons]) => (
+                                  <div key={itemKey} className="mb-2 last:mb-0">
+                                    <p className="text-[10px] font-bold text-slate-500 mb-1">{getItemLabel(itemKey)}</p>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {cartons.map(c => (
+                                        <span key={c.code} className="px-2 py-1 rounded-lg text-[9px] font-black font-mono border bg-amber-50 text-amber-700 border-amber-200">{c.code}</span>
                                       ))}
                                     </div>
                                   </div>
-
-                                  {/* Confirm Dispatch button */}
-                                  <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="flex gap-2 items-center flex-wrap">
-                                      <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
-                                      <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
-                                      {!canConfirm && <span className="flex items-center gap-1 text-[9px] font-bold text-amber-600"><AlertCircle size={10} /> Fill required dispatch fields</span>}
-                                    </div>
-                                    <button
-                                      disabled={uploading || !canConfirm}
-                                      onClick={handleAllocateAndProceed}
-                                      className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700 transition-all shadow-md active:scale-95 disabled:opacity-50"
-                                    >
-                                      {uploading ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
-                                      {allScanned ? 'Confirm Full Dispatch' : `Confirm Partial Dispatch (${totalScanned}/${totalExpected})`}
-                                    </button>
-                                  </div>
-                                </>
-                              )}
-
-                            </div>
-                          );
-                        })()}
-
-                        {/* ── PARTIAL (post-dispatch): dispatch summary + In Transit ── */}
-                        {currentOrder.status === OrderStatus.PARTIAL && !isPostReceivePartial && (() => {
-                          const dispatchCard = (currentOrder.vehicleNo || currentOrder.lrNo || currentOrder.transporterName) ? (
-                            <div className="bg-teal-50 border border-teal-100 rounded-xl p-3">
-                              <p className="text-[9px] font-black text-teal-600 uppercase tracking-widest mb-2 flex items-center gap-1"><Truck size={11} /> Dispatch Info</p>
-                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[10px]">
-                                {currentOrder.vehicleNo && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Vehicle</span><p className="font-black text-slate-700 font-mono">{currentOrder.vehicleNo}</p></div>}
-                                {currentOrder.transporterName && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Transporter</span><p className="font-black text-slate-700">{currentOrder.transporterName}</p></div>}
-                                {currentOrder.lrNo && <div><span className="text-slate-400 font-bold uppercase text-[9px]">LR / Consignment</span><p className="font-black text-slate-700 font-mono">{currentOrder.lrNo}</p></div>}
-                                {currentOrder.eWayBillNo && <div><span className="text-slate-400 font-bold uppercase text-[9px]">E-Way Bill</span><p className="font-black text-slate-700 font-mono">{currentOrder.eWayBillNo}</p></div>}
-                                {currentOrder.driverName && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Driver</span><p className="font-black text-slate-700">{currentOrder.driverName}{currentOrder.driverMobile ? ` · ${currentOrder.driverMobile}` : ''}</p></div>}
-                                {currentOrder.dispatchedAt && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Dispatched At</span><p className="font-black text-slate-700">{new Date(currentOrder.dispatchedAt).toLocaleString('en-IN', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}</p></div>}
-                                {currentOrder.outScannedCartons && currentOrder.outScannedCartons.length > 0 && (
-                                  <div className="col-span-2 sm:col-span-3"><span className="text-slate-400 font-bold uppercase text-[9px]">Out-Scanned ({currentOrder.outScannedCartons.length})</span>
-                                    <div className="flex flex-wrap gap-1 mt-1">{currentOrder.outScannedCartons.map(c => <span key={c} className="px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded-md font-mono text-[9px] font-bold">{c}</span>)}</div>
-                                  </div>
-                                )}
+                                ))}
                               </div>
-                            </div>
-                          ) : null;
-                          return (
-                            <div className="space-y-4">
-                              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-full bg-amber-500 text-white flex items-center justify-center text-sm font-black shrink-0">2</div>
-                                  <div>
-                                    <p className="text-sm font-bold text-slate-900">Mark as In Transit</p>
-                                    <p className="text-[10px] font-medium text-slate-400">Partial cartons dispatched — mark as In Transit when picked up by carrier.</p>
-                                  </div>
-                                </div>
-                                <div className="flex gap-2 shrink-0">
-                                  <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
-                                  <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
-                                </div>
-                              </div>
-                              {dispatchCard}
-                              <div className="flex justify-end">
-                                <button disabled={uploading} onClick={() => handleUpdateStatus(OrderStatus.RFD)} className="flex items-center gap-2 px-5 py-2.5 bg-amber-500 text-white rounded-xl font-bold text-xs hover:bg-amber-600 transition-all shadow-md active:scale-95">
-                                  {uploading ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />} Mark as In Transit
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })()}
-
-                        {/* ── PFD: dispatch summary + In Transit ── */}
-                        {currentOrder.status === OrderStatus.PFD && (() => {
-                          const dispatchCard = (currentOrder.vehicleNo || currentOrder.lrNo || currentOrder.transporterName) ? (
-                            <div className="bg-teal-50 border border-teal-100 rounded-xl p-3">
-                              <p className="text-[9px] font-black text-teal-600 uppercase tracking-widest mb-2 flex items-center gap-1"><Truck size={11} /> Dispatch Info</p>
-                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[10px]">
-                                {currentOrder.vehicleNo && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Vehicle</span><p className="font-black text-slate-700 font-mono">{currentOrder.vehicleNo}</p></div>}
-                                {currentOrder.transporterName && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Transporter</span><p className="font-black text-slate-700">{currentOrder.transporterName}</p></div>}
-                                {currentOrder.lrNo && <div><span className="text-slate-400 font-bold uppercase text-[9px]">LR / Consignment</span><p className="font-black text-slate-700 font-mono">{currentOrder.lrNo}</p></div>}
-                                {currentOrder.eWayBillNo && <div><span className="text-slate-400 font-bold uppercase text-[9px]">E-Way Bill</span><p className="font-black text-slate-700 font-mono">{currentOrder.eWayBillNo}</p></div>}
-                                {currentOrder.driverName && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Driver</span><p className="font-black text-slate-700">{currentOrder.driverName}{currentOrder.driverMobile ? ` · ${currentOrder.driverMobile}` : ''}</p></div>}
-                                {currentOrder.dispatchedAt && <div><span className="text-slate-400 font-bold uppercase text-[9px]">Dispatched At</span><p className="font-black text-slate-700">{new Date(currentOrder.dispatchedAt).toLocaleString('en-IN', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}</p></div>}
-                                {currentOrder.outScannedCartons && currentOrder.outScannedCartons.length > 0 && (
-                                  <div className="col-span-2 sm:col-span-3"><span className="text-slate-400 font-bold uppercase text-[9px]">Out-Scanned ({currentOrder.outScannedCartons.length})</span>
-                                    <div className="flex flex-wrap gap-1 mt-1">{currentOrder.outScannedCartons.map(c => <span key={c} className="px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded-md font-mono text-[9px] font-bold">{c}</span>)}</div>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ) : null;
-                          return (
-                            <div className="space-y-4">
-                              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-full bg-teal-500 text-white flex items-center justify-center text-sm font-black shrink-0">2</div>
-                                  <div>
-                                    <p className="text-sm font-bold text-slate-900">Mark as In Transit</p>
-                                    <p className="text-[10px] font-medium text-slate-400">Goods dispatched — click when picked up by carrier.</p>
-                                  </div>
-                                </div>
-                                <div className="flex gap-2 shrink-0">
-                                  <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
-                                  <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
-                                </div>
-                              </div>
-                              {dispatchCard}
-                              <div className="flex justify-end">
-                                <button disabled={uploading} onClick={() => handleUpdateStatus(OrderStatus.RFD)} className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 text-white rounded-xl font-bold text-xs hover:bg-teal-700 transition-all shadow-md active:scale-95">
-                                  {uploading ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />} Mark as In Transit
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })()}
-
-                        {/* ── RFD: receiver details + Received / Partial Received ── */}
-                        {currentOrder.status === OrderStatus.RFD && (
-                          <div className="space-y-4">
-                            <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-orange-500 text-white flex items-center justify-center text-sm font-black shrink-0">3</div>
-                              <div>
-                                <p className="text-sm font-bold text-slate-900">Confirm Receipt</p>
-                                <p className="text-[10px] font-medium text-slate-400">Enter receiver details and confirm receipt of goods.</p>
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                              <div>
-                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-wider block mb-1">Receiver Name <span className="text-rose-400">*</span></label>
-                                <input type="text" placeholder="e.g. Ramesh Kumar" value={receiverName} onChange={e => setReceiverName(e.target.value)} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-400/20 focus:border-orange-400 text-xs font-medium" />
-                              </div>
-                              <div>
-                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-wider block mb-1">Mobile Number <span className="text-rose-400">*</span></label>
-                                <input type="tel" placeholder="e.g. 9876543210" value={receiverMobile} onChange={e => setReceiverMobile(e.target.value)} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-400/20 focus:border-orange-400 text-xs font-medium" />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-[9px] font-black text-slate-400 uppercase tracking-wider block mb-1">Receiving Note <span className="font-normal normal-case text-slate-300">(optional)</span></label>
-                              <input type="file" ref={receivingNoteInputRef} className="hidden" onChange={onReceivingNoteSelected} />
-                              <button onClick={() => receivingNoteInputRef.current?.click()} className={`w-full flex items-center gap-2 p-2.5 rounded-xl border-2 transition-all text-left ${receivingNote ? 'border-emerald-400 bg-emerald-50' : 'border-dashed border-slate-200 bg-slate-50 hover:bg-slate-100'}`}>
-                                {receivingNote ? <CheckCircle size={13} className="text-emerald-500 shrink-0" /> : <Upload size={13} className="text-slate-400 shrink-0" />}
-                                <span className="text-[10px] font-bold text-slate-500 uppercase">{receivingNote ? receivingNote.name : 'Upload Receiving Note'}</span>
-                              </button>
-                            </div>
-                            <div className="flex justify-end pt-1">
-                              <button
-                                disabled={uploading || !receiverName.trim() || !receiverMobile.trim()}
-                                onClick={handleMarkAsReceived}
-                                className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-xs hover:bg-emerald-700 transition-all shadow-md active:scale-95 disabled:opacity-50"
-                              >
-                                {uploading ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />} Mark as Received
-                              </button>
-                            </div>
+                            )}
                           </div>
                         )}
 
-                        {/* ── PARTIAL (post-receive): dispatch remaining cartons ── */}
-                        {isPostReceivePartial && (() => {
-                          const expectedCTNs = generateExpectedCTNs();
-                          const totalExpected = expectedCTNs.length;
-                          const totalScanned  = scannedCTNs.size;
-                          const allScanned    = totalExpected === 0 || totalScanned >= totalExpected;
-                          const dispatchFieldsReady = !!(dispatchForm.vehicleNo.trim() && dispatchForm.transporterName.trim());
-                          const canConfirm = dispatchFieldsReady;
-
-                          if (totalExpected === 0) return (
-                            <div className="flex items-center gap-3 p-4 bg-emerald-50 border border-emerald-100 rounded-xl">
-                              <CheckCircle size={16} className="text-emerald-500 shrink-0" />
-                              <p className="text-sm font-bold text-emerald-700">All cartons have been delivered.</p>
-                            </div>
-                          );
-
-                          return (
-                            <div className="space-y-5">
-                              {/* Previous delivery summary */}
-                              {currentOrder.fulfillmentHistory && currentOrder.fulfillmentHistory.length > 0 && (
-                                <div className="bg-amber-50 border border-amber-100 rounded-xl p-3">
-                                  <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-1.5 flex items-center gap-1"><Package size={11} /> Previously Delivered</p>
-                                  <div className="flex flex-wrap gap-3 text-[10px]">
-                                    {currentOrder.fulfillmentHistory.map((b: any, i: number) => (
-                                      <span key={i} className="font-bold text-amber-800">Batch {b.batchNumber}: {b.totalCartons} CTN · {b.totalPairs} prs</span>
-                                    ))}
-                                  </div>
-                                  <p className="text-[10px] font-bold text-amber-700 mt-1">{totalExpected} carton{totalExpected !== 1 ? 's' : ''} remaining</p>
-                                </div>
-                              )}
-
-                              <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-sm font-black shrink-0">
-                                  {showDispatchForm ? '2' : '1'}
-                                </div>
-                                <div>
-                                  <p className="text-sm font-bold text-slate-900">{showDispatchForm ? 'Dispatch Details' : 'Scan Remaining Cartons'}</p>
-                                  <p className="text-[10px] font-medium text-slate-400">
-                                    {showDispatchForm
-                                      ? `${totalScanned}/${totalExpected} cartons scanned — fill transport details to confirm`
-                                      : `Scan remaining ${totalExpected} carton${totalExpected !== 1 ? 's' : ''} to dispatch.`}
+                        {/* ── Transport tab ── */}
+                        {dispatchTab === 'transport' && (
+                          <div className="space-y-5">
+                            {dispatchedCartons.length === 0 ? (
+                              <div className="text-center py-8 text-slate-400 text-xs font-medium bg-white rounded-2xl border border-dashed border-slate-200">
+                                Nothing dispatched yet — scan cartons in the Scan tab first.
+                              </div>
+                            ) : (
+                              <>
+                                <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                                    Select cartons to send ({selectedTransitCodes.size}/{dispatchedCartons.length})
                                   </p>
+                                  {[...dispatchedByItem.entries()].map(([itemKey, cartons]) => (
+                                    <div key={itemKey} className="mb-3 last:mb-0">
+                                      <p className="text-[10px] font-bold text-slate-500 mb-1">{getItemLabel(itemKey)}</p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {cartons.map(c => {
+                                          const checked = selectedTransitCodes.has(c.code);
+                                          return (
+                                            <button
+                                              key={c.code}
+                                              onClick={() => setSelectedTransitCodes(prev => {
+                                                const next = new Set(prev);
+                                                if (next.has(c.code)) next.delete(c.code); else next.add(c.code);
+                                                return next;
+                                              })}
+                                              className={`px-2 py-1 rounded-lg text-[9px] font-black font-mono border transition-all ${
+                                                checked ? 'bg-teal-500 text-white border-teal-500' : 'bg-slate-50 text-slate-500 border-slate-200'
+                                              }`}
+                                            >
+                                              {checked ? '✓ ' : ''}{c.code}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {renderTransportForm()}
+
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div className="flex gap-2 items-center flex-wrap">
+                                    <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
+                                    <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
+                                  </div>
+                                  <button
+                                    disabled={uploading || selectedTransitCodes.size === 0 || !dispatchForm.vehicleNo.trim() || !dispatchForm.transporterName.trim()}
+                                    onClick={handleSubmitTransit}
+                                    className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 text-white rounded-xl font-bold text-xs hover:bg-teal-700 transition-all shadow-md active:scale-95 disabled:opacity-50"
+                                  >
+                                    {uploading ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
+                                    Send {selectedTransitCodes.size} Carton{selectedTransitCodes.size !== 1 ? 's' : ''} to Transit
+                                  </button>
+                                </div>
+                              </>
+                            )}
+
+                            {currentOrder.transitShipments && currentOrder.transitShipments.length > 0 && (
+                              <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Shipment History</p>
+                                <div className="space-y-2">
+                                  {currentOrder.transitShipments.map((s, i) => (
+                                    <div key={s.id || i} className="flex items-center justify-between text-[10px] bg-slate-50 rounded-lg px-3 py-2">
+                                      <span className="font-bold text-slate-700">{s.cartonCodes.length} CTN via {s.vehicleNo || '—'} ({s.transporterName || '—'})</span>
+                                      <span className="text-slate-400">{s.createdAt ? new Date(s.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                                    </div>
+                                  ))}
                                 </div>
                               </div>
+                            )}
+                          </div>
+                        )}
 
-                              {/* Phase 1: CTN scan */}
-                              {!showDispatchForm && (
-                                <>
-                                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                                    <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
-                                      <div className="flex items-center gap-2">
-                                        <Barcode size={14} className="text-indigo-500" />
-                                        <p className="text-[10px] font-black text-slate-700 uppercase tracking-widest">CTN Out-Scan (Remaining)</p>
+                        {/* ── Receive tab ── */}
+                        {dispatchTab === 'receive' && (
+                          <div className="space-y-5">
+                            {inTransitCartons.length === 0 ? (
+                              <div className="text-center py-8 text-slate-400 text-xs font-medium bg-white rounded-2xl border border-dashed border-slate-200">
+                                Nothing In Transit yet.
+                              </div>
+                            ) : (
+                              <>
+                                <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                                    Select cartons received ({selectedReceiveCodes.size}/{inTransitCartons.length})
+                                  </p>
+                                  {[...inTransitByItem.entries()].map(([itemKey, cartons]) => (
+                                    <div key={itemKey} className="mb-3 last:mb-0">
+                                      <p className="text-[10px] font-bold text-slate-500 mb-1">{getItemLabel(itemKey)}</p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {cartons.map(c => {
+                                          const checked = selectedReceiveCodes.has(c.code);
+                                          return (
+                                            <button
+                                              key={c.code}
+                                              onClick={() => setSelectedReceiveCodes(prev => {
+                                                const next = new Set(prev);
+                                                if (next.has(c.code)) next.delete(c.code); else next.add(c.code);
+                                                return next;
+                                              })}
+                                              className={`px-2 py-1 rounded-lg text-[9px] font-black font-mono border transition-all ${
+                                                checked ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-slate-50 text-slate-500 border-slate-200'
+                                              }`}
+                                            >
+                                              {checked ? '✓ ' : ''}{c.code}
+                                            </button>
+                                          );
+                                        })}
                                       </div>
-                                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${allScanned ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                                        {totalScanned}/{totalExpected} scanned
-                                      </span>
                                     </div>
-                                    <div className="p-4 space-y-3">
-                                      <div className="flex gap-2">
-                                        <div className="relative flex-1">
-                                          <Barcode size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                          <input
-                                            type="text"
-                                            value={ctnScanInput}
-                                            onChange={e => setCtnScanInput(e.target.value.toUpperCase())}
-                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleCTNScan(ctnScanInput); }}}
-                                            placeholder="Scan carton barcode → Enter"
-                                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-500 text-xs font-mono font-bold"
-                                            autoComplete="off"
-                                          />
-                                        </div>
-                                        <button onClick={() => handleCTNScan(ctnScanInput)} className="px-3 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black hover:bg-indigo-700 transition-all">Scan</button>
-                                      </div>
-                                      {scannedCTNs.size > 0 ? (
-                                        <div>
-                                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Scanned — {scannedCTNs.size} CTN</p>
-                                          <div className="flex flex-wrap gap-1.5">
-                                            {[...scannedCTNs].map(ctnId => (
-                                              <span key={ctnId} className="px-2 py-1 rounded-lg text-[9px] font-black font-mono border bg-emerald-500 text-white border-emerald-500">✓ {ctnId}</span>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <p className="text-[10px] text-slate-400 text-center py-2">No cartons scanned yet — scan to begin</p>
-                                      )}
+                                  ))}
+                                </div>
+
+                                <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
+                                  <p className="text-[10px] font-black text-slate-700 uppercase tracking-widest flex items-center gap-1.5"><UserIcon size={12} /> Receiver Details</p>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Receiver Name <span className="text-rose-400">*</span></label>
+                                      <input type="text" value={receiverName} onChange={e => setReceiverName(e.target.value)} placeholder="e.g. Ramesh Kumar" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium" />
+                                    </div>
+                                    <div>
+                                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Receiver Mobile <span className="text-rose-400">*</span></label>
+                                      <input type="tel" value={receiverMobile} onChange={e => setReceiverMobile(e.target.value)} placeholder="e.g. 9876543210" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium" />
                                     </div>
                                   </div>
-                                  <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="flex gap-2">
-                                      <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
-                                      <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
-                                    </div>
-                                    <button
-                                      disabled={totalScanned === 0}
-                                      onClick={() => setShowDispatchForm(true)}
-                                      className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700 transition-all shadow-md active:scale-95 disabled:opacity-50"
-                                    >
-                                      <Truck size={14} />
-                                      {allScanned ? `Go to Dispatch (${totalScanned} CTN)` : `Go to Dispatch (${totalScanned}/${totalExpected} CTN)`}
+                                  <div>
+                                    <input type="file" ref={receivingNoteInputRef} className="hidden" onChange={onReceivingNoteSelected} />
+                                    <button onClick={() => receivingNoteInputRef.current?.click()} className={`w-full flex items-center gap-2 p-2.5 rounded-xl border-2 transition-all text-left ${receivingNote ? 'border-emerald-400 bg-emerald-50' : 'border-dashed border-slate-200 bg-slate-50 hover:bg-slate-100'}`}>
+                                      {receivingNote ? <CheckCircle size={13} className="text-emerald-500 shrink-0" /> : <Upload size={13} className="text-slate-400 shrink-0" />}
+                                      <div className="min-w-0">
+                                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-wider">Receiving Note <span className="font-normal normal-case text-slate-300">(optional)</span></p>
+                                        {receivingNote && <p className="text-[8px] text-emerald-600 truncate font-bold">{receivingNote.name}</p>}
+                                      </div>
                                     </button>
                                   </div>
-                                </>
-                              )}
+                                </div>
 
-                              {/* Phase 2: Dispatch Details form */}
-                              {showDispatchForm && (
-                                <>
-                                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 flex items-center justify-between">
-                                    <div className="flex items-center gap-2">
-                                      <Barcode size={13} className="text-indigo-500" />
-                                      <span className="text-[10px] font-black text-indigo-700 uppercase tracking-widest">{totalScanned}/{totalExpected} Cartons Scanned</span>
+                                <div className="flex justify-end">
+                                  <button
+                                    disabled={uploading || selectedReceiveCodes.size === 0 || !receiverName.trim() || !receiverMobile.trim()}
+                                    onClick={handleSubmitReceive}
+                                    className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-xs hover:bg-emerald-700 transition-all shadow-md active:scale-95 disabled:opacity-50"
+                                  >
+                                    {uploading ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+                                    Confirm Receipt for {selectedReceiveCodes.size} Carton{selectedReceiveCodes.size !== 1 ? 's' : ''}
+                                  </button>
+                                </div>
+                              </>
+                            )}
+
+                            {currentOrder.fulfillmentHistory && currentOrder.fulfillmentHistory.length > 0 && (
+                              <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Receipt History</p>
+                                <div className="space-y-2">
+                                  {currentOrder.fulfillmentHistory.map((b, i) => (
+                                    <div key={b.id || i} className="flex items-center justify-between text-[10px] bg-slate-50 rounded-lg px-3 py-2">
+                                      <span className="font-bold text-slate-700">{b.totalCartons} CTN received by {b.receiverName || '—'}</span>
+                                      <span className="text-slate-400">{b.date ? new Date(b.date).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span>
                                     </div>
-                                    <button onClick={() => setShowDispatchForm(false)} className="text-[9px] font-bold text-indigo-500 hover:text-indigo-700 underline">← Back to Scan</button>
-                                  </div>
-                                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                                    <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-100">
-                                      <Truck size={14} className="text-amber-500" />
-                                      <p className="text-[10px] font-black text-slate-700 uppercase tracking-widest">Dispatch Details</p>
-                                    </div>
-                                    <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                      {[
-                                        { key: 'vehicleNo',       label: 'Vehicle No',         placeholder: 'e.g. MH 04 AB 1234',  required: true },
-                                        { key: 'transporterName', label: 'Transporter Name',   placeholder: 'e.g. Gati / BlueDart',required: true },
-                                        { key: 'lrNo',            label: 'LR / Consignment No',placeholder: 'e.g. LR-20240601-001',required: false },
-                                        { key: 'eWayBillNo',      label: 'E-Way Bill No',      placeholder: 'e.g. 1234 5678 9012', required: false },
-                                        { key: 'driverName',      label: 'Driver Name',        placeholder: 'e.g. Ramesh Kumar',   required: false },
-                                        { key: 'driverMobile',    label: 'Driver Mobile',      placeholder: 'e.g. 9876543210',     required: false },
-                                      ].map(f => (
-                                        <div key={f.key}>
-                                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1">
-                                            {f.label} {f.required && <span className="text-rose-400">*</span>}
-                                          </label>
-                                          <input
-                                            type="text"
-                                            value={(dispatchForm as any)[f.key]}
-                                            onChange={e => setDispatchForm(p => ({ ...p, [f.key]: e.target.value }))}
-                                            placeholder={f.placeholder}
-                                            className={`w-full px-3 py-2 bg-white border rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium ${f.required && !(dispatchForm as any)[f.key].trim() ? 'border-rose-200' : 'border-slate-200'}`}
-                                          />
-                                        </div>
-                                      ))}
-                                      <div>
-                                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Gross Weight (KG)</label>
-                                        <input type="number" value={dispatchForm.grossWeightKg} onChange={e => setDispatchForm(p => ({ ...p, grossWeightKg: e.target.value }))} placeholder="e.g. 120" min="0" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400/20 focus:border-indigo-400 text-xs font-medium" />
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="flex gap-2 items-center flex-wrap">
-                                      <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
-                                      <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>
-                                      {!canConfirm && <span className="flex items-center gap-1 text-[9px] font-bold text-amber-600"><AlertCircle size={10} /> Fill required dispatch fields</span>}
-                                    </div>
-                                    <button
-                                      disabled={uploading || !canConfirm}
-                                      onClick={handleAllocateAndProceed}
-                                      className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700 transition-all shadow-md active:scale-95 disabled:opacity-50"
-                                    >
-                                      {uploading ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
-                                      {allScanned ? 'Confirm Full Dispatch' : `Confirm Partial Dispatch (${totalScanned}/${totalExpected})`}
-                                    </button>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          );
-                        })()}
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
                       </div>
                     );

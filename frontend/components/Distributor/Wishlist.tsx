@@ -74,13 +74,43 @@ const PreOrderCard: React.FC<{
     0
   );
 
+  // PO-capped booking: a pre-order can only claim what the Purchase Orders
+  // planned for this variant minus what's already pre-booked by anyone
+  // (backend enforces the same cap on order creation).
+  const plannedPairs = Number(selectedVariant?.plannedPairs) || 0;
+  const preBookedPairs = Number(selectedVariant?.preBookedPairs) || 0;
+  const remainingPairs = Math.max(0, plannedPairs - preBookedPairs);
+  const maxCartons =
+    totalPairsPerCarton > 0
+      ? Math.floor(remainingPairs / totalPairsPerCarton)
+      : 0;
+  const noPoYet = plannedPairs === 0;
+  const fullyBooked = !noPoYet && maxCartons === 0;
+
   const [cartonCount, setCartonCount] = useState(1);
   const [placing, setPlacing] = useState(false);
   const [placed, setPlaced] = useState(false);
 
+  // Reset/clamp when switching variants — each variant has its own cap.
+  useEffect(() => {
+    setCartonCount(1);
+  }, [selectedVariantId]);
+
   const handlePlacePreOrder = async () => {
     if (!selectedVariantId) {
       toast.error("Please select a variant");
+      return;
+    }
+    if (maxCartons === 0) {
+      toast.error(
+        noPoYet
+          ? "This item cannot be pre-booked yet — no Purchase Order raised"
+          : "This variant is fully pre-booked"
+      );
+      return;
+    }
+    if (cartonCount > maxCartons) {
+      toast.error(`Only ${maxCartons} carton(s) can still be pre-booked`);
       return;
     }
 
@@ -347,9 +377,10 @@ const PreOrderCard: React.FC<{
                   <span className="text-sm font-black text-slate-900 leading-none">{cartonCount}</span>
                </div>
 
-               <button 
-                 onClick={() => setCartonCount(prev => prev + 1)}
-                 className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-amber-600 transition-all"
+               <button
+                 onClick={() => setCartonCount(prev => Math.min(Math.max(1, maxCartons), prev + 1))}
+                 className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-amber-600 transition-all disabled:opacity-20"
+                 disabled={cartonCount >= maxCartons}
                >
                  <Plus size={14} />
                </button>
@@ -357,7 +388,7 @@ const PreOrderCard: React.FC<{
 
             <button
               onClick={handlePlacePreOrder}
-              disabled={cartonCount <= 0 || placing || placed}
+              disabled={cartonCount <= 0 || maxCartons === 0 || placing || placed}
               className={`flex-1 rounded-2xl px-6 font-black text-sm transition-all shadow-lg flex items-center justify-center gap-2 active:scale-95 disabled:cursor-not-allowed
                 ${placed
                   ? 'bg-emerald-500 shadow-emerald-100 text-white'
@@ -368,11 +399,25 @@ const PreOrderCard: React.FC<{
                 <><Loader2 size={16} className="animate-spin" /><span>Placing...</span></>
               ) : placed ? (
                 <><CheckCircle2 size={16} /><span>Pre-Order Placed!</span></>
+              ) : noPoYet ? (
+                <><Star size={16} /><span>No PO Raised Yet</span></>
+              ) : fullyBooked ? (
+                <><Star size={16} /><span>Fully Pre-Booked</span></>
               ) : (
                 <><Star size={16} fill="currentColor" /><span>Pre-Order Now</span></>
               )}
             </button>
           </div>
+
+          {/* PO-capped availability */}
+          {maxCartons > 0 && (
+            <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest text-center -mt-1">
+              {maxCartons} carton{maxCartons > 1 ? "s" : ""} bookable
+              {preBookedPairs > 0 && (
+                <span className="text-slate-400"> · {Math.floor(preBookedPairs / Math.max(1, totalPairsPerCarton))} already booked</span>
+              )}
+            </p>
+          )}
 
           <div className="bg-amber-50/50 rounded-2xl p-4 border border-amber-100 flex items-center gap-3">
             <Clock size={16} className="text-amber-600 shrink-0" />
@@ -421,7 +466,7 @@ const mapDocToArticle = (doc: any): Article => ({
   soleColor: doc.soleColor,
   productCategory: doc.categoryId?.name,
   brand: doc.brandId?.name,
-  status: doc.stage || "WISHLIST",
+  status: doc.stage || "PREORDER",
   expectedDate: doc.expectedAvailableDate,
   selectedColors: doc.productColors || [],
   selectedSizes: doc.sizeRanges || [],
@@ -445,6 +490,14 @@ const mapDocToArticle = (doc: any): Article => ({
     tag: v.tag,
     onlineMrp: v.onlineMrp,
     offlineMrp: v.offlineMrp,
+    stage: v.stage,
+    expectedAvailableDate: v.expectedAvailableDate,
+    // PO-derived planned + already pre-booked pairs (backend-injected) —
+    // caps how much can still be pre-booked.
+    poPlannedQty: v.poPlannedQty || {},
+    plannedPairs: v.plannedPairs || 0,
+    preBookedPairs: v.preBookedPairs || 0,
+    poPendingPairs: v.poPendingPairs || 0,
   })),
 });
 
@@ -472,7 +525,7 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlaceP
       const res = await masterCatalogService.listMasterItems({
         page: 1,
         limit: BATCH_SIZE,
-        stage: "WISHLIST",
+        stage: "PREORDER",
         q: searchQuery || undefined,
         gender: genderFilter !== "ALL" ? genderFilter : undefined,
         sort: sortOption,
@@ -503,7 +556,7 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlaceP
       const res = await masterCatalogService.listMasterItems({
         page: nextPage,
         limit: BATCH_SIZE,
-        stage: "WISHLIST",
+        stage: "PREORDER",
         q: searchQuery || undefined,
         gender: genderFilter !== "ALL" ? genderFilter : undefined,
         sort: sortOption,
@@ -550,18 +603,25 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlaceP
 
   const colorGroups = useMemo(() => {
     return backendArticles.flatMap((article) => {
-      const variants = article.variants || [];
+      // A variant that's already had its own GRN is genuinely in stock now —
+      // it belongs in Shop as a regular purchase, not here as a preorder.
+      // Only variants still effectively PREORDER stay on this page.
+      const variants = (article.variants || []).filter(
+        (v) => (v.stage || article.status) !== "AVAILABLE"
+      );
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
         if (!groups[v.color]) groups[v.color] = [];
         groups[v.color].push(v);
       });
 
-      return Object.entries(groups).map(([color, colorVariants]) => ({
-        article,
-        color,
-        variants: colorVariants,
-      }));
+      return Object.entries(groups)
+        .filter(([, colorVariants]) => colorVariants.length > 0)
+        .map(([color, colorVariants]) => ({
+          article,
+          color,
+          variants: colorVariants,
+        }));
     });
   }, [backendArticles]);
 

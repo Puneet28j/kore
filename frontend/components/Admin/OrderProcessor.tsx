@@ -337,6 +337,8 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           {(
             [
               "ALL",
+              "PRE_BOOKED",
+              "CONFIRMED",
               "PENDING",
               "BOOKED",
               "PFD",
@@ -424,6 +426,11 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
                           {order.distributorName}
                         </span>
                         <StatusBadge status={order.status} />
+                        {order.items?.some((i) => i.bookingType === "PREORDER") && (
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-amber-50 text-amber-600 border border-amber-100">
+                            Has Pre-Order Items
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-x-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
@@ -557,6 +564,8 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
 };
 
 const STATUS_LABELS: Record<string, string> = {
+  [OrderStatus.PRE_BOOKED]: "Pre-Booked",
+  [OrderStatus.CONFIRMED]: "Confirmed",
   [OrderStatus.PENDING]: "Pending Confirmation",
   [OrderStatus.BOOKED]: "Booked",
   [OrderStatus.PFD]: "Dispatched",
@@ -568,6 +577,12 @@ const STATUS_LABELS: Record<string, string> = {
 
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   const config: Record<string, { color: string }> = {
+    [OrderStatus.PRE_BOOKED]: {
+      color: "bg-amber-50 text-amber-700 border-amber-200",
+    },
+    [OrderStatus.CONFIRMED]: {
+      color: "bg-indigo-50 text-indigo-700 border-indigo-200",
+    },
     [OrderStatus.PENDING]: {
       color: "bg-slate-100 text-slate-600 border-slate-200",
     },

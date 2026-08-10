@@ -2660,7 +2660,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                                   <span className="text-[10px] text-slate-400 font-mono">{option.sku}{option.brand ? ` · ${option.brand}` : ""}</span>
                                   {option.gender && <span className="text-[9px] px-1 py-0.5 bg-slate-100 text-slate-500 rounded font-bold">{option.gender}</span>}
                                   {option.assortment && <span className="text-[9px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded font-bold border border-indigo-100">{option.assortment}</span>}
-                                  {option.status === "WISHLIST" && <span className="text-[9px] px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded font-bold border border-amber-200">Pre-Order</span>}
+                                  {option.status === "PREORDER" && <span className="text-[9px] px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded font-bold border border-amber-200">Pre-Order</span>}
                                 </div>
                               </div>
                               <span className={`ml-auto text-xs font-bold shrink-0 ${selected ? "text-indigo-600" : "text-slate-500"}`}>₹{option.basePrice}</span>

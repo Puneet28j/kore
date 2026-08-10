@@ -13,21 +13,24 @@ interface SizeCell { qty: number; }
 interface Variant {
   variantId: string;
   itemName: string;
+  sku: string;
   color: string;
   sizeRange: string;
   mrp: number;
+  costPrice: number;
   listingStatus: string;
   sizeQuantities: Record<string, number>;
   sizeStock: Record<string, SizeCell>;
   totalStock: number;
+  booked: number;
 }
 
 interface StockRow {
   articleId: string;
   articleName: string;
-  sku: string;
   category: string;
   brand: string;
+  company: string;
   totalVariants: number;
   totalStock: number;
   variants: Variant[];
@@ -64,42 +67,63 @@ const healthConfig: Record<string, { label: string; icon: React.ReactNode; chipC
   },
 };
 
+// Pairs-per-carton convention used throughout the app.
+const PAIRS_PER_CTN = 24;
+const toCtn = (pairs: number) => Math.floor((pairs || 0) / PAIRS_PER_CTN);
+
 const StockReport: React.FC = () => {
   const [pageSize, setPageSize] = usePageSize("stockReport", 30);
-  const [rows, setRows] = useState<StockRow[]>([]);
-  const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [stockFilter, setStockFilter] = useState<StockFilter>("ALL");
 
-  const fetchData = useCallback(async () => {
+  // Single source of truth — the FULL (search-matched, unpaginated) dataset.
+  // Stock-level filtering, page-slicing, KPI totals and CSV/PDF export all
+  // derive from this so they never disagree with each other (previously the
+  // table paginated on the server while filtering client-side on just that
+  // page, which broke the filter+search+pagination combination).
+  const [allRows, setAllRows] = useState<StockRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // KPI summary bar always reflects the WHOLE catalogue, never the search
+  // box — fetched separately (no `q` param) so typing a search doesn't
+  // change the numbers above it.
+  const [globalRows, setGlobalRows] = useState<StockRow[]>([]);
+
+  const fetchAllData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ page: String(page), limit: String(pageSize) });
+      const params = new URLSearchParams({ page: "1", limit: "10000" });
       if (search) params.set("q", search);
       const d = await apiFetch(`/reports/stock?${params.toString()}`);
-      setRows(d.data || []);
-      setTotal(d.meta?.total || 0);
-      setTotalPages(d.meta?.totalPages || 1);
+      setAllRows(d.data || []);
     } catch (err: any) {
       setError(err?.message || "Failed to load stock report");
-      setRows([]);
+      setAllRows([]);
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, search]);
+  }, [search]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  const fetchGlobalData = useCallback(async () => {
+    try {
+      const d = await apiFetch(`/reports/stock?page=1&limit=10000`);
+      setGlobalRows(d.data || []);
+    } catch {
+      setGlobalRows([]);
+    }
+  }, []);
+
+  useEffect(() => { fetchAllData(); }, [fetchAllData]);
+  useEffect(() => { fetchGlobalData(); }, [fetchGlobalData]);
 
   // Real-time: refresh when GRN received or catalog changes
   useEffect(() => {
-    const handler = () => fetchData();
+    const handler = () => { fetchAllData(); fetchGlobalData(); };
     window.addEventListener("grnRefetch",    handler);
     window.addEventListener("catalogRefetch", handler);
     window.addEventListener("orderUpdatedSocket", handler);
@@ -108,9 +132,13 @@ const StockReport: React.FC = () => {
       window.removeEventListener("catalogRefetch", handler);
       window.removeEventListener("orderUpdatedSocket", handler);
     };
-  }, [fetchData]);
+  }, [fetchAllData, fetchGlobalData]);
 
-  const handleSearch = () => { setPage(1); setSearch(searchInput); };
+  // Reset to page 1 whenever the result set changes shape (new search or filter),
+  // otherwise you can land on a now-nonexistent page (e.g. filtered to 0 rows).
+  useEffect(() => { setPage(1); }, [search, stockFilter, pageSize]);
+
+  const handleSearch = () => { setSearch(searchInput); };
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => {
@@ -120,24 +148,39 @@ const StockReport: React.FC = () => {
     });
   };
 
+  // Full-dataset filtered set — used for KPI totals, CSV/PDF export, and as
+  // the source for the on-screen table's client-side pagination.
+  const allFilteredRows = useMemo(() => {
+    if (stockFilter === "ALL") return allRows;
+    return allRows.filter(r => getStockHealth(r.totalStock) === stockFilter);
+  }, [allRows, stockFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(allFilteredRows.length / pageSize));
+  // Clamp in render (not just via the reset effect) so shrinking the result
+  // set below the current page number never leaves the table blank.
+  const safePage = Math.min(page, totalPages);
+
+  const filteredRows = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return allFilteredRows.slice(start, start + pageSize);
+  }, [allFilteredRows, safePage, pageSize]);
+
   const expandAll = () => setExpanded(new Set(filteredRows.map(r => r.articleId)));
   const collapseAll = () => setExpanded(new Set());
 
-  const filteredRows = useMemo(() => {
-    if (stockFilter === "ALL") return rows;
-    return rows.filter(r => getStockHealth(r.totalStock) === stockFilter);
-  }, [rows, stockFilter]);
-
-  // Summary stats computed from all loaded rows
+  // Summary stats computed from globalRows (whole catalogue, unaffected by
+  // search or the stock-level filter tabs) — not allRows/allFilteredRows,
+  // so the KPI bar never shifts while the user is searching or filtering.
   const stats = useMemo(() => {
-    const totalArticles = total;
+    const totalArticles = globalRows.length;
     let totalPairs = 0;
+    let totalBookedPairs = 0;
     let totalVariants = 0;
     let outCount = 0;
     let lowCount = 0;
     let totalValue = 0;
 
-    rows.forEach(r => {
+    globalRows.forEach(r => {
       totalPairs += r.totalStock;
       totalVariants += r.totalVariants;
       const h = getStockHealth(r.totalStock);
@@ -145,22 +188,24 @@ const StockReport: React.FC = () => {
       if (h === "LOW") lowCount++;
       r.variants.forEach(v => {
         totalValue += (v.totalStock || 0) * (v.mrp || 0);
+        totalBookedPairs += v.booked || 0;
       });
     });
 
-    return { totalArticles, totalPairs, totalVariants, outCount, lowCount, totalValue };
-  }, [rows, total]);
+    return { totalArticles, totalCartons: toCtn(totalPairs), totalBookedCartons: toCtn(totalBookedPairs), totalVariants, outCount, lowCount, totalValue };
+  }, [globalRows]);
 
   const exportCsv = () => {
-    const lines = ["Article,SKU,Category,Brand,Variant,Color,Size Range,MRP,Status,Stock Health,Total Stock,Stock by Size (qty/blocked)"];
-    filteredRows.forEach(r => {
+    // Exports the FULL dataset (allFilteredRows), not just the current page.
+    const lines = ["Article,SKU,Category,Brand,Company,Variant,Color,Size Range,MRP,Cost,Stock Health,Total Stock (CTN),Booked (CTN),Stock by Size (pairs)"];
+    allFilteredRows.forEach(r => {
       r.variants.forEach(v => {
         const sizes = Object.entries(v.sizeStock || {})
           .sort((a, b) => Number(a[0]) - Number(b[0]))
           .map(([s, c]) => `${s}:${c.qty}`)
           .join(" ");
         const health = getStockHealth(v.totalStock);
-        lines.push(`"${r.articleName}","${r.sku}","${r.category}","${r.brand}","${v.itemName}","${v.color}","${v.sizeRange}",${v.mrp},"${v.listingStatus}","${health}",${v.totalStock},"${sizes}"`);
+        lines.push(`"${r.articleName}","${v.sku || ""}","${r.category}","${r.brand}","${r.company}","${v.itemName}","${v.color}","${v.sizeRange}",${v.mrp},${v.costPrice || 0},"${health}",${toCtn(v.totalStock)},${toCtn(v.booked)},"${sizes}"`);
       });
     });
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
@@ -168,6 +213,68 @@ const StockReport: React.FC = () => {
     const a = document.createElement("a");
     a.href = url; a.download = "stock_report.csv"; a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportPdf = async () => {
+    const { default: jsPDF } = await import("jspdf");
+    const { default: autoTable } = await import("jspdf-autotable");
+
+    const doc = new jsPDF("landscape", "pt", "a4");
+    const margin = 28;
+
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Stock Report", margin, 32);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(
+      `Generated ${new Date().toLocaleString("en-IN")} — ${allFilteredRows.length} article(s), all in CTN`,
+      margin,
+      46
+    );
+
+    // One row per variant — exports the FULL dataset, not just the page on screen.
+    const body: (string | number)[][] = [];
+    allFilteredRows.forEach((r) => {
+      r.variants.forEach((v) => {
+        const health = getStockHealth(v.totalStock);
+        body.push([
+          r.articleName,
+          v.sku || "",
+          r.category || "",
+          r.brand || "",
+          r.company || "",
+          v.itemName,
+          v.color,
+          v.sizeRange,
+          // jsPDF's built-in "helvetica" font has no ₹ glyph — it renders as
+          // a garbled superscript character. "Rs." is plain ASCII and always safe.
+          `Rs. ${(v.mrp || 0).toLocaleString()}`,
+          `Rs. ${(v.costPrice || 0).toLocaleString()}`,
+          health.replace("_", " "),
+          toCtn(v.totalStock),
+          toCtn(v.booked),
+        ]);
+      });
+    });
+
+    autoTable(doc, {
+      startY: 58,
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 7.5, cellPadding: 4 },
+      headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold" },
+      head: [["Article", "SKU", "Category", "Brand", "Company", "Variant", "Color", "Size Range", "MRP", "Cost", "Health", "Stock (CTN)", "Booked (CTN)"]],
+      body,
+      columnStyles: { 11: { halign: "right", fontStyle: "bold" }, 12: { halign: "right", fontStyle: "bold" } },
+      foot: [[
+        { content: "Total", colSpan: 11, styles: { halign: "right", fontStyle: "bold" } },
+        { content: stats.totalCartons.toString(), styles: { halign: "right", fontStyle: "bold" } },
+        { content: stats.totalBookedCartons.toString(), styles: { halign: "right", fontStyle: "bold" } },
+      ]],
+      showFoot: "lastPage",
+    });
+
+    doc.save("stock_report.pdf");
   };
 
   return (
@@ -178,26 +285,28 @@ const StockReport: React.FC = () => {
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <BarChart3 size={20} className="text-indigo-500" /> Stock Report
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">{total} articles · live inventory snapshot</p>
+          <p className="text-sm text-slate-500 mt-0.5">{globalRows.length} articles · live inventory snapshot</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={fetchData} className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-200 transition-all">
+          <button onClick={fetchAllData} className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-200 transition-all">
             <RefreshCw size={14} /> Refresh
           </button>
-          <button onClick={exportCsv} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition-all">
+          <button onClick={exportCsv} disabled={loading} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition-all disabled:opacity-50">
             <Download size={14} /> Export CSV
+          </button>
+          <button onClick={exportPdf} disabled={loading} className="flex items-center gap-1.5 px-3 py-2 bg-rose-600 text-white rounded-xl text-sm font-semibold hover:bg-rose-700 transition-all disabled:opacity-50">
+            <Download size={14} /> Export PDF
           </button>
         </div>
       </div>
 
       {/* KPI Summary Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {[
           { label: "Articles",       value: stats.totalArticles.toLocaleString(),            icon: <Package size={14} />,     color: "text-indigo-600",  bg: "bg-indigo-50" },
           { label: "Variants",       value: stats.totalVariants.toLocaleString(),            icon: <Package size={14} />,     color: "text-blue-600",    bg: "bg-blue-50" },
-          { label: "Total Pairs",    value: stats.totalPairs.toLocaleString(),               icon: <BarChart3 size={14} />,   color: "text-emerald-600", bg: "bg-emerald-50" },
+          { label: "Total CTN",      value: stats.totalCartons.toLocaleString(),             icon: <BarChart3 size={14} />,   color: "text-emerald-600", bg: "bg-emerald-50" },
           { label: "Stock Value",    value: `₹${(stats.totalValue/100000).toFixed(1)}L`,    icon: <IndianRupee size={14} />, color: "text-teal-600",    bg: "bg-teal-50" },
-          { label: "Low Stock",      value: stats.lowCount.toLocaleString(),                 icon: <AlertTriangle size={14} />, color: "text-amber-600", bg: "bg-amber-50" },
           { label: "Out of Stock",   value: stats.outCount.toLocaleString(),                 icon: <TrendingDown size={14} />, color: "text-rose-600",   bg: "bg-rose-50" },
         ].map(s => (
           <div key={s.label} className={`${s.bg} rounded-2xl p-3.5`}>
@@ -249,8 +358,8 @@ const StockReport: React.FC = () => {
         <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50/70 flex items-center justify-between">
           <span className="text-xs text-slate-500 font-medium">
             {stockFilter !== "ALL"
-              ? `Showing ${filteredRows.length} filtered / ${rows.length} loaded`
-              : `${rows.length} articles loaded`}
+              ? `Showing ${allFilteredRows.length} filtered (page ${safePage}/${totalPages}) / ${allRows.length} total`
+              : `${allFilteredRows.length} articles (page ${safePage}/${totalPages})`}
           </span>
           <div className="flex gap-2">
             <button onClick={expandAll} className="text-[11px] font-semibold text-indigo-600 hover:underline">Expand All</button>
@@ -316,7 +425,7 @@ const StockReport: React.FC = () => {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className={`text-xs font-black px-2 py-0.5 rounded-full ${health === "OUT" ? "bg-rose-100 text-rose-700" : health === "LOW" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
-                          {(row.totalStock ?? 0).toLocaleString()} pr
+                          {toCtn(row.totalStock).toLocaleString()} ctn
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right font-bold text-teal-700 text-xs">
@@ -334,11 +443,13 @@ const StockReport: React.FC = () => {
                                   <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Variant / Color</th>
                                   <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Size Range</th>
                                   <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">MRP</th>
-                                  <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Status</th>
+                                  <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Cost</th>
+                                  {/* <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Status</th> */}
                                   <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Health</th>
-                                  <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Stock (pr)</th>
+                                  <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Stock (ctn)</th>
+                                  <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Booked (ctn)</th>
                                   <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Value</th>
-                                  <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Size Breakdown (qty/blocked)</th>
+                                  <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Size Breakdown (pairs)</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-50">
@@ -357,17 +468,19 @@ const StockReport: React.FC = () => {
                                       </td>
                                       <td className="px-3 py-2.5 font-mono text-slate-500">{v.sizeRange}</td>
                                       <td className="px-3 py-2.5 text-right font-bold text-indigo-600">₹{v.mrp?.toLocaleString()}</td>
-                                      <td className="px-3 py-2.5">
+                                      <td className="px-3 py-2.5 text-right font-bold text-slate-600">₹{v.costPrice?.toLocaleString()}</td>
+                                      {/* <td className="px-3 py-2.5">
                                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${v.listingStatus === "available" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
                                           {v.listingStatus?.toUpperCase()}
                                         </span>
-                                      </td>
+                                      </td> */}
                                       <td className="px-3 py-2.5">
                                         <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-black ${vhc.chipClass}`}>
                                           {vhc.icon}{vhc.label}
                                         </span>
                                       </td>
-                                      <td className="px-3 py-2.5 text-right font-black text-emerald-700">{(v.totalStock ?? 0).toLocaleString()}</td>
+                                      <td className="px-3 py-2.5 text-right font-black text-emerald-700">{toCtn(v.totalStock).toLocaleString()}</td>
+                                      <td className="px-3 py-2.5 text-right font-black text-amber-600">{toCtn(v.booked).toLocaleString()}</td>
                                       <td className="px-3 py-2.5 text-right font-bold text-teal-600">₹{variantValue.toLocaleString()}</td>
                                       <td className="px-3 py-2.5">
                                         <div className="flex flex-wrap gap-x-3 gap-y-1">
@@ -397,7 +510,7 @@ const StockReport: React.FC = () => {
             </tbody>
           </table>
         )}
-        <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} totalItems={total} itemsPerPage={pageSize} onPageSizeChange={setPageSize} />
+        <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setPage} totalItems={allFilteredRows.length} itemsPerPage={pageSize} onPageSizeChange={setPageSize} />
       </div>
     </div>
   );

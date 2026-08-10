@@ -35,7 +35,6 @@ import Shop from "./components/Distributor/Shop";
 import Wishlist from "./components/Distributor/Wishlist";
 import MyOrders from "./components/Distributor/MyOrders";
 import Cart from "./components/Distributor/Cart";
-import DistributorPreOrders from "./components/Distributor/DistributorPreOrders";
 import Auth from "./components/Auth";
 import POPage from "./components/Admin/POPage";
 import GRN from "./components/Admin/GRN";
@@ -51,7 +50,6 @@ import StockReport from "./components/Admin/StockReport";
 import DispatchReport from "./components/Admin/DispatchReport";
 import ReturnReport from "./components/Admin/ReturnReport";
 import AccountantPage from "./components/Admin/AccountantPage";
-import PreOrderManager from "./components/Admin/PreOrderManager";
 import TermsPage from "./components/Admin/TermsPage";
 import NotificationSettings from "./components/Admin/NotificationSettings";
 import IntegrationsPage from "./components/Admin/IntegrationsPage";
@@ -318,21 +316,12 @@ const App: React.FC = () => {
 
       const isPriceOnly = data.status === "PENDING" && !isDistributor;
       if (!isPriceOnly) {
-        if (data.status === "PRE_BOOKED" && !isDistributor) {
-          toast.info(`New Pre-Order received`, {
-            description: `Order #${orderId
-              .slice(-6)
-              .toUpperCase()} — check Pre-Orders tab`,
-            duration: 4000,
-          });
-        } else if (data.status !== "PRE_BOOKED") {
-          toast.success(`Order Update: ${orderId.slice(-6).toUpperCase()}`, {
-            description: `Status changed to ${
-              data.status?.replace(/_/g, " ") || "updated"
-            }`,
-            duration: 3000,
-          });
-        }
+        toast.success(`Order Update: ${orderId.slice(-6).toUpperCase()}`, {
+          description: `Status changed to ${
+            data.status?.replace(/_/g, " ") || "updated"
+          }`,
+          duration: 3000,
+        });
       }
 
       if (fetchOrdersRef.current) fetchOrdersRef.current(true);
@@ -830,7 +819,7 @@ const App: React.FC = () => {
     setOrders((prev) => [{ ...res, id: (res as any)._id || res.id }, ...prev]);
     setLastUpdated(new Date());
     toast.success("Pre-Order placed!", {
-      description: "Check 'My Pre-Orders' tab to track it.",
+      description: "Check 'My Orders' tab to track it.",
       duration: 4000,
     });
   };
@@ -838,15 +827,23 @@ const App: React.FC = () => {
   const placeOrder = async (gstPercent: number = 5) => {
     if (!user || cart.length === 0) return;
 
-    const availableItems = cart.filter((i) => {
-      const art = articles.find((a) => a.id === i.articleId);
-      return art?.status === "AVAILABLE";
-    });
+    // Effective stage for the SPECIFIC variant in the cart, not just the
+    // parent article — a variant can have arrived (its own GRN) while the
+    // article as a whole is still PREORDER because a sibling variant
+    // hasn't. Used here only for the client-side credit-limit UX check;
+    // the backend independently (and authoritatively) resolves each item's
+    // bookingType server-side and merges everything into ONE order — RFD
+    // items dispatchable immediately, pre-order items held until their GRN
+    // lands, all inside that same order (see Order Breakdown).
+    const getCartItemStage = (item: { articleId: string; variantId?: string }) => {
+      const art = articles.find((a) => a.id === item.articleId);
+      const variant = art?.variants?.find(
+        (v) => v.id === item.variantId || v._id === item.variantId
+      );
+      return variant?.stage || art?.status;
+    };
 
-    const preOrderItems = cart.filter((i) => {
-      const art = articles.find((a) => a.id === i.articleId);
-      return art?.status !== "AVAILABLE";
-    });
+    const availableItems = cart.filter((i) => getCartItemStage(i) === "AVAILABLE");
 
     const placePromise = async () => {
       await checkAuth(true);
@@ -870,63 +867,32 @@ const App: React.FC = () => {
           );
       }
 
-      const placed: Order[] = [];
+      const payload: Partial<Order> = {
+        distributorId: user.id,
+        distributorName: user.name,
+        date: new Date().toISOString().split("T")[0],
+        items: cart.map((item) => ({
+          articleId: item.articleId,
+          variantId: item.variantId,
+          sizeQuantities: item.sizeQuantities,
+          cartonCount: item.cartonCount,
+          pairCount: item.pairCount,
+          price: item.price,
+        })),
+        totalAmount: cart.reduce((s, i) => s + i.price, 0),
+        totalCartons: cart.reduce((s, i) => s + i.cartonCount, 0),
+        totalPairs: cart.reduce((s, i) => s + i.pairCount, 0),
+        gstRate: gstPercent,
+      };
+      const res = await distributorOrderService.placeOrder(payload);
+      const placedOrder = { ...res, id: (res as any)._id || res.id };
 
-      // ── Place REGULAR order for AVAILABLE items ──
-      if (availableItems.length > 0) {
-        const payload: Partial<Order> = {
-          distributorId: user.id,
-          distributorName: user.name,
-          date: new Date().toISOString().split("T")[0],
-          status: OrderStatus.PENDING,
-          orderType: "REGULAR",
-          items: availableItems.map((item) => ({
-            articleId: item.articleId,
-            variantId: item.variantId,
-            sizeQuantities: item.sizeQuantities,
-            cartonCount: item.cartonCount,
-            pairCount: item.pairCount,
-            price: item.price,
-          })),
-          totalAmount: availableItems.reduce((s, i) => s + i.price, 0),
-          totalCartons: availableItems.reduce((s, i) => s + i.cartonCount, 0),
-          totalPairs: availableItems.reduce((s, i) => s + i.pairCount, 0),
-          gstRate: gstPercent,
-        };
-        const res = await distributorOrderService.placeOrder(payload);
-        placed.push({ ...res, id: (res as any)._id || res.id });
-      }
-
-      // ── Place PREORDER for non-AVAILABLE (wishlist) items ──
-      if (preOrderItems.length > 0) {
-        const prePayload: Partial<Order> = {
-          distributorId: user.id,
-          distributorName: user.name,
-          date: new Date().toISOString().split("T")[0],
-          orderType: "PREORDER",
-          items: preOrderItems.map((item) => ({
-            articleId: item.articleId,
-            variantId: item.variantId,
-            sizeQuantities: item.sizeQuantities,
-            cartonCount: item.cartonCount,
-            pairCount: item.pairCount,
-            price: item.price,
-          })),
-          totalAmount: preOrderItems.reduce((s, i) => s + i.price, 0),
-          totalCartons: preOrderItems.reduce((s, i) => s + i.cartonCount, 0),
-          totalPairs: preOrderItems.reduce((s, i) => s + i.pairCount, 0),
-          gstRate: gstPercent,
-        };
-        const preRes = await distributorOrderService.placeOrder(prePayload as any);
-        placed.push({ ...preRes, id: (preRes as any)._id || preRes.id });
-      }
-
-      setOrders((prev) => [...placed, ...prev]);
+      setOrders((prev) => [placedOrder, ...prev]);
       setCart([]);
       setActiveTab("orders");
       await checkAuth(true);
 
-      return placed.length === 2 ? "Order + Pre-Order placed" : "Order placed";
+      return "Order placed";
     };
 
     toast.promise(placePromise(), {
@@ -1174,10 +1140,6 @@ const App: React.FC = () => {
             />
           ))}
 
-        {activeTab === "pre_orders" && user.role !== UserRole.DISTRIBUTOR && (
-          <PreOrderManager articles={articles} lastUpdated={lastUpdated} />
-        )}
-
         {activeTab === "returns" && user.role !== UserRole.DISTRIBUTOR && (
           <Returns
             orders={orders}
@@ -1203,26 +1165,15 @@ const App: React.FC = () => {
           <Wishlist articles={articles} onPlacePreOrder={handlePlacePreOrder} />
         )}
 
-        {activeTab === "my_preorders" && user.role === UserRole.DISTRIBUTOR && (
-          <DistributorPreOrders
-            userId={user.id}
-            articles={articles}
-            inventory={inventory}
-            lastUpdated={lastUpdated}
-          />
-        )}
-
         {activeTab === "cart" && user.role === UserRole.DISTRIBUTOR && (
           <Cart
             articles={articles}
-            inventory={inventory}
             cart={cart}
             clearCartItem={clearCartItem}
             onCheckout={(gst) => placeOrder(gst)}
             total={cartTotal}
             assortments={ASSORTMENTS as Assortment[]}
             user={user}
-            lastUpdated={lastUpdated}
           />
         )}
 

@@ -10,11 +10,9 @@ import {
   CreditCard,
   Percent,
   FileText,
-  Star,
 } from "lucide-react";
 import TermsModal from "./TermsModal";
-import DistributorPreOrders from "./DistributorPreOrders";
-import { User, Article, Assortment, Inventory } from "../../types";
+import { User, Article, Assortment } from "../../types";
 import { getImageUrl } from "../../utils/imageUtils";
 
 // utility to expand a range like "5-7" into ["5","6","7"]
@@ -30,7 +28,6 @@ const parseSizeRange = (range: string): string[] => {
 
 interface CartProps {
   articles: Article[];
-  inventory: Inventory[];
   cart: {
     articleId: string;
     variantId?: string;
@@ -47,7 +44,6 @@ interface CartProps {
   total: number;
   assortments: Assortment[];
   user?: User;
-  lastUpdated?: Date;
 }
 
 // Format number: round to 2 decimal, show as Indian currency
@@ -58,16 +54,13 @@ const fmt = (n: number) => {
 
 const Cart: React.FC<CartProps> = ({
   articles,
-  inventory,
   cart,
   clearCartItem,
   onCheckout,
   total,
   user,
-  lastUpdated,
 }) => {
   const currentUser = user;
-  const [activeTab, setActiveTab] = useState<'cart' | 'preorders'>('cart');
   const [gstPercent, setGstPercent] = useState<number>(5);
   const [gstError, setGstError] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
@@ -80,17 +73,35 @@ const Cart: React.FC<CartProps> = ({
   const finalAmount        = Math.round((afterDiscount + gstAmount) * 100) / 100;
 
   const availableCredit = currentUser?.availableCredit ?? 0;
-  const isCreditExceeded = availableCredit === 0 || finalAmount > availableCredit;
 
-  const availableItems = cart.filter(i => {
-    const art = articles.find(a => a.id === i.articleId);
-    return art?.status === "AVAILABLE";
-  });
+  // Effective stage for the SPECIFIC variant in the cart item, not just the
+  // parent article — a variant can have arrived (its own GRN) while the
+  // article as a whole is still PREORDER because a sibling variant hasn't.
+  // Must match the same split App.tsx's placeOrder uses, otherwise this UI
+  // can show/gate differently than what actually gets booked.
+  const getItemStage = (item: typeof cart[0]) => {
+    const art = articles.find(a => a.id === item.articleId);
+    const variant = art?.variants?.find(
+      v => v.id === item.variantId || (v as any)._id === item.variantId
+    );
+    return variant?.stage || art?.status;
+  };
 
-  const wishlistItems = cart.filter(i => {
-    const art = articles.find(a => a.id === i.articleId);
-    return art?.status !== "AVAILABLE";
-  });
+  const availableItems = cart.filter(i => getItemStage(i) === "AVAILABLE");
+  const wishlistItems = cart.filter(i => getItemStage(i) !== "AVAILABLE");
+
+  // Credit limit only applies to REGULAR (available-stock) items — pre-orders
+  // aren't a stock commitment yet, backend skips the credit check for them
+  // too (see order.service.js createOrder). Checking against the combined
+  // cart total would wrongly block a preorder-only or mixed checkout.
+  const regularTotal = availableItems.reduce((s, i) => s + i.price, 0);
+  const regularDiscountAmount = Math.round((regularTotal * discountPercentage) / 100 * 100) / 100;
+  const regularAfterDiscount = Math.round((regularTotal - regularDiscountAmount) * 100) / 100;
+  const regularGstAmount = Math.round((regularAfterDiscount * gstPercent) / 100 * 100) / 100;
+  const regularFinalAmount = Math.round((regularAfterDiscount + regularGstAmount) * 100) / 100;
+  const isCreditExceeded =
+    availableItems.length > 0 &&
+    (availableCredit === 0 || regularFinalAmount > availableCredit);
 
   const totalPairs = cart.reduce((sum, item) => sum + item.pairCount, 0);
   const totalCartons = cart.reduce((sum, item) => sum + item.cartonCount, 0);
@@ -174,48 +185,7 @@ const Cart: React.FC<CartProps> = ({
 
   return (
     <div className="space-y-4 animate-in fade-in duration-500">
-      {/* Tab selector */}
-      <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-2xl w-fit">
-        <button
-          onClick={() => setActiveTab('cart')}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-            activeTab === 'cart'
-              ? 'bg-white text-slate-900 shadow-sm'
-              : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <ShoppingCart size={13} />
-          Cart Items
-          {cart.length > 0 && (
-            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
-              activeTab === 'cart' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-500'
-            }`}>
-              {cart.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab('preorders')}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-            activeTab === 'preorders'
-              ? 'bg-white text-slate-900 shadow-sm'
-              : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <Star size={13} className={activeTab === 'preorders' ? 'text-amber-500' : ''} />
-          My Pre-Orders
-        </button>
-      </div>
-
-      {/* Pre-orders tab */}
-      {activeTab === 'preorders' ? (
-        <DistributorPreOrders
-          userId={currentUser?.id || ''}
-          articles={articles}
-          inventory={inventory}
-          lastUpdated={lastUpdated}
-        />
-      ) : cart.length === 0 ? (
+      {cart.length === 0 ? (
         /* Empty cart state */
         <div className="flex flex-col items-center justify-center py-16 px-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
           <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4">
@@ -258,16 +228,16 @@ const Cart: React.FC<CartProps> = ({
               </div>
             </div>
 
-            {/* Wishlist Pre-launch */}
+            {/* Pre-Order items */}
             {wishlistItems.length > 0 && (
               <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden shadow-sm border-dashed">
                 <div className="px-5 py-3 border-b border-amber-100 bg-amber-50/30 flex items-center justify-between">
                   <h3 className="text-xs font-bold text-amber-700 uppercase tracking-widest flex items-center gap-2">
                     <AlertCircle size={14} className="text-amber-600" />
-                    Wishlist Pre-bookings
+                    Pre-Order Items
                   </h3>
                   <span className="text-[10px] font-bold text-amber-600/60 uppercase tracking-widest">
-                    Will be available on expected dates
+                    Booked against incoming stock
                   </span>
                 </div>
                 <div className="divide-y divide-amber-50">
@@ -276,7 +246,7 @@ const Cart: React.FC<CartProps> = ({
                 <div className="px-5 py-2.5 bg-amber-50/50 border-t border-amber-100">
                   <p className="text-[10px] text-amber-700/70 font-medium italic flex items-center gap-2">
                     <Info size={12} />
-                    These items will stay in your cart and can be booked once they become available.
+                    Placed as a Pre-Order on confirm — no credit or stock check, capped by the Purchase Order raised for it.
                   </p>
                 </div>
               </div>
@@ -415,14 +385,14 @@ const Cart: React.FC<CartProps> = ({
                     </button>
                   </span>
                 </label>
-                {!termsAccepted && availableItems.length > 0 && (
+                {!termsAccepted && cart.length > 0 && (
                   <p className="text-[9px] text-amber-400 mt-1 ml-6">Required to place order</p>
                 )}
               </div>
 
               <button
                 onClick={() => onCheckout(gstPercent)}
-                disabled={availableItems.length === 0 || isCreditExceeded || gstError || gstPercent < 0 || !termsAccepted}
+                disabled={cart.length === 0 || isCreditExceeded || gstError || gstPercent < 0 || !termsAccepted}
                 className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-slate-100 transition-all active:scale-95 group disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Confirm Order
@@ -430,12 +400,6 @@ const Cart: React.FC<CartProps> = ({
               </button>
 
               {showTermsModal && <TermsModal onClose={() => setShowTermsModal(false)} />}
-
-              {availableItems.length === 0 && cart.length > 0 && (
-                <p className="text-[9px] text-slate-400 mt-3 text-center italic">
-                  Add available items to confirm order.
-                </p>
-              )}
             </div>
 
             <div className="bg-white p-5 rounded-2xl border border-slate-200">

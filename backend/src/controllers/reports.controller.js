@@ -1,6 +1,7 @@
 const Order = require("../models/Order");
 const Return = require("../models/Return");
 const MasterCatalog = require("../models/MasterCatalog");
+const masterCatalogService = require("../services/masterCatalogService");
 
 const getStockReport = async (req, res) => {
   try {
@@ -9,11 +10,20 @@ const getStockReport = async (req, res) => {
     if (q) query.articleName = { $regex: q, $options: "i" };
 
     const total = await MasterCatalog.countDocuments(query);
-    const catalogs = await MasterCatalog.find(query)
-      .sort({ articleName: 1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit))
-      .lean();
+    const [catalogs, bookedMap] = await Promise.all([
+      MasterCatalog.find(query)
+        // category/brand/company aren't stored directly on MasterCatalog —
+        // only their _id references (categoryId/brandId/manufacturerCompanyId)
+        // are. Populate so the report can show names instead of raw ObjectIds.
+        .populate("categoryId", "name")
+        .populate("brandId", "name")
+        .populate("manufacturerCompanyId", "name")
+        .sort({ articleName: 1 })
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean(),
+      masterCatalogService.getBookedQuantityMap(),
+    ]);
 
     const data = catalogs.map((c) => {
       const variants = (c.variants || []).map((v) => {
@@ -38,13 +48,18 @@ const getStockReport = async (req, res) => {
         return {
           variantId: v._id,
           itemName: v.itemName,
+          // Carton SKU lives on the variant, not the article — there is no
+          // article-level sku field on MasterCatalog.
+          sku: v.sku || "",
           color: v.color,
           sizeRange: v.sizeRange,
           mrp: v.mrp,
+          costPrice: v.costPrice || 0,
           listingStatus: v.listingStatus,
           sizeQuantities: rawSizeQuantities,
           sizeStock,
           totalStock: variantTotalStock,
+          booked: bookedMap.totals[String(v._id)] || 0,
         };
       });
 
@@ -53,9 +68,9 @@ const getStockReport = async (req, res) => {
       return {
         articleId: c._id,
         articleName: c.articleName,
-        sku: c.sku,
-        category: typeof c.category === "object" ? c.category?.name : c.category,
-        brand: typeof c.brand === "object" ? c.brand?.name : c.brand,
+        category: c.categoryId?.name || "",
+        brand: c.brandId?.name || "",
+        company: c.manufacturerCompanyId?.name || "",
         totalVariants: variants.length,
         totalStock: articleTotalStock,
         variants,

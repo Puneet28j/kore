@@ -17,6 +17,16 @@ const OrderItemSchema = new mongoose.Schema(
     variantId: {
       type: mongoose.Schema.Types.ObjectId,
     },
+    // Resolved server-side at booking time from the variant's effective
+    // stage — REGULAR items deduct real stock immediately and are
+    // dispatchable now; PREORDER items sit in the SAME order with no stock
+    // touched until a GRN lands and promotePreOrderItems() flips this to
+    // REGULAR (deducting then). A single order can freely mix both.
+    bookingType: {
+      type: String,
+      enum: ["REGULAR", "PREORDER"],
+      default: "REGULAR",
+    },
     sizeQuantities: {
       type: Map,
       of: Number,
@@ -65,6 +75,10 @@ const OrderItemSchema = new mongoose.Schema(
 const FulfillmentHistorySchema = new mongoose.Schema({
   batchNumber: Number,
   date: { type: Date, default: Date.now },
+  // Exact physical cartons this receipt confirmation covered — lets the
+  // Receive tab show precise history alongside the coarser item/cartonCount
+  // summary below (kept for backward compatibility with existing readers).
+  cartonCodes: { type: [String], default: [] },
   items: [{
     variantId: mongoose.Schema.Types.ObjectId,
     articleId: mongoose.Schema.Types.ObjectId,
@@ -85,6 +99,39 @@ const FulfillmentHistorySchema = new mongoose.Schema({
   receiverName: String,
   receiverMobile: String,
 }, { _id: true, timestamps: true });
+
+// One entry per physical carton ever scanned for this order — flat, not
+// grouped into batches. The three dispatch tabs (Scan/Transport/Receive)
+// each read their live pool by filtering this array on `status`.
+const CartonTrackingSchema = new mongoose.Schema({
+  code: { type: String, required: true },       // e.g. "SKU-CT0003"
+  itemKey: { type: String, required: true },     // variantId or articleId this carton belongs to
+  status: {
+    type: String,
+    enum: ["DISPATCHED", "IN_TRANSIT", "RECEIVED"],
+    default: "DISPATCHED",
+  },
+  dispatchedAt: { type: Date, default: Date.now },
+  transitShipmentId: { type: mongoose.Schema.Types.ObjectId, default: null },
+  receiptRecordId: { type: mongoose.Schema.Types.ObjectId, default: null },
+}, { _id: false });
+
+// One entry per Transport-tab submission — the specific set of cartons sent
+// out together on one vehicle/shipment.
+const TransitShipmentSchema = new mongoose.Schema({
+  cartonCodes: { type: [String], default: [] },
+  vehicleNo: String,
+  lrNo: String,
+  transporterName: String,
+  eWayBillNo: String,
+  driverName: String,
+  driverMobile: String,
+  grossWeightKg: Number,
+  invoiceUrl: String,
+  ewayBillUrl: String,
+  transportBillUrl: String,
+  createdAt: { type: Date, default: Date.now },
+}, { _id: true });
 
 const OrderSchema = new mongoose.Schema(
   {
@@ -160,6 +207,8 @@ const OrderSchema = new mongoose.Schema(
     dispatchedAt: { type: Date, default: null },
     items: [OrderItemSchema],
     fulfillmentHistory: [FulfillmentHistorySchema],
+    cartonTracking: [CartonTrackingSchema],
+    transitShipments: [TransitShipmentSchema],
     totalAmount: {
       type: Number,
       required: true,
@@ -184,6 +233,15 @@ const OrderSchema = new mongoose.Schema(
       default: 0,
     },
     finalAmount: {
+      type: Number,
+      default: 0,
+    },
+    // Portion of finalAmount that counts against the distributor's credit
+    // limit — only REGULAR (real-stock) items contribute; PREORDER items
+    // never do, whether the order is pure-preorder (0) or mixed (partial).
+    // Read via $ifNull with a finalAmount/totalAmount fallback so historical
+    // orders created before this field existed still work.
+    creditAmount: {
       type: Number,
       default: 0,
     },

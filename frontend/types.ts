@@ -73,6 +73,20 @@ export interface Variant {
   tag?: "online" | "offline";
   onlineMrp?: number;
   offlineMrp?: number;
+  // Per-variant override of the article's stage — falls back to the
+  // article's own `status`/`expectedDate` when unset (see Article below).
+  stage?: "AVAILABLE" | "PREORDER";
+  expectedAvailableDate?: string;
+  // PO-derived planned pairs for a still-PREORDER variant — computed by the
+  // backend from Purchase Orders (per-size + total), never stored/entered
+  // manually. preBookedPairs is what distributors have already pre-booked
+  // (PRE_BOOKED/CONFIRMED); remaining bookable = plannedPairs − preBookedPairs.
+  poPlannedQty?: Record<string, number>;
+  plannedPairs?: number;
+  preBookedPairs?: number;
+  // Still-incoming pairs on POs: plannedPairs − pairs already received via
+  // GRN — the "PO Pending" figure everywhere.
+  poPendingPairs?: number;
 }
 
 export interface Assortment {
@@ -98,7 +112,7 @@ export interface Article {
   soleColor?: string;
   productCategory?: string; // e.g. Footwear
   brand?: string;
-  status?: "AVAILABLE" | "WISHLIST";
+  status?: "AVAILABLE" | "PREORDER";
   expectedDate?: string;
   expectedAvailableDate?: string;
   manufacturer?: string;
@@ -124,7 +138,7 @@ export interface Inventory {
 
 export enum OrderStatus {
   // Pre-Order flow
-  PRE_BOOKED = "PRE_BOOKED",   // Distributor placed pre-order (WISHLIST items)
+  PRE_BOOKED = "PRE_BOOKED",   // Distributor placed pre-order (PREORDER items)
   CONFIRMED  = "CONFIRMED",    // Admin confirmed the pre-order
   // Regular order flow
   PENDING   = "PENDING",       // Placed by distributor, awaiting admin booking
@@ -143,6 +157,10 @@ export interface OrderItem {
   articleId: string;
   /** optional variant selected by the user (color + size range) */
   variantId?: string;
+  // Resolved server-side at booking time: REGULAR items had real stock and
+  // deduct/dispatch immediately; PREORDER items sit in the same order with
+  // no stock touched until their GRN lands and flips this to REGULAR.
+  bookingType?: "REGULAR" | "PREORDER";
   /** detailed breakdown: pairs per size (e.g. {"5":12, "6":12}) */
   sizeQuantities?: Record<string, number>;
   fulfilledSizeQuantities?: Record<string, number>;
@@ -160,6 +178,7 @@ export interface FulfillmentBatch {
   id?: string;
   batchNumber?: number;
   date: string;
+  cartonCodes?: string[];
   items: {
     variantId: string;
     articleId: string;
@@ -178,6 +197,34 @@ export interface FulfillmentBatch {
   receivingNoteUrl?: string;
   receiverName?: string;
   receiverMobile?: string;
+}
+
+// One entry per physical carton ever scanned for an order — flat, not
+// grouped into batches. Scan/Transport/Receive tabs each read their live
+// pool by filtering on `status`.
+export interface CartonTrackingEntry {
+  code: string;
+  itemKey: string;
+  status: 'DISPATCHED' | 'IN_TRANSIT' | 'RECEIVED';
+  dispatchedAt?: string;
+  transitShipmentId?: string;
+  receiptRecordId?: string;
+}
+
+export interface TransitShipment {
+  id?: string;
+  cartonCodes: string[];
+  vehicleNo?: string;
+  lrNo?: string;
+  transporterName?: string;
+  eWayBillNo?: string;
+  driverName?: string;
+  driverMobile?: string;
+  grossWeightKg?: number;
+  invoiceUrl?: string;
+  ewayBillUrl?: string;
+  transportBillUrl?: string;
+  createdAt?: string;
 }
 
 export interface Order {
@@ -207,6 +254,9 @@ export interface Order {
   discountPercentage?: number;
   discountAmount?: number;
   finalAmount?: number;
+  // Portion of finalAmount that counted against the distributor's credit
+  // limit — only the REGULAR items' slice; 0 for a pure pre-order.
+  creditAmount?: number;
   gstRate?: number;
   gstAmount?: number;
   billUrl?: string;
@@ -236,6 +286,9 @@ export interface Order {
   outScannedCartons?: string[];
   dispatchedAt?: string;
   deliveredAt?: string;
+  // Per-carton dispatch lifecycle (Scan / Transport / Receive tabs)
+  cartonTracking?: CartonTrackingEntry[];
+  transitShipments?: TransitShipment[];
 }
 
 export interface MovementRecord {

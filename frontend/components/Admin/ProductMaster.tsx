@@ -57,7 +57,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     hsnCode: "",
     gender: AssortmentType.MEN,
     assortmentId: ASSORTMENTS[0].id,
-    status: "AVAILABLE" as "AVAILABLE" | "WISHLIST",
+    status: "AVAILABLE" as "AVAILABLE" | "PREORDER",
     wishlistDate: "",
     manufacturer: "",
     unit: "",
@@ -805,7 +805,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     data.append("unitId", unitId);
     data.append("stage", formData.status);
 
-    if (formData.status === "WISHLIST") {
+    if (formData.status === "PREORDER") {
       data.append("expectedAvailableDate", formData.wishlistDate);
     }
 
@@ -825,6 +825,11 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       sizeQuantities: v.sizeQuantities || {},
       sizeSkus: v.sizeSkus || {},
       sizeMap: v.sizeMap || {},
+      // Round-trip the per-variant GRN-promotion state — omitting these
+      // would make the backend fall back to the article's own stage on
+      // every save, silently undoing an already-promoted variant.
+      stage: v.stage,
+      expectedAvailableDate: v.expectedAvailableDate,
     }));
 
     data.append("variants", JSON.stringify(normalizedVariants));
@@ -1300,10 +1305,10 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                   <button
                     type="button"
                     onClick={() =>
-                      setFormData({ ...formData, status: "WISHLIST" })
+                      setFormData({ ...formData, status: "PREORDER" })
                     }
                     className={`flex items-center gap-3 p-3.5 rounded-xl border-2 font-bold text-sm transition-all ${
-                      formData.status === "WISHLIST"
+                      formData.status === "PREORDER"
                         ? "bg-amber-50 border-amber-500 text-amber-800 shadow-sm"
                         : "bg-white border-slate-100 text-slate-500 hover:border-slate-300"
                     }`}
@@ -1311,7 +1316,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                     <Clock
                       size={18}
                       className={
-                        formData.status === "WISHLIST"
+                        formData.status === "PREORDER"
                           ? "text-amber-500"
                           : "text-slate-400"
                       }
@@ -1319,7 +1324,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                     Coming Soon / Wishlist
                   </button>
 
-                  {formData.status === "WISHLIST" && (
+                  {formData.status === "PREORDER" && (
                     <div className="pt-2 animate-in slide-in-from-top-2 duration-300">
                       <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
                         Expected Availability
@@ -1545,11 +1550,11 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                               <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-12 text-center">
                                 #
                               </th>
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[200px]">
-                                Item Variation Name
-                              </th>
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[140px]">
-                                Carton SKU <span className="text-rose-500">*</span>
+                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[220px]">
+                                <div className="flex flex-col gap-0.5">
+                                  <span>Item Variation Name</span>
+                                  <span className="text-indigo-500 normal-case font-semibold">Carton SKU <span className="text-rose-500">*</span></span>
+                                </div>
                               </th>
                               <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32">
                                 <div className="flex flex-col gap-1 text-indigo-600">
@@ -1664,30 +1669,27 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                       <span className="text-[10px] text-slate-400 font-medium px-1 italic">
                                         Range: {v.sizeRange}
                                       </span>
+                                      {(() => {
+                                        const total = Object.values(v.sizeQuantities).reduce((s, q) => s + (q || 0), 0);
+                                        const skuMissing = total > 0 && !v.sku?.trim();
+                                        return (
+                                          <input
+                                            type="text"
+                                            disabled={loading}
+                                            placeholder="Carton SKU e.g. ECH-BLK-M-5-8"
+                                            className={`w-full p-1.5 text-xs font-bold bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 ${
+                                              skuMissing
+                                                ? "border-rose-300 text-rose-600 placeholder:text-rose-300"
+                                                : "border-slate-200 text-slate-700"
+                                            }`}
+                                            value={v.sku || ""}
+                                            onChange={(e) =>
+                                              updateVariantField(v.id, "sku", e.target.value)
+                                            }
+                                          />
+                                        );
+                                      })()}
                                     </div>
-                                  </td>
-
-                                  <td className="px-4 py-4">
-                                    {(() => {
-                                      const total = Object.values(v.sizeQuantities).reduce((s, q) => s + (q || 0), 0);
-                                      const skuMissing = total > 0 && !v.sku?.trim();
-                                      return (
-                                        <input
-                                          type="text"
-                                          disabled={loading}
-                                          placeholder="e.g. ECH-BLK-M-5-8"
-                                          className={`w-full p-2 text-xs font-bold bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 ${
-                                            skuMissing
-                                              ? "border-rose-300 text-rose-600 placeholder:text-rose-300"
-                                              : "border-slate-200 text-slate-700"
-                                          }`}
-                                          value={v.sku || ""}
-                                          onChange={(e) =>
-                                            updateVariantField(v.id, "sku", e.target.value)
-                                          }
-                                        />
-                                      );
-                                    })()}
                                   </td>
 
                                   <td className="px-4 py-4">

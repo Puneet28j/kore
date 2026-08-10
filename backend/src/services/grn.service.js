@@ -349,6 +349,10 @@ exports.submitDraft = async (draftId, {
     return acc;
   }, {});
 
+  // Variants that actually received stock in this GRN — drives the pre-order
+  // auto-release pass after the draft is saved.
+  const stockedVariantIds = [];
+
   for (const [key, info] of Object.entries(cartonsByVariant)) {
     const { variantId, itemName } = info;
     if (!variantId) continue;
@@ -457,19 +461,65 @@ exports.submitDraft = async (draftId, {
         { "variants._id": variant._id },
         { $inc: incUpdate }
       );
+      stockedVariantIds.push(String(variant._id));
 
-      // Auto-promote WISHLIST → AVAILABLE when stock is received via GRN
-      if (catalog.stage === "WISHLIST") {
+      // Auto-promote PREORDER → AVAILABLE, scoped to the variant that
+      // actually received stock — sibling variants without their own GRN
+      // yet must stay PREORDER, not get flipped along with this one.
+      const effectiveVariantStage = variant.stage || catalog.stage;
+      if (effectiveVariantStage === "PREORDER") {
         await MasterCatalog.updateOne(
-          { _id: catalog._id },
-          { $set: { stage: "AVAILABLE", expectedAvailableDate: null } }
+          { "variants._id": variant._id },
+          { $set: { "variants.$.stage": "AVAILABLE", "variants.$.expectedAvailableDate": null } }
         );
-        console.log(`[GRN-SUBMIT] Auto-promoted "${catalog.articleName}" from WISHLIST → AVAILABLE`);
+        console.log(`[GRN-SUBMIT] Auto-promoted variant "${variant.itemName}" on "${catalog.articleName}" from PREORDER → AVAILABLE`);
+
+        // Recompute the article-level aggregate — it only flips to
+        // AVAILABLE once every variant has arrived; otherwise the article
+        // keeps showing up in Pre-Order listings for its remaining variants.
+        const refreshed = await MasterCatalog.findById(catalog._id).select("stage variants.stage").lean();
+        const allAvailable = (refreshed?.variants || []).every(
+          (v) => (v.stage || refreshed.stage) === "AVAILABLE"
+        );
+        if (allAvailable && refreshed.stage !== "AVAILABLE") {
+          await MasterCatalog.updateOne(
+            { _id: catalog._id },
+            { $set: { stage: "AVAILABLE", expectedAvailableDate: null } }
+          );
+          console.log(`[GRN-SUBMIT] All variants now available — promoted article "${catalog.articleName}" from PREORDER → AVAILABLE`);
+        }
       }
     }
   }
 
   await draft.save();
+
+  // Promote any pre-order ITEMS whose stock just arrived — flips them to
+  // REGULAR in place (no order-level status change) so they join the scan
+  // pool alongside that order's already-dispatchable RFD items. Whatever
+  // stock the promotion doesn't consume stays in sizeMap.qty as regular
+  // available stock. GRN submission itself must not fail if this step errors.
+  if (stockedVariantIds.length) {
+    try {
+      const orderService = require("./order.service");
+      const updatedOrders = await orderService.promotePreOrderItems(stockedVariantIds);
+      if (updatedOrders.length) {
+        let emitOrderUpdate;
+        try {
+          ({ emitOrderUpdate } = require("../socket"));
+        } catch (_) {}
+        updatedOrders.forEach((o) => {
+          try {
+            if (emitOrderUpdate) emitOrderUpdate(o);
+          } catch (_) {}
+        });
+        console.log(`[GRN-SUBMIT] Promoted pre-order item(s) in ${updatedOrders.length} order(s) to regular`);
+      }
+    } catch (err) {
+      console.error("[GRN-SUBMIT] Pre-order item promotion failed:", err.message);
+    }
+  }
+
   return draft;
 };
 

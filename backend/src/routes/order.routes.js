@@ -31,6 +31,30 @@ router.patch(
   OrderController.updateOrderStatus
 );
 
+// Per-carton dispatch lifecycle — Scan / Transport / Receive tabs.
+// Registered before the generic "/:id" route below.
+router.post(
+  "/:id/scan",
+  role(["admin", "superadmin", "distributor"]),
+  OrderController.scanCarton
+);
+router.post(
+  "/:id/transit",
+  role(["admin", "superadmin", "distributor"]),
+  billUpload.fields([
+    { name: "invoice", maxCount: 1 },
+    { name: "ewayBill", maxCount: 1 },
+    { name: "transportBill", maxCount: 1 },
+  ]),
+  OrderController.submitTransit
+);
+router.post(
+  "/:id/receive",
+  role(["admin", "superadmin", "distributor"]),
+  billUpload.fields([{ name: "receivingNote", maxCount: 1 }]),
+  OrderController.receiveCartons
+);
+
 router.post(
   "/return",
   role(["admin", "superadmin"]),
@@ -46,10 +70,6 @@ router.get(
 // Payment
 router.get("/overdue", role(["admin", "superadmin", "distributor"]), OrderController.getOverdueOrders);
 router.patch("/:id/mark-paid", role(["admin", "superadmin"]), OrderController.markOrderPaid);
-
-// Pre-orders (admin)
-router.get("/pre-orders", role(["admin", "superadmin", "manager", "supervisor", "accountant"]), OrderController.getPreOrdersCtrl);
-router.patch("/:id/release", role(["admin", "superadmin"]), OrderController.releasePreOrderCtrl);
 
 // Single order fetch (admin sees any, distributor sees own only)
 router.get("/:id", role(["admin", "superadmin", "distributor", "manager", "supervisor", "accountant"]), OrderController.getOrderByIdCtrl);

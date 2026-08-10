@@ -41,7 +41,7 @@ class DistributorOrderService {
   }
 
   async getAllOrders(
-    params: { page?: number; limit?: number; q?: string; status?: string; startDate?: string; endDate?: string; sortBy?: string; sortDesc?: boolean } = {}
+    params: { page?: number; limit?: number; q?: string; status?: string; startDate?: string; endDate?: string; sortBy?: string; sortDesc?: boolean; orderType?: string } = {}
   ): Promise<{ items: Order[]; meta: any }> {
     const query = new URLSearchParams();
     if (params.page) query.append("page", params.page.toString());
@@ -52,6 +52,7 @@ class DistributorOrderService {
     if (params.endDate) query.append("endDate", params.endDate);
     if (params.sortBy) query.append("sortBy", params.sortBy);
     if (params.sortDesc !== undefined) query.append("sortDesc", params.sortDesc.toString());
+    if (params.orderType) query.append("orderType", params.orderType);
     query.append("_t", Date.now().toString()); // Cache buster for real-time sync
 
     const res = await axios.get(`${API_URL}?${query.toString()}`, {
@@ -157,6 +158,66 @@ class DistributorOrderService {
     return this.mapOrder(res.data.data);
   }
 
+  // ── Per-carton dispatch lifecycle (Scan / Transport / Receive tabs) ─────
+
+  async scanCarton(orderId: string, cartonCode: string, itemKey: string): Promise<Order | undefined> {
+    const res = await axios.post(
+      `${API_URL}/${orderId}/scan`,
+      { cartonCode, itemKey },
+      { headers: getAuthHeaders() }
+    );
+    return this.mapOrder(res.data.data);
+  }
+
+  async submitTransit(
+    orderId: string,
+    cartonCodes: string[],
+    fields: {
+      vehicleNo: string; lrNo?: string; transporterName: string; eWayBillNo?: string;
+      driverName?: string; driverMobile?: string; grossWeightKg?: number;
+      files?: { invoice?: File; ewayBill?: File; transportBill?: File };
+    }
+  ): Promise<Order | undefined> {
+    const formData = new FormData();
+    formData.append("cartonCodes", JSON.stringify(cartonCodes));
+    formData.append("vehicleNo", fields.vehicleNo);
+    formData.append("transporterName", fields.transporterName);
+    if (fields.lrNo)         formData.append("lrNo", fields.lrNo);
+    if (fields.eWayBillNo)   formData.append("eWayBillNo", fields.eWayBillNo);
+    if (fields.driverName)   formData.append("driverName", fields.driverName);
+    if (fields.driverMobile) formData.append("driverMobile", fields.driverMobile);
+    if (fields.grossWeightKg) formData.append("grossWeightKg", String(fields.grossWeightKg));
+    if (fields.files) {
+      Object.entries(fields.files).forEach(([key, file]) => { if (file) formData.append(key, file); });
+    }
+
+    const res = await axios.post(
+      `${API_URL}/${orderId}/transit`,
+      formData,
+      { headers: { ...getAuthHeaders(), "Content-Type": "multipart/form-data" } }
+    );
+    return this.mapOrder(res.data.data);
+  }
+
+  async receiveCartons(
+    orderId: string,
+    cartonCodes: string[],
+    fields: { receiverName: string; receiverMobile: string; receivingNote?: File }
+  ): Promise<Order | undefined> {
+    const formData = new FormData();
+    formData.append("cartonCodes", JSON.stringify(cartonCodes));
+    formData.append("receiverName", fields.receiverName);
+    formData.append("receiverMobile", fields.receiverMobile);
+    if (fields.receivingNote) formData.append("receivingNote", fields.receivingNote);
+
+    const res = await axios.post(
+      `${API_URL}/${orderId}/receive`,
+      formData,
+      { headers: { ...getAuthHeaders(), "Content-Type": "multipart/form-data" } }
+    );
+    return this.mapOrder(res.data.data);
+  }
+
   async markAsReceived(
     orderId: string,
     data: { receivingNote: File, receiverName: string, receiverMobile: string }
@@ -195,21 +256,6 @@ class DistributorOrderService {
 
   async editOrder(orderId: string, items: any[]): Promise<Order | undefined> {
     const res = await axios.patch(`${API_URL}/${orderId}/edit`, { items }, { headers: getAuthHeaders() });
-    return this.mapOrder(res.data.data);
-  }
-
-  async getPreOrders(params: { page?: number; limit?: number; q?: string; status?: string } = {}): Promise<{ items: Order[]; meta: any }> {
-    const query = new URLSearchParams();
-    if (params.page)   query.append("page",   params.page.toString());
-    if (params.limit)  query.append("limit",  params.limit.toString());
-    if (params.q)      query.append("q",      params.q);
-    if (params.status) query.append("status", params.status);
-    const res = await axios.get(`${API_URL}/pre-orders?${query}`, { headers: getAuthHeaders() });
-    return { items: (res.data.data || []).map((o: any) => this.mapOrder(o)), meta: res.data.meta };
-  }
-
-  async releasePreOrder(orderId: string): Promise<Order | undefined> {
-    const res = await axios.patch(`${API_URL}/${orderId}/release`, {}, { headers: getAuthHeaders() });
     return this.mapOrder(res.data.data);
   }
 

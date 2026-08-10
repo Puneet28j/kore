@@ -271,13 +271,12 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
     return result === Infinity || isNaN(result) ? 0 : result;
   };
 
-  // Available stock (Live - Blocked)
+  // Available stock — live stock already excludes booked/dispatched orders
+  // (deducted directly at booking time), so it IS the available quantity.
+  // blockedStockMap is shown separately as informational context only.
   const availableStockMap: Record<string, number> = {};
   sizes.forEach((sz) => {
-    availableStockMap[sz] = Math.max(
-      0,
-      (currentLiveStockMap[sz] || 0) - (currentBlockedStockMap[sz] || 0)
-    );
+    availableStockMap[sz] = Math.max(0, currentLiveStockMap[sz] || 0);
   });
 
   const totalAvailable = Object.values(availableStockMap).reduce(
@@ -417,12 +416,12 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               </div>
               <span
                 className={`shrink-0 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
-                  article.status === "WISHLIST"
+                  article.status === "PREORDER"
                     ? "bg-rose-50 text-rose-600 border border-rose-100"
                     : "bg-emerald-50 text-emerald-600 border border-emerald-100"
                 }`}
               >
-                {article.status === "WISHLIST" ? "Wish" : "Live"}
+                {article.status === "PREORDER" ? "Wish" : "Live"}
               </span>
             </div>
 
@@ -516,7 +515,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
             {/* <SpecRow label="Live Stock (Ctn)" value={`${liveCartonsCount} Ctn`} badge={liveCartonsCount > 0 ? "emerald" : "rose"} /> */}
             <SpecRow label="Manufacturer" value={article.manufacturer || "—"} />
             <SpecRow label="Unit" value={article.unit || "—"} />
-            {article.status === "WISHLIST" && (
+            {article.status === "PREORDER" && (
               <SpecRow
                 label="Expected Date"
                 value={article.expectedDate || "Required"}
@@ -728,11 +727,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                       Number(
                         currentLiveStockMap[cleanSz] ?? currentLiveStockMap[sz]
                       ) || 0;
-                    const blocked =
-                      Number(
-                        currentBlockedStockMap[cleanSz] ??
-                          currentBlockedStockMap[sz]
-                      ) || 0;
                     const available = availableStockMap[sz] || 0;
 
                     let bgClass =
@@ -756,11 +750,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                             >
                               {available}
                             </span>
-                            {blocked > 0 && (
-                              <span className="text-[10px] font-bold text-rose-500">
-                                (-{blocked} blk)
-                              </span>
-                            )}
                           </div>
                           {/* <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">Live: {qty}</p> */}
                         </div>

@@ -3,7 +3,7 @@ const Order = require("../models/Order");
 const { emitOrderUpdate, emitReturnCreated } = require("../socket");
 const activityLog = require("../services/activityLog.service");
 
-const { deleteOrder, editOrder, getPreOrders, propagatePriceUpdate } = require("../services/order.service");
+const { deleteOrder, editOrder, propagatePriceUpdate } = require("../services/order.service");
 
 const createOrder = async (req, res) => {
   try {
@@ -60,8 +60,8 @@ const getDistributorOrders = async (req, res) => {
 
 const getAllOrders = async (req, res) => {
   try {
-    const { page, limit, q, status, startDate, endDate, sortBy, sortDesc } = req.query;
-    const result = await OrderService.getAllOrders({ page, limit, search: q, status, startDate, endDate, sortBy, sortDesc });
+    const { page, limit, q, status, startDate, endDate, sortBy, sortDesc, orderType } = req.query;
+    const result = await OrderService.getAllOrders({ page, limit, search: q, status, startDate, endDate, sortBy, sortDesc, orderType });
 
     res.status(200).json({
       success: true,
@@ -138,6 +138,88 @@ const updateOrderStatus = async (req, res) => {
       success: false,
       message: error.message || "Failed to update order status",
     });
+  }
+};
+
+const scanCarton = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { cartonCode, itemKey } = req.body;
+    const updatedOrder = await OrderService.scanCarton(id, { cartonCode, itemKey });
+    emitOrderUpdate(updatedOrder);
+    res.status(200).json({ success: true, message: "Carton scanned", data: updatedOrder });
+  } catch (error) {
+    console.error("Error scanning carton:", error);
+    res.status(400).json({ success: false, message: error.message || "Failed to scan carton" });
+  }
+};
+
+const submitTransit = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      cartonCodes, vehicleNo, lrNo, transporterName, eWayBillNo,
+      driverName, driverMobile, grossWeightKg,
+    } = req.body;
+
+    const docs = {};
+    if (req.files) {
+      if (req.files.invoice) docs.invoiceUrl = `/uploads/bills/${req.files.invoice[0].filename}`;
+      if (req.files.ewayBill) docs.ewayBillUrl = `/uploads/bills/${req.files.ewayBill[0].filename}`;
+      if (req.files.transportBill) docs.transportBillUrl = `/uploads/bills/${req.files.transportBill[0].filename}`;
+    }
+
+    const updatedOrder = await OrderService.submitTransit(id, {
+      cartonCodes: cartonCodes ? JSON.parse(cartonCodes) : [],
+      vehicleNo, lrNo, transporterName, eWayBillNo, driverName, driverMobile,
+      grossWeightKg: grossWeightKg ? Number(grossWeightKg) : null,
+      ...docs,
+    });
+
+    emitOrderUpdate(updatedOrder);
+    activityLog.createLog({
+      action: "ORDER_TRANSIT_SUBMITTED",
+      entityType: "ORDER",
+      entityId: String(id),
+      description: `Transit details submitted for order #${updatedOrder.orderNumber || id} by ${req.user?.name || "admin"}`,
+      user: req.user,
+    });
+
+    res.status(200).json({ success: true, message: "Transit details saved", data: updatedOrder });
+  } catch (error) {
+    console.error("Error submitting transit details:", error);
+    res.status(400).json({ success: false, message: error.message || "Failed to submit transit details" });
+  }
+};
+
+const receiveCartons = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { cartonCodes, receiverName, receiverMobile } = req.body;
+
+    let receivingNoteUrl;
+    if (req.files?.receivingNote) {
+      receivingNoteUrl = `/uploads/bills/${req.files.receivingNote[0].filename}`;
+    }
+
+    const updatedOrder = await OrderService.receiveCartons(id, {
+      cartonCodes: cartonCodes ? JSON.parse(cartonCodes) : [],
+      receiverName, receiverMobile, receivingNoteUrl,
+    });
+
+    emitOrderUpdate(updatedOrder);
+    activityLog.createLog({
+      action: "ORDER_CARTONS_RECEIVED",
+      entityType: "ORDER",
+      entityId: String(id),
+      description: `Cartons received for order #${updatedOrder.orderNumber || id} by ${req.user?.name || "admin"}`,
+      user: req.user,
+    });
+
+    res.status(200).json({ success: true, message: "Cartons received", data: updatedOrder });
+  } catch (error) {
+    console.error("Error receiving cartons:", error);
+    res.status(400).json({ success: false, message: error.message || "Failed to receive cartons" });
   }
 };
 
@@ -352,51 +434,6 @@ const editOrderCtrl = async (req, res) => {
   }
 };
 
-const getPreOrdersCtrl = async (req, res) => {
-  try {
-    const { page, limit, q, status } = req.query;
-    const result = await getPreOrders({
-      page: parseInt(page) || 1,
-      limit: parseInt(limit) || 20,
-      search: q || "",
-      status: status || "",
-    });
-    res.json({ success: true, data: result.items, meta: result.meta });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-const releasePreOrderCtrl = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const order = await Order.findById(id);
-    if (!order) return res.status(404).json({ success: false, message: "Order not found" });
-    if (order.orderType !== "PREORDER") return res.status(400).json({ success: false, message: "Not a pre-order" });
-    if (!["PRE_BOOKED", "CONFIRMED"].includes(order.status)) {
-      return res.status(400).json({ success: false, message: "Can only release PRE_BOOKED or CONFIRMED pre-orders" });
-    }
-
-    // Convert to regular order pipeline
-    order.orderType = "REGULAR";
-    order.status    = "PENDING";
-    await order.save();
-
-    emitOrderUpdate(order);
-    activityLog.createLog({
-      action: "PREORDER_RELEASED",
-      entityType: "ORDER",
-      entityId: String(id),
-      description: `Pre-order #${order.orderNumber} released to regular pipeline by ${req.user.name}`,
-      user: req.user,
-    });
-
-    res.json({ success: true, data: order });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
 const getOrderStatsCtrl = async (req, res) => {
   try {
     const stats = await OrderService.getOrderStats();
@@ -422,14 +459,15 @@ module.exports = {
   getAllOrders,
   getOrderByIdCtrl,
   updateOrderStatus,
+  scanCarton,
+  submitTransit,
+  receiveCartons,
   processReturn,
   getReturnHistory,
   getOverdueOrders,
   markOrderPaid,
   deleteOrderCtrl,
   editOrderCtrl,
-  getPreOrdersCtrl,
-  releasePreOrderCtrl,
   getOrderStatsCtrl,
   getDashboardMetricsCtrl,
 };

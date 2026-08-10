@@ -98,7 +98,13 @@ exports.listUsers = async ({
   const cleanRole = String(role || "")
     .trim()
     .toLowerCase();
-  if (cleanRole) q.role = cleanRole;
+  if (cleanRole) {
+    q.role = cleanRole;
+  } else {
+    // Distributors have their own management screen — keep them out of the
+    // staff/admin Users list unless explicitly filtered for.
+    q.role = { $ne: "distributor" };
+  }
 
   // ✅ Never list passwords anyway (model select:false already)
   const [items, total] = await Promise.all([

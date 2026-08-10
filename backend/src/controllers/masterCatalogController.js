@@ -69,6 +69,15 @@ exports.getStockTotals = async (req, res) => {
   }
 };
 
+exports.getBookedMap = async (req, res) => {
+  try {
+    const { totals } = await masterCatalogService.getBookedQuantityMap();
+    return res.json({ data: totals });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
 exports.updateMasterCatalog = async (req, res) => {
   try {
     const doc = await masterCatalogService.update(req, req.params.id);

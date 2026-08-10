@@ -32,6 +32,18 @@ const OrderItemSchema = new mongoose.Schema(
       of: Number,
       default: {},
     },
+    // Pairs, per size, already claimed out of arrived GRN stock while this
+    // item is still PREORDER — separate from fulfilledSizeQuantities, which
+    // only starts counting once bookingType flips to REGULAR and dispatch
+    // scanning begins. A partial GRN (less than sizeQuantities) claims what
+    // it can and leaves the item PREORDER with the remainder still owed;
+    // any GRN beyond sizeQuantities is never claimed here, so it naturally
+    // stays in sizeMap.qty as real available stock (see promotePreOrderItems).
+    preorderReservedSizeQuantities: {
+      type: Map,
+      of: Number,
+      default: {},
+    },
     fulfilledSizeQuantities: {
       type: Map,
       of: Number,

@@ -163,6 +163,10 @@ export interface OrderItem {
   bookingType?: "REGULAR" | "PREORDER";
   /** detailed breakdown: pairs per size (e.g. {"5":12, "6":12}) */
   sizeQuantities?: Record<string, number>;
+  // Pairs, per size, already claimed out of arrived GRN stock while still
+  // PREORDER — a partial GRN claims what it can and leaves the item
+  // PREORDER holding the remainder (see backend promotePreOrderItems).
+  preorderReservedSizeQuantities?: Record<string, number>;
   fulfilledSizeQuantities?: Record<string, number>;
 
   cartonCount: number;

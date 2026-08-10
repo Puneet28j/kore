@@ -53,6 +53,37 @@ import { distributorOrderService } from '../../services/distributorOrderService'
 import { toast } from 'sonner';
 import { COMPANY_CONFIG } from '../../constants';
 
+// How many whole cartons of an order item are backed by REAL stock right
+// now. A REGULAR item is always fully backed — this is just its cartonCount.
+// A still-PREORDER item may have received PARTIAL stock via one or more
+// GRNs (preorderReservedSizeQuantities holds what's been claimed so far,
+// per size) — cartons are a fixed assortment, so the number of WHOLE
+// cartons the reservation can cover is the floor of reserved÷per-carton-need,
+// taken as the minimum across sizes. Mirrors the backend's
+// computeReservedCartons (order.service.js) so the scan baseline here always
+// agrees with what the server will actually accept.
+const computeReservedCartons = (item: OrderItem): number => {
+  if (item.bookingType !== 'PREORDER') return item.cartonCount || 0;
+
+  const cartonCount = item.cartonCount || 0;
+  if (cartonCount <= 0) return 0;
+
+  const sizeQuantities = item.sizeQuantities || {};
+  const reserved = item.preorderReservedSizeQuantities || {};
+
+  let minCartons = Infinity;
+  let hasSize = false;
+  for (const [size, totalQty] of Object.entries(sizeQuantities)) {
+    const perCartonNeed = (Number(totalQty) || 0) / cartonCount;
+    if (perCartonNeed <= 0) continue;
+    hasSize = true;
+    const reservedQty = Number(reserved[size] || 0);
+    minCartons = Math.min(minCartons, Math.floor(reservedQty / perCartonNeed + 1e-9));
+  }
+  if (!hasSize) return 0;
+  return minCartons === Infinity ? 0 : Math.max(0, minCartons);
+};
+
 const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.PENDING]:   'Pending Confirmation',
   [OrderStatus.BOOKED]:    'Booked',
@@ -84,16 +115,19 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   const inTransitCartons  = (currentOrder.cartonTracking || []).filter(c => c.status === 'IN_TRANSIT');
   const receivedCartons   = (currentOrder.cartonTracking || []).filter(c => c.status === 'RECEIVED');
   const totalExpectedCartons = currentOrder.items.reduce((s, i) => s + (i.cartonCount || 0), 0);
-  // Still-PREORDER items have no real stock yet — they can't be scanned
-  // until their GRN lands and promotes them, so they're excluded from the
-  // scannable "remaining" count (see the separate Awaiting Stock panel).
+  // Scannable remaining = cartons backed by real stock right now, minus
+  // what's already been scanned. For a still-PREORDER item that's only
+  // whatever a partial GRN reservation covers (computeReservedCartons) —
+  // it dispatches what's arrived without waiting for the rest.
   const totalRemainingToScan = currentOrder.items.reduce(
-    (s, i) => i.bookingType === 'PREORDER'
-      ? s
-      : s + Math.max(0, i.cartonCount - (i.fulfilledCartonCount || 0)),
+    (s, i) => s + Math.max(0, computeReservedCartons(i) - (i.fulfilledCartonCount || 0)),
     0
   );
-  const awaitingStockItems = currentOrder.items.filter((i) => i.bookingType === 'PREORDER');
+  // Still owes MORE than what's currently reserved — shown in the Awaiting
+  // Stock panel below with its progress, separate from what's scannable now.
+  const awaitingStockItems = currentOrder.items.filter(
+    (i) => i.bookingType === 'PREORDER' && computeReservedCartons(i) < (i.cartonCount || 0)
+  );
 
   // All three tabs are usable independently and simultaneously (no locked
   // wizard) — which one is on screen is just a plain view toggle.
@@ -341,7 +375,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   // Frozen per-item "remaining" snapshot, captured once for the lifetime of
   // this view. Every scan now syncs to the backend immediately — if the
   // expected-code numbering (CT0001, CT0002, ... derived from
-  // cartonCount - fulfilledCartonCount) were recomputed live off the
+  // reserved cartons − fulfilledCartonCount) were recomputed live off the
   // post-sync order, the same label would shift to mean a different
   // physical carton between scans. Freezing it keeps a barcode's meaning
   // stable for as long as this order stays open on screen.
@@ -351,11 +385,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
       const remaining: Record<string, number> = {};
       const itemCodes: Record<string, string> = {};
       currentOrder.items.forEach(item => {
-        // Still-PREORDER items generate no valid scan codes — nothing has
-        // physically arrived for them yet (see awaitingStockItems).
-        if (item.bookingType === 'PREORDER') return;
+        // Scannable = whatever's currently backed by real stock (full
+        // cartonCount for REGULAR, only the GRN-reserved portion for a
+        // still-PREORDER item) minus what's already been scanned.
+        const rem = Math.max(0, computeReservedCartons(item) - (item.fulfilledCartonCount || 0));
+        if (rem <= 0) return;
         const key = item.variantId || item.articleId;
-        remaining[key] = item.cartonCount - (item.fulfilledCartonCount || 0);
+        remaining[key] = rem;
         itemCodes[key] = getItemCode(item);
       });
       scanBaselineRef.current = { remaining, itemCodes };
@@ -1786,8 +1822,10 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                               </div>
                             )}
 
-                            {/* Pre-order items on this same order — not scannable until their
-                                own GRN arrives and promotes them; RFD items above are unaffected. */}
+                            {/* Pre-order items on this same order that still owe MORE than
+                                what's currently reserved — fully-arrived cartons for these
+                                items are already scannable above; this shows what's still
+                                pending on a future GRN. RFD items above are unaffected. */}
                             {awaitingStockItems.length > 0 && (
                               <div className="bg-amber-50/60 rounded-2xl border border-amber-200 border-dashed p-4">
                                 <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
@@ -1796,16 +1834,35 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                 <div className="space-y-1.5">
                                   {awaitingStockItems.map((item, idx) => {
                                     const key = item.variantId || item.articleId;
+                                    // Reservation progress: pairs already claimed out of
+                                    // arrived GRN stock vs. total pairs this item needs —
+                                    // a partial GRN shows partial progress here instead of
+                                    // silently disappearing until fully covered.
+                                    const needed = Object.values(item.sizeQuantities || {}).reduce(
+                                      (s, q) => s + (Number(q) || 0), 0
+                                    );
+                                    const reserved = Object.values(item.preorderReservedSizeQuantities || {}).reduce(
+                                      (s, q) => s + (Number(q) || 0), 0
+                                    );
+                                    const scannableNow = Math.max(
+                                      0,
+                                      computeReservedCartons(item) - (item.fulfilledCartonCount || 0)
+                                    );
                                     return (
                                       <div key={idx} className="flex items-center justify-between text-[11px]">
                                         <span className="font-bold text-amber-800">{getItemLabel(key)}</span>
-                                        <span className="text-amber-600 font-mono">{item.cartonCount} ctn</span>
+                                        <span className="text-amber-600 font-mono">
+                                          {reserved > 0 ? `${reserved}/${needed} prs` : `${item.cartonCount} ctn owed`}
+                                          {scannableNow > 0 && (
+                                            <span className="text-emerald-600"> · {scannableNow} ctn ready</span>
+                                          )}
+                                        </span>
                                       </div>
                                     );
                                   })}
                                 </div>
                                 <p className="text-[10px] text-amber-600/80 mt-2 italic">
-                                  Becomes scannable automatically once its GRN is submitted.
+                                  Whatever's arrived is scannable now (above) — the rest becomes scannable as its next GRN lands.
                                 </p>
                               </div>
                             )}

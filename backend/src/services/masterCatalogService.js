@@ -499,14 +499,19 @@ exports.getGrnReceivedQtyMap = async () => {
   return { totals };
 };
 
-// Active pre-booked pairs per variant — every PREORDER order still sitting in
-// PRE_BOOKED/CONFIRMED. Released/cancelled orders don't count: released ones
-// are backed by real arrived stock in the regular pipeline.
+// Still-owed pre-booked pairs per variant — caps how much MORE can be
+// pre-booked against a PO's remaining (not-yet-arrived) planned quantity.
+// For each active order's still-PREORDER item, only sizeQuantities MINUS
+// whatever's already been reserved out of arrived GRN stock counts — that
+// reserved portion has already been fulfilled from real stock, so it's no
+// longer competing for the PO's future arrivals (see promotePreOrderItems).
+// An item that's fully promoted to REGULAR drops out entirely: a completed
+// booking, nothing left owed.
 exports.getPreBookedQtyMap = async (articleIds) => {
   const Order = require("../models/Order");
   const q = {
-    orderType: "PREORDER",
-    status: { $in: ["PRE_BOOKED", "CONFIRMED"] },
+    status: { $nin: ["RECEIVED", "CANCELLED"] },
+    items: { $elemMatch: { bookingType: "PREORDER" } },
   };
   if (articleIds && articleIds.length) {
     q["items.articleId"] = { $in: articleIds.map((id) => new mongoose.Types.ObjectId(String(id))) };
@@ -517,16 +522,19 @@ exports.getPreBookedQtyMap = async (articleIds) => {
   const totals = {};
   orders.forEach((order) => {
     (order.items || []).forEach((item) => {
+      if (item.bookingType !== "PREORDER") return;
       if (!item.variantId) return;
       const key = String(item.variantId);
       const sizeQuantities = item.sizeQuantities || {};
+      const reserved = item.preorderReservedSizeQuantities || {};
       const entries = Object.entries(sizeQuantities);
       if (entries.length) {
         if (!bySize[key]) bySize[key] = {};
         entries.forEach(([size, qty]) => {
-          const pairs = Math.max(0, Number(qty || 0));
-          if (pairs <= 0) return;
           const cleanSize = String(size).trim();
+          const owed = Number(qty || 0) - Number(reserved[size] || 0);
+          const pairs = Math.max(0, owed);
+          if (pairs <= 0) return;
           bySize[key][cleanSize] = (bySize[key][cleanSize] || 0) + pairs;
           totals[key] = (totals[key] || 0) + pairs;
         });
@@ -606,20 +614,44 @@ exports.getStockTotals = async (stage) => {
   // Company-wide "PO Pending" — same per-variant formula the list API
   // injects (PO planned − GRN received), so the header card always tallies
   // with the per-variant column.
-  const [allPlannedMap, grnReceivedMap] = await Promise.all([
+  const [allPlannedMap, grnReceivedMap, bookedMap] = await Promise.all([
     exports.getPoPlannedQtyMap(),
     exports.getGrnReceivedQtyMap(),
+    exports.getBookedQuantityMap(),
   ]);
   let totalPoPendingPairs = 0;
   Object.entries(allPlannedMap.totals).forEach(([variantId, pairs]) => {
     totalPoPendingPairs += Math.max(0, pairs - (grnReceivedMap.totals[variantId] || 0));
   });
 
+  // Company-wide "Booked" — same getBookedQuantityMap every per-variant
+  // Booked column already reads, scoped to variants matching this tab's
+  // stage filter (a variant's own effective stage, falling back to its
+  // article's — same rule used above for the live-stock aggregate).
+  let totalBookedPairs = 0;
+  if (stage) {
+    const stageByVariant = {};
+    const allDocs = await MasterCatalog.find({ isDeleted: false })
+      .select("stage variants._id variants.stage")
+      .lean();
+    allDocs.forEach((doc) => {
+      (doc.variants || []).forEach((v) => {
+        stageByVariant[String(v._id)] = v.stage || doc.stage;
+      });
+    });
+    Object.entries(bookedMap.totals).forEach(([variantId, pairs]) => {
+      if (stageByVariant[variantId] === stage) totalBookedPairs += pairs;
+    });
+  } else {
+    totalBookedPairs = Object.values(bookedMap.totals).reduce((s, p) => s + p, 0);
+  }
+
   return {
     totalLivePairs: Math.max(0, Math.round(liveRow?.total || 0)),
     // Expected/planned pairs (from POs) for still-PREORDER variants — NOT real stock.
     totalPlannedPairs: Math.max(0, Math.round(totalPlannedPairs)),
     totalPoPendingPairs: Math.max(0, Math.round(totalPoPendingPairs)),
+    totalBookedPairs: Math.max(0, Math.round(totalBookedPairs)),
   };
 };
 
@@ -657,12 +689,24 @@ exports.getBookedQuantityMap = async (statuses = ["BOOKED", "PENDING", "PARTIAL"
     (order.items || []).forEach((item) => {
       if (!item.variantId) return;
       const key = item.variantId.toString();
-      const sizeQuantities = item.sizeQuantities instanceof Map
-        ? Object.fromEntries(item.sizeQuantities)
-        : (item.sizeQuantities || {});
       const fulfilledSizeQuantities = item.fulfilledSizeQuantities instanceof Map
         ? Object.fromEntries(item.fulfilledSizeQuantities)
         : (item.fulfilledSizeQuantities || {});
+
+      // Still-PREORDER item: only what's actually been RESERVED out of
+      // arrived GRN stock is real, undispatched, warehouse-sitting stock —
+      // that's genuinely "booked" the same as any other order's remainder.
+      // The still-owed-but-not-yet-reserved portion isn't backed by real
+      // stock yet, so it must not count here (see promotePreOrderItems).
+      const sizeQuantities =
+        item.bookingType === "PREORDER"
+          ? (item.preorderReservedSizeQuantities instanceof Map
+              ? Object.fromEntries(item.preorderReservedSizeQuantities)
+              : item.preorderReservedSizeQuantities || {})
+          : (item.sizeQuantities instanceof Map
+              ? Object.fromEntries(item.sizeQuantities)
+              : (item.sizeQuantities || {}));
+
       if (!bySize[key]) bySize[key] = {};
       Object.entries(sizeQuantities).forEach(([size, qty]) => {
         const cleanSize = String(size).trim();
@@ -1166,10 +1210,17 @@ exports.getVariantStock = async (variantId) => {
   const blockedStockMap = {};
   bookedOrders.forEach(order => {
     const item = (order.items || []).find(i => i.variantId && i.variantId.toString() === variantId.toString());
-    if (item && item.sizeQuantities) {
-      const entries = item.sizeQuantities instanceof Map
-        ? Array.from(item.sizeQuantities.entries())
-        : Object.entries(item.sizeQuantities);
+    if (!item) return;
+    // Still-PREORDER item — only the RESERVED-so-far portion is real,
+    // undispatched warehouse stock (already deducted straight from
+    // sizeMap.qty, see promotePreOrderItems); the still-owed remainder
+    // isn't backed by real stock and must not count here.
+    const sizeSource =
+      item.bookingType === "PREORDER" ? item.preorderReservedSizeQuantities : item.sizeQuantities;
+    if (sizeSource) {
+      const entries = sizeSource instanceof Map
+        ? Array.from(sizeSource.entries())
+        : Object.entries(sizeSource);
       const fulfilledEntries = item.fulfilledSizeQuantities instanceof Map
         ? Object.fromEntries(item.fulfilledSizeQuantities)
         : (item.fulfilledSizeQuantities || {});

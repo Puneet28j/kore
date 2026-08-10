@@ -72,6 +72,48 @@ const adjustVariantStock = async (items, sign) => {
   }
 };
 
+// How many whole cartons of an order item are backed by REAL stock right
+// now. A REGULAR item is always fully backed (stock deducted in full at
+// booking) — this simply returns its cartonCount. A still-PREORDER item may
+// have received PARTIAL stock via one or more GRNs (see promotePreOrderItems)
+// — preorderReservedSizeQuantities holds exactly what's been claimed so far,
+// per size. Cartons are a fixed assortment (sizeQuantities[size] / cartonCount
+// pairs of each size per carton), so the number of WHOLE cartons the current
+// reservation can cover is the floor of reserved÷per-carton-need, taken as
+// the minimum across sizes (a carton needs every size filled to be complete).
+// This lets a partially-arrived pre-order dispatch what's physically here
+// without waiting for the rest — same principle as a REGULAR order's
+// existing PARTIAL-status dispatch.
+const computeReservedCartons = (item) => {
+  if (item.bookingType !== "PREORDER") return item.cartonCount || 0;
+
+  const cartonCount = item.cartonCount || 0;
+  if (cartonCount <= 0) return 0;
+
+  const sizeQuantities =
+    item.sizeQuantities instanceof Map
+      ? Object.fromEntries(item.sizeQuantities)
+      : item.sizeQuantities || {};
+  const reserved =
+    item.preorderReservedSizeQuantities instanceof Map
+      ? Object.fromEntries(item.preorderReservedSizeQuantities)
+      : item.preorderReservedSizeQuantities || {};
+
+  let minCartons = Infinity;
+  let hasSize = false;
+  for (const [size, totalQty] of Object.entries(sizeQuantities)) {
+    const perCartonNeed = Number(totalQty || 0) / cartonCount;
+    if (perCartonNeed <= 0) continue;
+    hasSize = true;
+    const reservedQty = Number(reserved[size] || 0);
+    // Small epsilon guards against floating-point division landing just
+    // under a whole number (e.g. 5.999999999 instead of 6).
+    minCartons = Math.min(minCartons, Math.floor(reservedQty / perCartonNeed + 1e-9));
+  }
+  if (!hasSize) return 0;
+  return minCartons === Infinity ? 0 : Math.max(0, minCartons);
+};
+
 const generateNextReturnNumber = async () => {
   const lastRet = await Return.findOne()
     .sort({ createdAt: -1 })
@@ -953,13 +995,19 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
       (i) => (i.variantId?.toString() || i.articleId?.toString()) === itemKey
     );
     if (!item) throw new Error("Item not found on this order");
-    if (item.bookingType === "PREORDER") {
+    // A pre-order item can dispatch whatever whole cartons its GRN
+    // reservations have already backed with real stock — no need to wait
+    // for the rest of the order's quantity to arrive (matches how a
+    // REGULAR order dispatches PARTIAL — see computeReservedCartons).
+    const reservedCartons = computeReservedCartons(item);
+    const remaining = reservedCartons - (item.fulfilledCartonCount || 0);
+    if (remaining <= 0) {
       throw new Error(
-        "This item is still a pre-order — its stock hasn't arrived yet (pending GRN)"
+        item.bookingType === "PREORDER"
+          ? "No stock has arrived yet for this pre-order item (pending GRN)"
+          : "All cartons for this item are already scanned"
       );
     }
-    const remaining = item.cartonCount - (item.fulfilledCartonCount || 0);
-    if (remaining <= 0) throw new Error("All cartons for this item are already scanned");
 
     // Distribute this single carton across sizes proportionally — same
     // ratio-based math the old batch dispatch used, just recomputed fresh
@@ -1434,12 +1482,21 @@ const editOrder = async (orderId, requesterId, requesterRole, { items }) => {
 // Called by grn.service after a GRN lands stock for `variantIds`. Unlike the
 // old whole-order release, this flips individual ITEMS: an order can be
 // mid-dispatch on its RFD items while one PREORDER item inside it is still
-// waiting. Oldest-order-first, walks every active order (not RECEIVED/
-// CANCELLED) holding a still-PREORDER item for one of these variants; if
-// that item's variant is now AVAILABLE with enough free stock, deducts the
-// stock (this item is "booking" for real at this exact moment, same as a
-// REGULAR item deducts at order creation) and flips bookingType to REGULAR
-// — no order-level status change needed, it simply becomes scannable.
+// waiting.
+//
+// Claims are PARTIAL and PER-SIZE, not all-or-nothing: oldest-order-first,
+// each still-PREORDER item claims min(still-owed, currently-free) pairs per
+// size out of sizeMap.qty immediately (deducting as it goes, exactly like a
+// REGULAR item deducts at booking) and records the claim in
+// preorderReservedSizeQuantities. Only once EVERY size is fully claimed does
+// the item flip to REGULAR and become scannable. This means:
+//   - a GRN that fully covers an item promotes it immediately;
+//   - a GRN smaller than what's owed claims everything it can (that stock
+//     is now spoken-for, so it correctly disappears from "available"), and
+//     the item stays PREORDER holding the remainder, ready to top up on the
+//     next GRN;
+//   - any stock beyond what every waiting pre-order needs is never claimed,
+//     so it naturally stays in sizeMap.qty as genuine available stock.
 const promotePreOrderItems = async (variantIds) => {
   const idStrs = [...new Set((variantIds || []).map(String))];
   if (!idStrs.length) return [];
@@ -1459,9 +1516,9 @@ const promotePreOrderItems = async (variantIds) => {
       if (!item.variantId || !idStrs.includes(String(item.variantId))) continue;
 
       // Re-fetch fresh each time — sizeMap.qty always reflects the true free
-      // balance (REGULAR items deduct immediately at booking, so nothing
-      // else needs subtracting), and re-reading per item naturally earmarks
-      // stock across this whole pass without a separate in-memory map.
+      // balance (REGULAR items and prior claims below deduct immediately),
+      // and re-reading per item naturally earmarks stock across this whole
+      // pass without a separate in-memory map.
       const catalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
       const variant = catalog?.variants?.id(item.variantId);
       if (!variant) continue;
@@ -1472,32 +1529,42 @@ const promotePreOrderItems = async (variantIds) => {
         item.sizeQuantities instanceof Map
           ? Object.fromEntries(item.sizeQuantities)
           : item.sizeQuantities || {};
+      const reservedSoFar =
+        item.preorderReservedSizeQuantities instanceof Map
+          ? Object.fromEntries(item.preorderReservedSizeQuantities)
+          : item.preorderReservedSizeQuantities || {};
 
-      let coverable = true;
+      let itemChanged = false;
+      let fullyCovered = true;
       for (const [size, qty] of Object.entries(sizeQuantities)) {
-        const need = Number(qty || 0);
-        if (need <= 0) continue;
-        const cell = variant.sizeMap.get(String(size).trim());
-        if ((cell?.qty || 0) < need) {
-          coverable = false;
-          break;
-        }
-      }
-      if (!coverable) continue;
-
-      Object.entries(sizeQuantities).forEach(([size, qty]) => {
-        const need = Number(qty || 0);
-        if (need <= 0) return;
         const cleanSize = String(size).trim();
-        const cell = variant.sizeMap.get(cleanSize) || { qty: 0, sku: "" };
-        cell.qty = Math.max(0, (cell.qty || 0) - need);
-        variant.sizeMap.set(cleanSize, cell);
-      });
-      catalog.markModified("variants");
-      await catalog.save();
+        const needTotal = Number(qty || 0);
+        if (needTotal <= 0) continue;
+        const alreadyReserved = Number(reservedSoFar[cleanSize] || 0);
+        const stillOwed = Math.max(0, needTotal - alreadyReserved);
+        if (stillOwed <= 0) continue;
 
-      item.bookingType = "REGULAR";
-      orderChanged = true;
+        const cell = variant.sizeMap.get(cleanSize) || { qty: 0, sku: "" };
+        const claim = Math.min(stillOwed, Math.max(0, cell.qty || 0));
+        if (claim > 0) {
+          cell.qty -= claim;
+          variant.sizeMap.set(cleanSize, cell);
+          if (!item.preorderReservedSizeQuantities) item.preorderReservedSizeQuantities = new Map();
+          item.preorderReservedSizeQuantities.set(cleanSize, alreadyReserved + claim);
+          itemChanged = true;
+        }
+        if (claim < stillOwed) fullyCovered = false;
+      }
+
+      if (itemChanged) {
+        catalog.markModified("variants");
+        await catalog.save();
+        orderChanged = true;
+      }
+      if (fullyCovered) {
+        item.bookingType = "REGULAR";
+        orderChanged = true;
+      }
     }
 
     if (!orderChanged) continue;
@@ -1510,7 +1577,7 @@ const promotePreOrderItems = async (variantIds) => {
       action: "PREORDER_RELEASED",
       entityType: "ORDER",
       entityId: String(order._id),
-      description: `Pre-order item(s) in order #${order.orderNumber || order._id} became available — GRN stock arrived`,
+      description: `Pre-order item(s) in order #${order.orderNumber || order._id} received stock — GRN arrived`,
       metadata: { auto: true, distributorName: order.distributorName },
     });
   }

@@ -19,6 +19,8 @@ interface Variant {
   mrp: number;
   costPrice: number;
   listingStatus: string;
+  // Effective stage (variant's own override, falling back to its article's).
+  stage: "AVAILABLE" | "PREORDER";
   sizeQuantities: Record<string, number>;
   sizeStock: Record<string, SizeCell>;
   totalStock: number;
@@ -37,6 +39,7 @@ interface StockRow {
 }
 
 type StockFilter = "ALL" | "IN_STOCK" | "LOW" | "OUT";
+type StageFilter = "ALL" | "AVAILABLE" | "PREORDER";
 
 const LOW_STOCK_THRESHOLD = 20;
 
@@ -71,6 +74,27 @@ const healthConfig: Record<string, { label: string; icon: React.ReactNode; chipC
 const PAIRS_PER_CTN = 24;
 const toCtn = (pairs: number) => Math.floor((pairs || 0) / PAIRS_PER_CTN);
 
+// RFD/Pre-Order filter is per-VARIANT, not per-article — a mixed article
+// (some variants already arrived via GRN, some still pending) must show up
+// in BOTH tabs, each showing only the variants relevant to it. Rows whose
+// variants are all filtered out disappear entirely (same convention as
+// Master Stock's stageForTab split).
+function applyStageFilter(rows: StockRow[], stage: StageFilter): StockRow[] {
+  if (stage === "ALL") return rows;
+  return rows
+    .map(r => {
+      const variants = r.variants.filter(v => v.stage === stage);
+      if (variants.length === 0) return null;
+      return {
+        ...r,
+        variants,
+        totalVariants: variants.length,
+        totalStock: variants.reduce((s, v) => s + v.totalStock, 0),
+      };
+    })
+    .filter((r): r is StockRow => r !== null);
+}
+
 const StockReport: React.FC = () => {
   const [pageSize, setPageSize] = usePageSize("stockReport", 30);
   const [page, setPage] = useState(1);
@@ -79,6 +103,7 @@ const StockReport: React.FC = () => {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [stockFilter, setStockFilter] = useState<StockFilter>("ALL");
+  const [stageFilter, setStageFilter] = useState<StageFilter>("ALL");
 
   // Single source of truth — the FULL (search-matched, unpaginated) dataset.
   // Stock-level filtering, page-slicing, KPI totals and CSV/PDF export all
@@ -136,7 +161,7 @@ const StockReport: React.FC = () => {
 
   // Reset to page 1 whenever the result set changes shape (new search or filter),
   // otherwise you can land on a now-nonexistent page (e.g. filtered to 0 rows).
-  useEffect(() => { setPage(1); }, [search, stockFilter, pageSize]);
+  useEffect(() => { setPage(1); }, [search, stockFilter, stageFilter, pageSize]);
 
   const handleSearch = () => { setSearch(searchInput); };
 
@@ -149,11 +174,14 @@ const StockReport: React.FC = () => {
   };
 
   // Full-dataset filtered set — used for KPI totals, CSV/PDF export, and as
-  // the source for the on-screen table's client-side pagination.
+  // the source for the on-screen table's client-side pagination. Stage
+  // filter narrows variants first (recomputing each row's totals), then
+  // stock-health filters on those recomputed totals.
   const allFilteredRows = useMemo(() => {
-    if (stockFilter === "ALL") return allRows;
-    return allRows.filter(r => getStockHealth(r.totalStock) === stockFilter);
-  }, [allRows, stockFilter]);
+    const staged = applyStageFilter(allRows, stageFilter);
+    if (stockFilter === "ALL") return staged;
+    return staged.filter(r => getStockHealth(r.totalStock) === stockFilter);
+  }, [allRows, stageFilter, stockFilter]);
 
   const totalPages = Math.max(1, Math.ceil(allFilteredRows.length / pageSize));
   // Clamp in render (not just via the reset effect) so shrinking the result
@@ -171,8 +199,12 @@ const StockReport: React.FC = () => {
   // Summary stats computed from globalRows (whole catalogue, unaffected by
   // search or the stock-level filter tabs) — not allRows/allFilteredRows,
   // so the KPI bar never shifts while the user is searching or filtering.
+  // Stage filter DOES apply here though — same as Master Stock's header
+  // cards changing per RFD/Pre-Order tab, so the KPIs stay meaningful for
+  // whichever slice is selected.
   const stats = useMemo(() => {
-    const totalArticles = globalRows.length;
+    const staged = applyStageFilter(globalRows, stageFilter);
+    const totalArticles = staged.length;
     let totalPairs = 0;
     let totalBookedPairs = 0;
     let totalVariants = 0;
@@ -180,7 +212,7 @@ const StockReport: React.FC = () => {
     let lowCount = 0;
     let totalValue = 0;
 
-    globalRows.forEach(r => {
+    staged.forEach(r => {
       totalPairs += r.totalStock;
       totalVariants += r.totalVariants;
       const h = getStockHealth(r.totalStock);
@@ -193,11 +225,11 @@ const StockReport: React.FC = () => {
     });
 
     return { totalArticles, totalCartons: toCtn(totalPairs), totalBookedCartons: toCtn(totalBookedPairs), totalVariants, outCount, lowCount, totalValue };
-  }, [globalRows]);
+  }, [globalRows, stageFilter]);
 
   const exportCsv = () => {
     // Exports the FULL dataset (allFilteredRows), not just the current page.
-    const lines = ["Article,SKU,Category,Brand,Company,Variant,Color,Size Range,MRP,Cost,Stock Health,Total Stock (CTN),Booked (CTN),Stock by Size (pairs)"];
+    const lines = ["Article,SKU,Category,Brand,Company,Variant,Color,Size Range,Stage,MRP,Cost,Stock Health,Total Stock (CTN),Booked (CTN),Stock by Size (pairs)"];
     allFilteredRows.forEach(r => {
       r.variants.forEach(v => {
         const sizes = Object.entries(v.sizeStock || {})
@@ -205,7 +237,8 @@ const StockReport: React.FC = () => {
           .map(([s, c]) => `${s}:${c.qty}`)
           .join(" ");
         const health = getStockHealth(v.totalStock);
-        lines.push(`"${r.articleName}","${v.sku || ""}","${r.category}","${r.brand}","${r.company}","${v.itemName}","${v.color}","${v.sizeRange}",${v.mrp},${v.costPrice || 0},"${health}",${toCtn(v.totalStock)},${toCtn(v.booked)},"${sizes}"`);
+        const stageLabel = v.stage === "PREORDER" ? "Pre-Order" : "RFD";
+        lines.push(`"${r.articleName}","${v.sku || ""}","${r.category}","${r.brand}","${r.company}","${v.itemName}","${v.color}","${v.sizeRange}","${stageLabel}",${v.mrp},${v.costPrice || 0},"${health}",${toCtn(v.totalStock)},${toCtn(v.booked)},"${sizes}"`);
       });
     });
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
@@ -247,6 +280,7 @@ const StockReport: React.FC = () => {
           v.itemName,
           v.color,
           v.sizeRange,
+          v.stage === "PREORDER" ? "Pre-Order" : "RFD",
           // jsPDF's built-in "helvetica" font has no ₹ glyph — it renders as
           // a garbled superscript character. "Rs." is plain ASCII and always safe.
           `Rs. ${(v.mrp || 0).toLocaleString()}`,
@@ -263,11 +297,11 @@ const StockReport: React.FC = () => {
       margin: { left: margin, right: margin },
       styles: { fontSize: 7.5, cellPadding: 4 },
       headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold" },
-      head: [["Article", "SKU", "Category", "Brand", "Company", "Variant", "Color", "Size Range", "MRP", "Cost", "Health", "Stock (CTN)", "Booked (CTN)"]],
+      head: [["Article", "SKU", "Category", "Brand", "Company", "Variant", "Color", "Size Range", "Stage", "MRP", "Cost", "Health", "Stock (CTN)", "Booked (CTN)"]],
       body,
-      columnStyles: { 11: { halign: "right", fontStyle: "bold" }, 12: { halign: "right", fontStyle: "bold" } },
+      columnStyles: { 12: { halign: "right", fontStyle: "bold" }, 13: { halign: "right", fontStyle: "bold" } },
       foot: [[
-        { content: "Total", colSpan: 11, styles: { halign: "right", fontStyle: "bold" } },
+        { content: "Total", colSpan: 12, styles: { halign: "right", fontStyle: "bold" } },
         { content: stats.totalCartons.toString(), styles: { halign: "right", fontStyle: "bold" } },
         { content: stats.totalBookedCartons.toString(), styles: { halign: "right", fontStyle: "bold" } },
       ]],
@@ -333,22 +367,41 @@ const StockReport: React.FC = () => {
           Search
         </button>
 
-        {/* Stock level filter tabs */}
-        <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 ml-auto">
-          <Filter size={12} className="text-slate-400 ml-1" />
-          {(["ALL", "IN_STOCK", "LOW", "OUT"] as StockFilter[]).map(f => {
-            const labels: Record<string, string> = { ALL: "All", IN_STOCK: "In Stock", LOW: "Low", OUT: "Out" };
-            const active = stockFilter === f;
-            return (
-              <button
-                key={f}
-                onClick={() => setStockFilter(f)}
-                className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${active ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-              >
-                {labels[f]}
-              </button>
-            );
-          })}
+        <div className="flex items-center gap-2 ml-auto">
+          {/* RFD / Pre-Order filter tabs — per-variant, same convention as Master Stock */}
+          <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
+            {(["ALL", "AVAILABLE", "PREORDER"] as StageFilter[]).map(f => {
+              const labels: Record<string, string> = { ALL: "All", AVAILABLE: "RFD", PREORDER: "Pre-Order" };
+              const active = stageFilter === f;
+              return (
+                <button
+                  key={f}
+                  onClick={() => setStageFilter(f)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${active ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                >
+                  {labels[f]}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Stock level filter tabs */}
+          <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
+            <Filter size={12} className="text-slate-400 ml-1" />
+            {(["ALL", "IN_STOCK", "LOW", "OUT"] as StockFilter[]).map(f => {
+              const labels: Record<string, string> = { ALL: "All", IN_STOCK: "In Stock", LOW: "Low", OUT: "Out" };
+              const active = stockFilter === f;
+              return (
+                <button
+                  key={f}
+                  onClick={() => setStockFilter(f)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${active ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                >
+                  {labels[f]}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -379,7 +432,11 @@ const StockReport: React.FC = () => {
           </div>
         ) : filteredRows.length === 0 ? (
           <div className="text-center py-20 text-slate-400">
-            {stockFilter !== "ALL" ? `No articles with "${stockFilter.toLowerCase().replace("_", " ")}" status` : "No stock data found"}
+            {stageFilter !== "ALL"
+              ? `No ${stageFilter === "AVAILABLE" ? "RFD" : "Pre-Order"} variants match the current filters`
+              : stockFilter !== "ALL"
+              ? `No articles with "${stockFilter.toLowerCase().replace("_", " ")}" status`
+              : "No stock data found"}
           </div>
         ) : (
           <table className="w-full text-left text-sm">
@@ -460,7 +517,16 @@ const StockReport: React.FC = () => {
                                   return (
                                     <tr key={v.variantId} className={`hover:bg-slate-50 ${vhc.rowClass}`}>
                                       <td className="px-3 py-2.5">
-                                        <p className="font-semibold text-slate-700">{v.itemName}</p>
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <p className="font-semibold text-slate-700">{v.itemName}</p>
+                                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border ${
+                                            v.stage === "PREORDER"
+                                              ? "bg-amber-50 text-amber-600 border-amber-200"
+                                              : "bg-emerald-50 text-emerald-600 border-emerald-200"
+                                          }`}>
+                                            {v.stage === "PREORDER" ? "Pre-Order" : "RFD"}
+                                          </span>
+                                        </div>
                                         <p className="text-slate-400 mt-0.5 flex items-center gap-1">
                                           <span className="w-2.5 h-2.5 rounded-full border border-slate-300 inline-block" style={{ backgroundColor: v.color?.toLowerCase() }} />
                                           {v.color}

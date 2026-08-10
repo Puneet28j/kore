@@ -56,6 +56,11 @@ const getStockReport = async (req, res) => {
           mrp: v.mrp,
           costPrice: v.costPrice || 0,
           listingStatus: v.listingStatus,
+          // Effective stage — the variant's own GRN-driven override, falling
+          // back to the parent article's stage. Same rule Master Stock uses,
+          // so a mixed article (some variants arrived, some still pending)
+          // reports each variant under the correct RFD/Pre-Order filter.
+          stage: v.stage || c.stage || "AVAILABLE",
           sizeQuantities: rawSizeQuantities,
           sizeStock,
           totalStock: variantTotalStock,

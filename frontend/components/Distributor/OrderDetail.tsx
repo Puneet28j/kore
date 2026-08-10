@@ -1123,7 +1123,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   // derived straight from the pools rather than a single order-wide status.
   const isPartiallyReceived = receivedCartons.length > 0 && receivedCartons.length < totalExpectedCartons;
   const statusSteps = [
-    { label: 'Booked',      icon: <Package size={16} />,     activeColor: 'bg-indigo-600' },
+    { label: 'Pending',     icon: <Package size={16} />,     activeColor: 'bg-indigo-600' },
     { label: 'Dispatched',  icon: <Truck size={16} />,       activeColor: 'bg-indigo-600' },
     { label: 'In Transit',  icon: <Truck size={16} />,       activeColor: 'bg-indigo-600' },
     { label: isPartiallyReceived ? 'Partial Delivered' : 'Delivered', icon: <CheckCircle size={16} />, activeColor: isPartiallyReceived ? 'bg-amber-500' : 'bg-emerald-600' },

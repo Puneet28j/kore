@@ -153,7 +153,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             Sales Orders
           </h2>
           <p className="text-slate-400 text-xs font-medium">
-            Manage distributor order flow · Pending → Booked → Dispatch →
+            Manage distributor order flow · Pending → Dispatched → In Transit →
             Delivered
           </p>
         </div>
@@ -194,13 +194,12 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           },
           {
             label: "Pending",
-            val: stats.PENDING || 0,
+            val: stats.BOOKED || 0,
             color: "text-rose-600",
             bg: "bg-rose-50",
             border: "border-rose-100",
-            filter: OrderStatus.PENDING,
+            filter: OrderStatus.BOOKED,
           },
-          // { label: 'Booked',      val: stats.BOOKED       || 0, color: 'text-indigo-600',  bg: 'bg-indigo-50',  border: 'border-indigo-100',filter: OrderStatus.BOOKED    },
           {
             label: "Dispatched",
             val: stats.PFD || 0,
@@ -233,17 +232,12 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             border: "border-green-100",
             filter: OrderStatus.RECEIVED,
           },
-          {
-            label: "Urgent",
-            val: stats.urgent || 0,
-            color: "text-orange-600",
-            bg: "bg-orange-50",
-            border: "border-orange-100",
-            filter: null,
-          },
         ];
         return (
-          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${statCards.length}, 1fr)` }}>
+          <div
+            className="grid gap-2"
+            style={{ gridTemplateColumns: `repeat(${statCards.length}, 1fr)` }}
+          >
             {statCards.map((s) => (
               <button
                 key={s.label}
@@ -337,13 +331,9 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           {(
             [
               "ALL",
-              "PRE_BOOKED",
-              "CONFIRMED",
-              "PENDING",
               "BOOKED",
               "PFD",
               "RFD",
-              "PARTIAL",
               "RECEIVED",
               "CANCELLED",
             ] as const
@@ -426,7 +416,9 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
                           {order.distributorName}
                         </span>
                         <StatusBadge status={order.status} />
-                        {order.items?.some((i) => i.bookingType === "PREORDER") && (
+                        {order.items?.some(
+                          (i) => i.bookingType === "PREORDER"
+                        ) && (
                           <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-amber-50 text-amber-600 border border-amber-100">
                             Has Pre-Order Items
                           </span>
@@ -490,11 +482,11 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
                           <CheckCheck size={11} /> Confirm Order
                         </button>
                       )}
-                      {order.status === OrderStatus.BOOKED && (
+                      {/* {order.status === OrderStatus.BOOKED && (
                         <span className="px-2 py-1 bg-amber-50 text-amber-600 rounded-lg font-bold text-[8px] uppercase tracking-wider border border-amber-100 flex items-center gap-1">
                           <AlertCircle size={10} /> Needs Allocation
                         </span>
-                      )}
+                      )} */}
                       {order.status === OrderStatus.RECEIVED &&
                         order.billUrl && (
                           <button
@@ -567,11 +559,11 @@ const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.PRE_BOOKED]: "Pre-Booked",
   [OrderStatus.CONFIRMED]: "Confirmed",
   [OrderStatus.PENDING]: "Pending Confirmation",
-  [OrderStatus.BOOKED]: "Booked",
+  [OrderStatus.BOOKED]: "Pending",
   [OrderStatus.PFD]: "Dispatched",
   [OrderStatus.RFD]: "In Transit",
   [OrderStatus.RECEIVED]: "Delivered",
-  [OrderStatus.PARTIAL]: "Partially Delivered",
+  [OrderStatus.PARTIAL]: "Partial Delivered",
   [OrderStatus.CANCELLED]: "Cancelled",
 };
 
@@ -670,18 +662,24 @@ const BookingConfirmModal: React.FC<{
   onSuccess: () => void;
 }> = ({ order, onClose, onSuccess }) => {
   const [expectedDispatchDate, setExpectedDispatchDate] = useState("");
-  const [bookingPriority, setBookingPriority] = useState<"NORMAL" | "URGENT">("NORMAL");
+  const [bookingPriority, setBookingPriority] = useState<"NORMAL" | "URGENT">(
+    "NORMAL"
+  );
   const [adminNote, setAdminNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async () => {
     try {
       setSubmitting(true);
-      await distributorOrderService.updateOrderStatus(order.id, OrderStatus.BOOKED, {
-        expectedDispatchDate: expectedDispatchDate || undefined,
-        bookingPriority,
-        adminNote: adminNote.trim() || undefined,
-      });
+      await distributorOrderService.updateOrderStatus(
+        order.id,
+        OrderStatus.BOOKED,
+        {
+          expectedDispatchDate: expectedDispatchDate || undefined,
+          bookingPriority,
+          adminNote: adminNote.trim() || undefined,
+        }
+      );
       toast.success("Order booked — Ready to dispatch");
       onSuccess();
     } catch (err: any) {
@@ -697,10 +695,17 @@ const BookingConfirmModal: React.FC<{
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <div>
-            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Confirm Booking</p>
-            <h2 className="text-sm font-bold text-slate-900 mt-0.5">{order.distributorName}</h2>
+            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">
+              Confirm Booking
+            </p>
+            <h2 className="text-sm font-bold text-slate-900 mt-0.5">
+              {order.distributorName}
+            </h2>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 transition-colors">
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 transition-colors"
+          >
             <X size={16} />
           </button>
         </div>
@@ -710,13 +715,19 @@ const BookingConfirmModal: React.FC<{
           <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
             <Package size={14} className="text-slate-400 shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Order Summary</p>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                Order Summary
+              </p>
               <p className="text-xs font-bold text-slate-700">
-                {order.items.length} article(s) · {order.totalCartons} CTN · {order.totalPairs} pairs
+                {order.items.length} article(s) · {order.totalCartons} CTN ·{" "}
+                {order.totalPairs} pairs
               </p>
             </div>
             <span className="text-xs font-black text-slate-900">
-              ₹{(order.finalAmount ?? order.totalAmount)?.toLocaleString("en-IN")}
+              ₹
+              {(order.finalAmount ?? order.totalAmount)?.toLocaleString(
+                "en-IN"
+              )}
             </span>
           </div>
 
@@ -724,7 +735,9 @@ const BookingConfirmModal: React.FC<{
           <div>
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
               <Calendar size={10} /> Expected Dispatch Date{" "}
-              <span className="font-normal normal-case text-slate-300">(optional)</span>
+              <span className="font-normal normal-case text-slate-300">
+                (optional)
+              </span>
             </label>
             <input
               type="date"
@@ -763,7 +776,9 @@ const BookingConfirmModal: React.FC<{
           <div>
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
               <StickyNote size={10} /> Internal Note{" "}
-              <span className="font-normal normal-case text-slate-300">(optional)</span>
+              <span className="font-normal normal-case text-slate-300">
+                (optional)
+              </span>
             </label>
             <textarea
               value={adminNote}
@@ -777,7 +792,10 @@ const BookingConfirmModal: React.FC<{
 
         {/* Footer */}
         <div className="flex gap-3 px-5 pb-5">
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition-all">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition-all"
+          >
             Cancel
           </button>
           <button
@@ -785,7 +803,11 @@ const BookingConfirmModal: React.FC<{
             disabled={submitting}
             className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-xs hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {submitting ? <Loader2 size={13} className="animate-spin" /> : <CheckSquare size={13} />}
+            {submitting ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <CheckSquare size={13} />
+            )}
             Book Order
           </button>
         </div>

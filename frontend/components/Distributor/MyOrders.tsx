@@ -31,7 +31,7 @@ interface MyOrdersProps {
 
 const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.PENDING]:   'Pending',
-  [OrderStatus.BOOKED]:    'Booked',
+  [OrderStatus.BOOKED]:    'Pending',
   [OrderStatus.PFD]:       'Dispatched',
   [OrderStatus.RFD]:       'In Transit',
   [OrderStatus.RECEIVED]:  'Delivered',
@@ -134,12 +134,10 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
 
   const statCards = [
     { label: 'Total CTN',  val: statusCounts.total    || 0, color: 'text-slate-700',   bg: 'bg-slate-50',   border: 'border-slate-200', filter: 'ALL' as const },
-    { label: 'Pending',    val: statusCounts.PENDING   || 0, color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-100',  filter: OrderStatus.PENDING   },
-    { label: 'Booked',     val: statusCounts.BOOKED    || 0, color: 'text-indigo-600',  bg: 'bg-indigo-50',  border: 'border-indigo-100',filter: OrderStatus.BOOKED    },
+    { label: 'Pending',    val: statusCounts.BOOKED   || 0, color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-100',  filter: OrderStatus.BOOKED    },
     { label: 'Dispatched', val: statusCounts.PFD       || 0, color: 'text-amber-600',   bg: 'bg-amber-50',   border: 'border-amber-100', filter: OrderStatus.PFD       },
     { label: 'In Transit', val: statusCounts.RFD       || 0, color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-100',  filter: OrderStatus.RFD       },
     { label: 'Delivered',  val: statusCounts.RECEIVED  || 0, color: 'text-green-700',   bg: 'bg-green-50',   border: 'border-green-100', filter: OrderStatus.RECEIVED  },
-    { label: 'Partial',    val: statusCounts.PARTIAL   || 0, color: 'text-orange-600',  bg: 'bg-orange-50',  border: 'border-orange-100',filter: OrderStatus.PARTIAL   },
   ];
 
   return (
@@ -149,7 +147,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">Order History</h2>
-          <p className="text-slate-400 text-xs font-medium">Track your orders · Pending → Booked → Dispatch → Delivered</p>
+          <p className="text-slate-400 text-xs font-medium">Track your orders · Pending → Dispatched → In Transit → Delivered</p>
         </div>
         {lastUpdated && (
           <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg">
@@ -162,7 +160,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
       </div>
 
       {/* Stats Bar — clickable filters */}
-      <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+      <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${statCards.length}, 1fr)` }}>
         {statCards.map(s => (
           <button
             key={s.label}
@@ -226,7 +224,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
         {/* Row 2: Status pills */}
         <div className="px-4 py-2 flex items-center gap-1.5 overflow-x-auto scrollbar-hide">
           <Filter className="text-slate-300 shrink-0" size={12} />
-          {(['ALL', 'PENDING', 'BOOKED', 'PFD', 'RFD', 'OFD', 'PARTIAL', 'RECEIVED', 'CANCELLED'] as const).map((status) => (
+          {(['ALL', 'BOOKED', 'PFD', 'RFD', 'RECEIVED', 'CANCELLED'] as const).map((status) => (
             <button
               key={status}
               onClick={() => { setStatusFilter(status as any); setCurrentPage(1); }}

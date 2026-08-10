@@ -802,6 +802,21 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       const localBrands = [...taxonomy.brands];
       const localMans = [...taxonomy.manufacturers];
       const localUnits = [...taxonomy.units];
+      // Same pattern for articles: the `articles` prop only refreshes via an
+      // async socket round-trip, so it can still be stale for the NEXT group
+      // in this very loop. Without a locally-updated list, two CSV groups
+      // that both resolve to the same article (e.g. split across non-adjacent
+      // row-blocks) would each see "no existing master" and both call
+      // createMasterItem — producing duplicate top-level articles instead of
+      // one merged article. Seed from the current prop, then keep in sync
+      // with every create/update below.
+      const localArticles: any[] = [...articles];
+      const normalizeSavedArticle = (raw: any) => ({
+        id: raw._id,
+        name: raw.articleName,
+        status: raw.stage,
+        variants: (raw.variants || []).map((v: any) => ({ ...v, id: v._id })),
+      });
 
       // Generic: find in list → try create → on 409 re-fetch → push to list
       const findOrCreate = async (
@@ -968,8 +983,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         // Flexible date: accept any format, convert to YYYY-MM-DD
         const expectedDate = parseFlexibleDate(firstRow.expected_date);
 
-        // Match existing master by BOTH name AND stage
-        const existingMaster = articles.find(
+        // Match existing master by BOTH name AND stage — reads localArticles
+        // (kept in sync below after every create/update), not the `articles`
+        // prop, so a later group in this SAME run correctly finds an article
+        // created by an EARLIER group instead of creating a duplicate.
+        const existingMaster = localArticles.find(
           (a) =>
             a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
             (a.status || "AVAILABLE") === stage
@@ -1119,12 +1137,19 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           fd.append("productColors", JSON.stringify(allColors));
           fd.append("sizeRanges", JSON.stringify(allSizes));
           fd.append("variants", JSON.stringify(allVariants));
-          await masterCatalogService.updateMasterItem(existingMaster.id, fd);
+          const updateRes = await masterCatalogService.updateMasterItem(existingMaster.id, fd);
+          // Replace the stale entry so a THIRD group targeting this same
+          // article (e.g. more new variants) sees the just-merged variant
+          // list, not the pre-merge snapshot.
+          const updatedNorm = normalizeSavedArticle(updateRes?.data || {});
+          const idx = localArticles.findIndex((a) => a.id === existingMaster.id);
+          if (idx >= 0) localArticles[idx] = updatedNorm;
         } else {
           fd.append("productColors", JSON.stringify(colors));
           fd.append("sizeRanges", JSON.stringify(sizes));
           fd.append("variants", JSON.stringify(variants));
-          await masterCatalogService.createMasterItem(fd);
+          const createRes = await masterCatalogService.createMasterItem(fd);
+          localArticles.push(normalizeSavedArticle(createRes?.data || {}));
         }
         created++;
       }

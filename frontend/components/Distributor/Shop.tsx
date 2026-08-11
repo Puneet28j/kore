@@ -914,7 +914,7 @@ const Shop: React.FC<ShopProps> = ({
 
   // Build color groups — filtered by distributor tag and stock availability
   const colorGroups = useMemo(() => {
-    return backendArticles.flatMap((article) => {
+    const groups = backendArticles.flatMap((article) => {
       const variants = article.variants || [];
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
@@ -946,6 +946,16 @@ const Shop: React.FC<ShopProps> = ({
             : "PREORDER",
         }));
     });
+
+    // Sort so cards for the same article appear adjacent (AVAILABLE before PREORDER within each article)
+    groups.sort((a, b) => {
+      const nameCompare = a.article.name.localeCompare(b.article.name);
+      if (nameCompare !== 0) return nameCompare;
+      if (a.cardStage === b.cardStage) return 0;
+      return a.cardStage === "AVAILABLE" ? -1 : 1;
+    });
+
+    return groups;
   }, [backendArticles, distributorTag, inStockOnly]);
 
   return (

@@ -15,7 +15,7 @@ router.get("/my-orders", role(["distributor"]), OrderController.getDistributorOr
 // Admin routes
 router.get("/stats", role(["admin", "superadmin"]), OrderController.getOrderStatsCtrl);
 router.get("/dashboard-metrics", role(["admin", "superadmin"]), OrderController.getDashboardMetricsCtrl);
-router.get("/", role(["admin", "superadmin"]), OrderController.getAllOrders);
+router.get("/", role(["admin", "superadmin", "accountant", "manager", "supervisor"]), OrderController.getAllOrders);
 
 // Status update — admin can set any status, distributor can mark as RECEIVED with bill
 router.patch(

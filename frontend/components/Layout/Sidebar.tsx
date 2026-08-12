@@ -196,7 +196,8 @@ const Sidebar: React.FC<SidebarProps> = ({
             {/* Admin menus only */}
             {user.role !== UserRole.DISTRIBUTOR ? (
               <>
-                {/* Manufacturing */}
+                {/* Manufacturing — hidden for accountant */}
+                {user.role !== UserRole.ACCOUNTANT && (
                 <div className="pt-2">
                   <GroupHeader
                     icon={<Factory size={16} />}
@@ -232,8 +233,10 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   )}
                 </div>
+                )}
 
-                {/* Inventory */}
+                {/* Inventory — hidden for accountant */}
+                {user.role !== UserRole.ACCOUNTANT && (
                 <div className="pt-2">
                   <GroupHeader
                     icon={<Boxes size={16} />}
@@ -269,6 +272,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   )}
                 </div>
+                )}
 
                 {/* Sales */}
                 <div className="pt-2">

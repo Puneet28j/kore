@@ -15,6 +15,9 @@ import {
   Plus,
   ChevronDown,
   Check,
+  KeyRound,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import { userService, roleService } from "../../services/userService";
@@ -185,6 +188,14 @@ const UserManager: React.FC = () => {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  // Password column + update credentials modal state
+  const [visiblePasswordId, setVisiblePasswordId] = useState<string | null>(null);
+  const [showCredModal, setShowCredModal] = useState(false);
+  const [credTargetUser, setCredTargetUser] = useState<User | null>(null);
+  const [credPassword, setCredPassword] = useState("");
+  const [showCredPassword, setShowCredPassword] = useState(false);
+  const [isUpdatingCred, setIsUpdatingCred] = useState(false);
+
   // Form State
   const [formData, setFormData] = useState(
     savedUserDraft?.formData || {
@@ -298,6 +309,25 @@ const UserManager: React.FC = () => {
     promise.finally(() => {
       setIsSubmitting(false);
     });
+  };
+
+  const handleUpdateCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!credTargetUser) return;
+    const userId = credTargetUser.id || (credTargetUser as any)._id;
+    setIsUpdatingCred(true);
+    const promise = userService.adminResetPassword(userId, credPassword).then(() => {
+      setShowCredModal(false);
+      setCredPassword("");
+      setShowCredPassword(false);
+      setCredTargetUser(null);
+    });
+    toast.promise(promise, {
+      loading: "Updating password...",
+      success: "Password updated successfully",
+      error: (err: any) => err.message || "Failed to update password",
+    });
+    promise.finally(() => setIsUpdatingCred(false));
   };
 
   const handleStatusToggle = async (user: User, newStatus: boolean) => {
@@ -458,6 +488,9 @@ const UserManager: React.FC = () => {
                 <th className="px-6 py-4 text-sm font-semibold text-slate-600">
                   Join Date
                 </th>
+                <th className="px-6 py-4 text-sm font-semibold text-slate-600">
+                  Password
+                </th>
                 <th className="px-6 py-4 text-sm font-semibold text-slate-600 text-right">
                   Actions
                 </th>
@@ -467,7 +500,7 @@ const UserManager: React.FC = () => {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={4}
+                    colSpan={5}
                     className="px-6 py-12 text-center text-slate-400"
                   >
                     <div className="flex flex-col items-center gap-2">
@@ -479,7 +512,7 @@ const UserManager: React.FC = () => {
               ) : users.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={4}
+                    colSpan={5}
                     className="px-6 py-12 text-center text-slate-400"
                   >
                     <Users size={48} className="mx-auto mb-3 opacity-20" />
@@ -516,6 +549,27 @@ const UserManager: React.FC = () => {
                         ? new Date((user as any).createdAt).toLocaleDateString()
                         : "N/A"}
                     </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-mono text-slate-800">
+                          {visiblePasswordId === (user.id || (user as any)._id)
+                            ? ((user as any).passwordPlain || "—")
+                            : "••••••••"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const uid = user.id || (user as any)._id;
+                            setVisiblePasswordId((prev: string | null) => prev === uid ? null : uid);
+                          }}
+                          className="text-slate-400 hover:text-indigo-600 transition-colors"
+                        >
+                          {visiblePasswordId === (user.id || (user as any)._id)
+                            ? <EyeOff size={14} />
+                            : <Eye size={14} />}
+                        </button>
+                      </div>
+                    </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         {user.role !== UserRole.SUPERADMIN && (
@@ -526,6 +580,18 @@ const UserManager: React.FC = () => {
                               title="Edit User Role"
                             >
                               <Edit size={18} />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setCredTargetUser(user);
+                                setCredPassword("");
+                                setShowCredPassword(false);
+                                setShowCredModal(true);
+                              }}
+                              className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-all"
+                              title="Update Password"
+                            >
+                              <KeyRound size={18} />
                             </button>
                             <Switch
                               checked={user.isActive !== false}
@@ -546,6 +612,68 @@ const UserManager: React.FC = () => {
           <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} totalItems={total} itemsPerPage={pageSize} onPageSizeChange={setPageSize} />
         </div>
       </div>
+
+      {/* Update Credentials Modal */}
+      {showCredModal && credTargetUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">Update Password</h3>
+                <p className="text-sm text-slate-500">For {credTargetUser.name}</p>
+              </div>
+              <button
+                onClick={() => setShowCredModal(false)}
+                className="p-2 hover:bg-slate-100 rounded-lg text-slate-400 transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleUpdateCredentials} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1.5">New Password</label>
+                <div className="relative">
+                  <input
+                    type={showCredPassword ? "text" : "password"}
+                    required
+                    minLength={6}
+                    disabled={isUpdatingCred}
+                    value={credPassword}
+                    onChange={e => setCredPassword(e.target.value)}
+                    placeholder="Minimum 6 characters"
+                    className="w-full px-4 py-2.5 pr-10 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCredPassword((v: boolean) => !v)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-700"
+                  >
+                    {showCredPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCredModal(false)}
+                  className="flex-1 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-bold hover:bg-slate-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUpdatingCred || credPassword.length < 6}
+                  className="flex-1 px-4 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 disabled:opacity-50 flex items-center justify-center"
+                >
+                  {isUpdatingCred
+                    ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    : "Update Password"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* User Modal (Add/Edit) */}
       {showModal && (

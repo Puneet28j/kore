@@ -5,7 +5,7 @@ const role = require("../middlewares/role.middleware");
 const { getStockReport, getDispatchReport, getReturnReport } = require("../controllers/reports.controller");
 
 router.use(auth);
-router.use(role(["admin", "superadmin"]));
+router.use(role(["admin", "superadmin", "accountant"]));
 
 router.get("/stock",    getStockReport);
 router.get("/dispatch", getDispatchReport);

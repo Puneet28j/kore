@@ -614,23 +614,9 @@ exports.getStockTotals = async (stage) => {
   // Company-wide "PO Pending" — same per-variant formula the list API
   // injects (PO planned − GRN received), so the header card always tallies
   // with the per-variant column.
-  const [allPlannedMap, grnReceivedMap, bookedMap] = await Promise.all([
-    exports.getPoPlannedQtyMap(),
-    exports.getGrnReceivedQtyMap(),
-    exports.getBookedQuantityMap(),
-  ]);
-  let totalPoPendingPairs = 0;
-  Object.entries(allPlannedMap.totals).forEach(([variantId, pairs]) => {
-    totalPoPendingPairs += Math.max(0, pairs - (grnReceivedMap.totals[variantId] || 0));
-  });
-
-  // Company-wide "Booked" — same getBookedQuantityMap every per-variant
-  // Booked column already reads, scoped to variants matching this tab's
-  // stage filter (a variant's own effective stage, falling back to its
-  // article's — same rule used above for the live-stock aggregate).
-  let totalBookedPairs = 0;
+  // Build stage-per-variant map first — reused for both PO-pending and booked filtering.
+  const stageByVariant = {};
   if (stage) {
-    const stageByVariant = {};
     const allDocs = await MasterCatalog.find({ isDeleted: false })
       .select("stage variants._id variants.stage")
       .lean();
@@ -639,6 +625,23 @@ exports.getStockTotals = async (stage) => {
         stageByVariant[String(v._id)] = v.stage || doc.stage;
       });
     });
+  }
+
+  const [allPlannedMap, grnReceivedMap, bookedMap] = await Promise.all([
+    exports.getPoPlannedQtyMap(),
+    exports.getGrnReceivedQtyMap(),
+    exports.getBookedQuantityMap(),
+  ]);
+
+  let totalPoPendingPairs = 0;
+  Object.entries(allPlannedMap.totals).forEach(([variantId, pairs]) => {
+    if (stage && stageByVariant[variantId] !== stage) return;
+    totalPoPendingPairs += Math.max(0, pairs - (grnReceivedMap.totals[variantId] || 0));
+  });
+
+  // "Booked" scoped to variants matching this tab's stage filter.
+  let totalBookedPairs = 0;
+  if (stage) {
     Object.entries(bookedMap.totals).forEach(([variantId, pairs]) => {
       if (stageByVariant[variantId] === stage) totalBookedPairs += pairs;
     });

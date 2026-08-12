@@ -69,6 +69,7 @@ exports.createUser = async ({ name, email, password, role, phone }) => {
     name: String(name).trim(),
     email: cleanEmail,
     password: hashed,
+    passwordPlain: String(password),
     role: cleanRole,
     phone: phone ? String(phone).trim() : null,
   });
@@ -336,8 +337,9 @@ exports.adminResetPassword = async (targetUserId, newPassword) => {
     throw err;
   }
 
-  user.password     = await bcrypt.hash(String(newPassword), SALT_ROUNDS);
-  user.tokenVersion = (user.tokenVersion || 0) + 1; // invalidates all existing JWTs
+  user.password      = await bcrypt.hash(String(newPassword), SALT_ROUNDS);
+  user.passwordPlain = String(newPassword);
+  user.tokenVersion  = (user.tokenVersion || 0) + 1; // invalidates all existing JWTs
   await user.save();
 
   const { emitSessionInvalidated } = require("../socket");

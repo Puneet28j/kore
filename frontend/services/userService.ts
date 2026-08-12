@@ -81,6 +81,14 @@ export const userService = {
     });
     return response.data;
   },
+
+  adminResetPassword: async (userId: string, newPassword: string) => {
+    const response = await apiFetch(`/users/${userId}/reset-password`, {
+      method: "PATCH",
+      body: JSON.stringify({ newPassword }),
+    });
+    return response.data;
+  },
 };
 
 export const roleService = {

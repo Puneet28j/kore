@@ -16,7 +16,6 @@ const AccountantPage: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-10">
-
       {/* Header */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
         <div className="flex items-center gap-4">
@@ -24,9 +23,11 @@ const AccountantPage: React.FC = () => {
             <IndianRupee size={24} className="text-rose-600" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-slate-900">Accounts & Finance</h2>
+            <h2 className="text-xl font-bold text-slate-900">
+              Accounts & Finance
+            </h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              Vendor bill management · Overdue payment tracking
+              Distributor invoice management · Overdue payment tracking
             </p>
           </div>
         </div>
@@ -42,7 +43,7 @@ const AccountantPage: React.FC = () => {
             }`}
           >
             <FileText size={16} />
-            Vendor Bills
+            Distributor Invoice
           </button>
           <button
             onClick={() => setActiveTab("overdue")}
@@ -64,7 +65,6 @@ const AccountantPage: React.FC = () => {
       {activeTab === "overdue" && (
         <OverduePayments isAdmin={true} showAll={true} />
       )}
-
     </div>
   );
 };

@@ -955,11 +955,17 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     status?: string;
   }[] = [];
 
+  const seen = new Set<string>();
+
   articles.forEach((article) => {
     const articleId = article.id || (article as any)._id || "";
 
     if (article.variants && article.variants.length > 0) {
       article.variants.forEach((variant: any) => {
+        const assortmentStr = formatAssortment(variant.sizeQuantities) || variant.sizeRange || "NoRange";
+        const dedupeKey = `${variant.sku || article.sku || ""}__${assortmentStr}`;
+        if (seen.has(dedupeKey)) return;
+        seen.add(dedupeKey);
         list.push({
           articleId,
           masterName: article.name,
@@ -998,6 +1004,12 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
         });
       });
     } else {
+      const dedupeKey = `${article.sku || ""}__no-variant`;
+      if (!seen.has(dedupeKey)) {
+        seen.add(dedupeKey);
+      } else {
+        return;
+      }
       list.push({
         articleId,
         masterName: article.name,

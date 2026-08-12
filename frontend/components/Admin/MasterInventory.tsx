@@ -112,6 +112,8 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   // Company-wide reserved/undispatched pairs for this tab's variants — same
   // getBookedQuantityMap formula as the per-row Booked column.
   const [totalBookedPairs, setTotalBookedPairs] = useState(0);
+  // Pairs reserved by distributors in PRE_BOOKED / CONFIRMED orders for PREORDER variants.
+  const [totalPreOrderedPairs, setTotalPreOrderedPairs] = useState(0);
 
   const fetchStockTotals = useCallback(async (stage?: string) => {
     try {
@@ -121,6 +123,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       setTotalPlannedPairs(Number(data.totalPlannedPairs) || 0);
       setTotalPOPairs(Number(data.totalPoPendingPairs) || 0);
       setTotalBookedPairs(Number(data.totalBookedPairs) || 0);
+      setTotalPreOrderedPairs(Number(data.totalPreOrderedPairs) || 0);
     } catch {
       /* silent — keep last known totals */
     }
@@ -635,9 +638,31 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       {/* Stats Row */}
       <div
         className={`grid gap-4 ${
-          stockTab === "RFD" ? "grid-cols-3" : "grid-cols-2 max-w-xl"
+          stockTab === "RFD" ? "grid-cols-3" : "grid-cols-3 max-w-3xl"
         }`}
       >
+        {/* PREORDER only — Total card (Planned + Booked) */}
+        {stockTab !== "RFD" && (
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex items-center gap-4">
+            <div className="p-2.5 bg-slate-100 rounded-xl">
+              <Database size={20} className="text-slate-600" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest">
+                Total
+              </p>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-2xl font-black text-slate-900">
+                  {Math.floor((totalPlannedPairs + totalPreOrderedPairs) / 24).toLocaleString()}
+                </span>
+                <span className="text-xs font-bold text-slate-400">Ctns</span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                {(totalPlannedPairs + totalPreOrderedPairs).toLocaleString()} pairs planned + booked
+              </p>
+            </div>
+          </div>
+        )}
         <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm p-4 flex items-center gap-4">
           <div className="p-2.5 bg-emerald-50 rounded-xl">
             <TrendingUp size={20} className="text-emerald-600" />
@@ -654,7 +679,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             </div>
             <p className="text-[10px] text-slate-400 mt-0.5">
               {(stockTab === "RFD" ? totalLivePairs : totalPlannedPairs).toLocaleString()} pairs
-              {stockTab !== "RFD" && " expected — not real stock"}
+              {stockTab !== "RFD" && " — PO generated"}
             </p>
           </div>
         </div>
@@ -668,12 +693,13 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             </p>
             <div className="flex items-baseline gap-1.5">
               <span className="text-2xl font-black text-slate-900">
-                {Math.floor(totalBookedPairs / 24).toLocaleString()}
+                {Math.floor((stockTab === "RFD" ? totalBookedPairs : totalPreOrderedPairs) / 24).toLocaleString()}
               </span>
               <span className="text-xs font-bold text-slate-400">Ctns</span>
             </div>
             <p className="text-[10px] text-slate-400 mt-0.5">
-              {totalBookedPairs.toLocaleString()} pairs reserved
+              {(stockTab === "RFD" ? totalBookedPairs : totalPreOrderedPairs).toLocaleString()}{" "}
+              {stockTab === "RFD" ? "pairs reserved" : "pairs reserved by distributors"}
             </p>
           </div>
         </div>

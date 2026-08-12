@@ -7,6 +7,7 @@ interface StateData {
   orders: number;
   revenue: number;
   distributors: Set<string>;
+  cartons: number;
 }
 
 // ── Tooltip data ──
@@ -16,6 +17,7 @@ interface TooltipInfo {
   orders: number;
   revenue: number;
   distributors: number;
+  cartons: number;
   x: number;
   y: number;
   flipBelow: boolean;
@@ -128,10 +130,12 @@ const InteractiveIndiaMap: React.FC<InteractiveIndiaMapProps> = ({ orders }) => 
       const locationText = addrState || addrCity || order.distributorName;
       const code = resolveStateCode(locationText);
       if (code) {
-        const existing = map.get(code) || { orders: 0, revenue: 0, distributors: new Set<string>() };
+        const existing = map.get(code) || { orders: 0, revenue: 0, distributors: new Set<string>(), cartons: 0 };
         existing.orders += 1;
         existing.revenue += order.totalAmount;
-        existing.distributors.add(order.distributorId);
+        const distKey = typeof order.distributorId === 'string' ? order.distributorId : (order.distributorId as any)?.id || String(order.distributorId);
+        existing.distributors.add(distKey);
+        existing.cartons += order.totalCartons || 0;
         map.set(code, existing);
       }
     });
@@ -177,6 +181,7 @@ const InteractiveIndiaMap: React.FC<InteractiveIndiaMapProps> = ({ orders }) => 
         orders: data?.orders || 0,
         revenue: data?.revenue || 0,
         distributors: data?.distributors.size || 0,
+        cartons: data?.cartons || 0,
         x: clampedX,
         y: rawY,
         flipBelow,
@@ -191,13 +196,31 @@ const InteractiveIndiaMap: React.FC<InteractiveIndiaMapProps> = ({ orders }) => 
     setHoveredState(null);
   }, []);
 
+  // ── Revenue tiers for state fill and marker color ──
+  const maxRevenue = React.useMemo(() => {
+    let max = 0;
+    stateDataMap.forEach((d) => { if (d.revenue > max) max = d.revenue; });
+    return max;
+  }, [stateDataMap]);
+
+  const getStateFill = (stateId: string, hovered: boolean): string => {
+    if (hovered) return '#c7d2fe'; // indigo-200 on hover
+    const data = stateDataMap.get(stateId);
+    if (!data || data.revenue === 0) return '#f1f5f9'; // slate-100 — no orders
+    const ratio = maxRevenue > 0 ? data.revenue / maxRevenue : 0;
+    if (ratio >= 0.6) return '#bbf7d0'; // green-200 — high
+    if (ratio >= 0.25) return '#fef08a'; // yellow-200 — medium
+    return '#e2e8f0'; // slate-200 — low (slightly tinted)
+  };
+
   // ── Determine marker color based on data ──
   const getMarkerColor = (stateId: string): string => {
     const data = stateDataMap.get(stateId);
-    if (!data) return '#94a3b8'; // slate-400 — no data
-    if (data.revenue > 50000) return '#4f46e5'; // indigo-600 — high value
-    if (data.revenue > 10000) return '#10b981'; // emerald-500 — medium
-    return '#f59e0b'; // amber-500 — low
+    if (!data || data.revenue === 0) return '#94a3b8'; // slate-400 — no data
+    const ratio = maxRevenue > 0 ? data.revenue / maxRevenue : 0;
+    if (ratio >= 0.6) return '#16a34a'; // green-600 — high
+    if (ratio >= 0.25) return '#ca8a04'; // yellow-600 — medium
+    return '#64748b'; // slate-500 — low
   };
 
   const getMarkerRadius = (stateId: string): number => {
@@ -224,7 +247,7 @@ const InteractiveIndiaMap: React.FC<InteractiveIndiaMapProps> = ({ orders }) => 
               key={state.id}
               id={`state-${state.id}`}
               d={state.d}
-              fill={hoveredState === state.id ? '#e0e7ff' : '#f1f5f9'}
+              fill={getStateFill(state.id, hoveredState === state.id)}
               stroke="#cbd5e1"
               strokeWidth="0.8"
               className="transition-colors duration-200 cursor-pointer"
@@ -315,6 +338,10 @@ const InteractiveIndiaMap: React.FC<InteractiveIndiaMapProps> = ({ orders }) => 
                 <span className="text-slate-500">Distributors</span>
                 <span className="font-semibold text-slate-700">{tooltip.distributors}</span>
               </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Cartons</span>
+                <span className="font-semibold text-slate-700">{tooltip.cartons.toLocaleString()}</span>
+              </div>
             </div>
             {tooltip.orders === 0 && (
               <p className="text-[10px] text-slate-400 mt-2 italic">No orders yet</p>
@@ -332,19 +359,19 @@ const InteractiveIndiaMap: React.FC<InteractiveIndiaMapProps> = ({ orders }) => 
       {/* ── Legend ── */}
       <div className="flex items-center justify-center gap-4 flex-wrap px-3 py-2 border-t border-slate-100 bg-white/80">
         <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 rounded-full bg-indigo-600" />
-          <span className="text-[10px] text-slate-600">High (&gt;₹50k)</span>
+          <div className="w-3 h-3 rounded-sm bg-green-200 border border-green-400" />
+          <span className="text-[10px] text-slate-600">High Revenue</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 rounded-full bg-emerald-500" />
-          <span className="text-[10px] text-slate-600">Medium (&gt;₹10k)</span>
+          <div className="w-3 h-3 rounded-sm bg-yellow-200 border border-yellow-400" />
+          <span className="text-[10px] text-slate-600">Medium</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 rounded-full bg-amber-500" />
-          <span className="text-[10px] text-slate-600">Low (&lt;₹10k)</span>
+          <div className="w-3 h-3 rounded-sm bg-slate-200 border border-slate-300" />
+          <span className="text-[10px] text-slate-600">Low</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 rounded-full bg-slate-400" />
+          <div className="w-3 h-3 rounded-sm bg-slate-100 border border-slate-200" />
           <span className="text-[10px] text-slate-600">No Orders</span>
         </div>
       </div>

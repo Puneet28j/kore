@@ -6,6 +6,7 @@ import {
   TrendingUp, Users, Package, ArrowUpRight, ChevronLeft,
   Calendar, FileText, Building2, Star, Search, ArrowUpDown, ChevronDown, X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import InteractiveIndiaMap from './InteractiveIndiaMap';
 import { Order, Inventory, Article, OrderStatus, PurchaseOrder } from '../../types';
 import { poService } from '../../services/poService';
@@ -521,7 +522,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     poService.listPOs({ limit: 500 }).then(res => {
       const list: PurchaseOrder[] = res.data ?? res ?? [];
       setPOs(list);
-    }).catch(() => {});
+    }).catch(() => {
+      toast.error("Failed to load purchase orders");
+    });
   };
 
   // Company-wide live stock (not limited to the paginated articles prop)
@@ -599,8 +602,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const allProducts = useMemo(() => computeProducts(filteredOrders, articles), [filteredOrders, articles]);
   const sortedProducts = useMemo(() => sortProducts(allProducts, productSort), [allProducts, productSort]);
 
-  // Pending POs
-  const pendingPOs = useMemo(() => pos.filter(p => p.status === 'DRAFT'), [pos]);
+  // Pending POs — DRAFT (not sent yet) OR SENT but bill not yet approved
+  const pendingPOs = useMemo(() => pos.filter(p =>
+    p.status === 'DRAFT' || p.billStatus !== 'APPROVED'
+  ), [pos]);
   const sortedPOs  = useMemo(() => sortPOs(pendingPOs, poSort), [pendingPOs, poSort]);
 
   // ── Show More Views ──────────────────────────────────────────────────────────
@@ -805,8 +810,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                   <p className="text-[11px] text-slate-500 truncate">{po.vendorName} · {new Date(po.date).toLocaleDateString('en-IN')}</p>
                 </div>
-                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 uppercase shrink-0">
-                  DRAFT
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase shrink-0 ${
+                  po.status === 'DRAFT'
+                    ? 'bg-amber-100 text-amber-700'
+                    : po.billStatus === 'REJECTED'
+                    ? 'bg-red-100 text-red-700'
+                    : 'bg-blue-100 text-blue-700'
+                }`}>
+                  {po.status === 'DRAFT' ? 'DRAFT' : po.billStatus || 'SENT'}
                 </span>
               </div>
             ))}

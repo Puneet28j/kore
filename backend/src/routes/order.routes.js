@@ -13,8 +13,8 @@ router.post("/", role(["distributor"]), OrderController.createOrder);
 router.get("/my-orders", role(["distributor"]), OrderController.getDistributorOrders);
 
 // Admin routes
-router.get("/stats", role(["admin", "superadmin"]), OrderController.getOrderStatsCtrl);
-router.get("/dashboard-metrics", role(["admin", "superadmin"]), OrderController.getDashboardMetricsCtrl);
+router.get("/stats", role(["admin", "superadmin", "accountant", "manager", "supervisor"]), OrderController.getOrderStatsCtrl);
+router.get("/dashboard-metrics", role(["admin", "superadmin", "accountant", "manager", "supervisor"]), OrderController.getDashboardMetricsCtrl);
 router.get("/", role(["admin", "superadmin", "accountant", "manager", "supervisor"]), OrderController.getAllOrders);
 
 // Status update — admin can set any status, distributor can mark as RECEIVED with bill

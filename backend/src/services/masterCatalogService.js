@@ -582,6 +582,7 @@ exports.getStockTotals = async (stage) => {
   // Planned pairs come from Purchase Orders now (not a stored field) and only
   // exist for still-PREORDER variants — the AVAILABLE tab has nothing planned.
   let totalPlannedPairs = 0;
+  let totalPreOrderedPairs = 0;
   if (stage !== "AVAILABLE") {
     const preorderDocs = await MasterCatalog.find({
       isDeleted: false,
@@ -607,6 +608,29 @@ exports.getStockTotals = async (stage) => {
       const plannedMap = await exports.getPoPlannedQtyMap(preorderArticleIds);
       Object.entries(plannedMap.totals).forEach(([variantId, pairs]) => {
         if (preorderVariantIds.has(variantId)) totalPlannedPairs += pairs;
+      });
+    }
+
+    // Pairs reserved by distributors for PREORDER variants across all active
+    // order statuses. preorderReservedSizeQuantities is empty until GRN stock
+    // arrives, so we always use sizeQuantities directly here.
+    if (preorderVariantIds.size > 0) {
+      const Order = require("../models/Order");
+      const preOrders = await Order.find({
+        status: { $in: ["PRE_BOOKED", "CONFIRMED", "PENDING", "BOOKED", "PARTIAL"] },
+      }).lean();
+      preOrders.forEach((order) => {
+        (order.items || []).forEach((item) => {
+          if (!item.variantId) return;
+          if (!preorderVariantIds.has(String(item.variantId))) return;
+          const sq =
+            item.sizeQuantities instanceof Map
+              ? Object.fromEntries(item.sizeQuantities)
+              : item.sizeQuantities || {};
+          Object.values(sq).forEach((qty) => {
+            totalPreOrderedPairs += Number(qty) || 0;
+          });
+        });
       });
     }
   }
@@ -655,6 +679,7 @@ exports.getStockTotals = async (stage) => {
     totalPlannedPairs: Math.max(0, Math.round(totalPlannedPairs)),
     totalPoPendingPairs: Math.max(0, Math.round(totalPoPendingPairs)),
     totalBookedPairs: Math.max(0, Math.round(totalBookedPairs)),
+    totalPreOrderedPairs: Math.max(0, Math.round(totalPreOrderedPairs)),
   };
 };
 

@@ -176,6 +176,7 @@ export interface OrderItem {
   fulfilledPairCount?: number;
   returnedPairCount?: number;
   price: number;
+  allocatedCartons?: string[];
 }
 
 export interface FulfillmentBatch {

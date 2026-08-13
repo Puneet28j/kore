@@ -62,6 +62,8 @@ interface CatalogueManagerProps {
   onAddNewMaster?: () => void;
   scrollToArticleId?: string | null;
   onScrollRestored?: () => void;
+  initialActiveTab?: "AVAILABLE" | "PREORDER";
+  onActiveTabChange?: (tab: "AVAILABLE" | "PREORDER") => void;
 }
 
 // ─── CSV Types ──────────────────────────────────────────────────────────────────
@@ -291,8 +293,8 @@ function parseCsvRow(line: string): string[] {
 const CSV_HEADER_ALIASES: Record<string, string> = {
   sku: "sku_ctn",
   "listing status": "listing_status",
-  "listingstatus": "listing_status",
-  "listing_status": "listing_status",
+  listingstatus: "listing_status",
+  listing_status: "listing_status",
   "expected date": "expected_date",
   "sole color": "sole_color",
   "cost price": "cost_price",
@@ -306,15 +308,43 @@ function normalizeHeader(h: string): string {
 }
 
 // Required columns (after alias normalization) for the import to proceed
-const CSV_REQUIRED_COLUMNS: { key: string; label: string; check: (headers: string[]) => boolean }[] = [
-  { key: "name",           label: "name",                                      check: hs => hs.includes("name") },
-  { key: "color",          label: "color",                                     check: hs => hs.includes("color") },
-  { key: "sku_ctn",        label: "sku  (carton SKU)",                         check: hs => hs.includes("sku_ctn") },
-  { key: "size",           label: "size  (size range, e.g. 6-10)",             check: hs => hs.includes("size") },
-  { key: "tag",            label: "tag  (online / offline)",                   check: hs => hs.includes("tag") },
-  { key: "gender",         label: "gender  (MEN / WOMEN / KIDS)",              check: hs => hs.includes("gender") },
-  { key: "listing_status", label: "listing_status  (available / wishlist)",    check: hs => hs.includes("listing_status") },
-  { key: "size_assortment",label: "size assortment columns  (e.g. size_5, size_6 …)", check: hs => hs.some(h => /^size_[\d]/.test(h)) },
+const CSV_REQUIRED_COLUMNS: {
+  key: string;
+  label: string;
+  check: (headers: string[]) => boolean;
+}[] = [
+  { key: "name", label: "name", check: (hs) => hs.includes("name") },
+  { key: "color", label: "color", check: (hs) => hs.includes("color") },
+  {
+    key: "sku_ctn",
+    label: "sku  (carton SKU)",
+    check: (hs) => hs.includes("sku_ctn"),
+  },
+  {
+    key: "size",
+    label: "size  (size range, e.g. 6-10)",
+    check: (hs) => hs.includes("size"),
+  },
+  {
+    key: "tag",
+    label: "tag  (online / offline)",
+    check: (hs) => hs.includes("tag"),
+  },
+  {
+    key: "gender",
+    label: "gender  (MEN / WOMEN / KIDS)",
+    check: (hs) => hs.includes("gender"),
+  },
+  {
+    key: "listing_status",
+    label: "listing_status  (available / wishlist)",
+    check: (hs) => hs.includes("listing_status"),
+  },
+  {
+    key: "size_assortment",
+    label: "size assortment columns  (e.g. size_5, size_6 …)",
+    check: (hs) => hs.some((h) => /^size_[\d]/.test(h)),
+  },
 ];
 
 function parseCsv(text: string): CsvRow[] {
@@ -337,7 +367,9 @@ function parseCsv(text: string): CsvRow[] {
 // Returns list of missing required column labels given the raw first-line text
 function getMissingColumns(firstLine: string): string[] {
   const headers = parseCsvRow(firstLine).map(normalizeHeader);
-  return CSV_REQUIRED_COLUMNS.filter(rc => !rc.check(headers)).map(rc => rc.label);
+  return CSV_REQUIRED_COLUMNS.filter((rc) => !rc.check(headers)).map(
+    (rc) => rc.label
+  );
 }
 
 // function groupCsvByName(rows: CsvRow[]): Record<string, CsvRow[]> {
@@ -447,8 +479,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   onAddNewMaster,
   scrollToArticleId,
   onScrollRestored,
+  initialActiveTab,
+  onActiveTabChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<CatalogStatus>("AVAILABLE");
+  const [activeTab, setActiveTab] = useState<CatalogStatus>(initialActiveTab ?? "AVAILABLE");
   const [searchTerm, setSearchTerm] = useState("");
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
   const [sortOption, setSortOption] = useState<string>("name_asc");
@@ -475,7 +509,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   }, [scrollToArticleId]);
 
   useEffect(() => {
-    if (!scrollToArticleId || didScrollRef.current || localArticles.length === 0) return;
+    if (
+      !scrollToArticleId ||
+      didScrollRef.current ||
+      localArticles.length === 0
+    )
+      return;
     const el = document.getElementById(`article-${scrollToArticleId}`);
     if (el) {
       el.scrollIntoView({ behavior: "instant", block: "center" });
@@ -1137,12 +1176,17 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           fd.append("productColors", JSON.stringify(allColors));
           fd.append("sizeRanges", JSON.stringify(allSizes));
           fd.append("variants", JSON.stringify(allVariants));
-          const updateRes = await masterCatalogService.updateMasterItem(existingMaster.id, fd);
+          const updateRes = await masterCatalogService.updateMasterItem(
+            existingMaster.id,
+            fd
+          );
           // Replace the stale entry so a THIRD group targeting this same
           // article (e.g. more new variants) sees the just-merged variant
           // list, not the pre-merge snapshot.
           const updatedNorm = normalizeSavedArticle(updateRes?.data || {});
-          const idx = localArticles.findIndex((a) => a.id === existingMaster.id);
+          const idx = localArticles.findIndex(
+            (a) => a.id === existingMaster.id
+          );
           if (idx >= 0) localArticles[idx] = updatedNorm;
         } else {
           fd.append("productColors", JSON.stringify(colors));
@@ -1276,7 +1320,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     });
   };
 
-const handleStatusToggle = async (article: Article, newStatus: boolean) => {
+  const handleStatusToggle = async (article: Article, newStatus: boolean) => {
     const updated: Article = {
       ...article,
       isActive: newStatus,
@@ -1722,6 +1766,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
           onClick={() => {
             setActiveTab("AVAILABLE");
             setCurrentPage(1);
+            onActiveTabChange?.("AVAILABLE");
           }}
           className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
             activeTab === "AVAILABLE"
@@ -1736,6 +1781,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
           onClick={() => {
             setActiveTab("PREORDER");
             setCurrentPage(1);
+            onActiveTabChange?.("PREORDER");
           }}
           className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
             activeTab === "PREORDER"
@@ -1834,9 +1880,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
 
           // Calculate price ranges (per-carton = per-pair × 24)
           const costPrices =
-            tabVariants
-              .map((v) => v.costPrice || 0)
-              .filter((p) => p > 0) || [];
+            tabVariants.map((v) => v.costPrice || 0).filter((p) => p > 0) || [];
           const mrpPrices =
             tabVariants.map((v) => v.mrp || 0).filter((p) => p > 0) || [];
 
@@ -2013,7 +2057,7 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                     <Edit2 size={16} />
                   </button>
 
-<button
+                  <button
                     onClick={() => {
                       if (window.confirm(`Delete ${article.name}?`))
                         deleteArticle(article.id);
@@ -2110,11 +2154,13 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                                         // colors do have dedicated photos, a blank here should
                                         // stay blank rather than borrow another color's image.
                                         const vImg =
-                                          matched && matched.images && matched.images.length > 0
+                                          matched &&
+                                          matched.images &&
+                                          matched.images.length > 0
                                             ? matched.images[0].url
                                             : colorMedia.length === 0
-                                              ? article.imageUrl
-                                              : "";
+                                            ? article.imageUrl
+                                            : "";
 
                                         return vImg ? (
                                           <img
@@ -2248,11 +2294,13 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                                         v.color.toLowerCase()
                                     );
                                     const vImg =
-                                      matched && matched.images && matched.images.length > 0
+                                      matched &&
+                                      matched.images &&
+                                      matched.images.length > 0
                                         ? matched.images[0].url
                                         : colorMedia.length === 0
-                                          ? article.imageUrl
-                                          : "";
+                                        ? article.imageUrl
+                                        : "";
 
                                     return vImg ? (
                                       <img
@@ -2405,14 +2453,18 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                     <p className="text-xs text-slate-400 mb-1">
                       <span className="font-bold text-red-500">Required: </span>
                       <code className="bg-slate-100 px-1 rounded">
-                        name, color, sku, size, tag, gender, listing_status, size_5 / size_6 …
+                        name, color, sku, size, tag, gender, listing_status,
+                        size_5 / size_6 …
                       </code>
                     </p>
                     <p className="text-xs text-slate-400 mb-3">
-                      <span className="font-bold text-slate-500">Optional: </span>
+                      <span className="font-bold text-slate-500">
+                        Optional:{" "}
+                      </span>
                       <code className="bg-slate-100 px-1 rounded">
-                        online_mrp, offline_mrp, cost_price, hsn, category, brand,
-                        manufacturer, unit, image, sole_color, expected_date
+                        online_mrp, offline_mrp, cost_price, hsn, category,
+                        brand, manufacturer, unit, image, sole_color,
+                        expected_date
                       </code>
                     </p>
                     <a
@@ -2466,9 +2518,14 @@ const handleStatusToggle = async (article: Article, newStatus: boolean) => {
                       </p>
                       <ul className="space-y-1">
                         {csvMissingCols.map((col) => (
-                          <li key={col} className="flex items-center gap-2 text-xs text-red-700">
+                          <li
+                            key={col}
+                            className="flex items-center gap-2 text-xs text-red-700"
+                          >
                             <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-                            <code className="bg-red-100 px-1.5 py-0.5 rounded font-mono font-bold">{col}</code>
+                            <code className="bg-red-100 px-1.5 py-0.5 rounded font-mono font-bold">
+                              {col}
+                            </code>
                           </li>
                         ))}
                       </ul>

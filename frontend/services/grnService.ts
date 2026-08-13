@@ -170,6 +170,11 @@ export const grnService = {
     return apiFetch(`/grn/references/${refId}/received-cartons`);
   },
 
+  async getVariantCartonCounter(variantId: string): Promise<number> {
+    const res = await apiFetch(`/master-catalog/variants/${variantId}/carton-counter`);
+    return res.nextSerial || 1;
+  },
+
   async create(payload: any) {
     const { poId, linkedPoIds = [], poNos = [], form, scanState } = payload;
 

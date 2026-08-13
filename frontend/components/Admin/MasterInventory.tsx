@@ -177,7 +177,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
         // PO Pending comes injected per variant from the list API (PO
         // planned − GRN received) — same source as the on-screen table.
         const poPairs = Number(v.poPendingPairs) || 0;
-        const bookedPairs = bookedPairsPerVariant[v._id] ?? 0;
+        const bookedPairs =
+          stockTab === "RFD"
+            ? (bookedPairsPerVariant[v._id] ?? 0)
+            : (Number(v.preBookedPairs) || 0);
 
         rows.push({
           article: item.articleName,
@@ -799,9 +802,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             const articleBookedPairs = tabVariants.reduce(
               (sum, v) =>
                 sum +
-                (bookedPairsPerVariant[v.id] ??
-                  bookedPairsPerVariant[(v as any)._id] ??
-                  0),
+                (stockTab === "RFD"
+                  ? (bookedPairsPerVariant[v.id] ?? bookedPairsPerVariant[(v as any)._id] ?? 0)
+                  : (Number((v as any).preBookedPairs) || 0)),
               0
             );
 
@@ -1023,9 +1026,11 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                 Number((variant as any).poPendingPairs) || 0;
                               const poCtns = Math.floor(poPairs / 24);
                               const bookedPairs =
-                                bookedPairsPerVariant[variant.id] ??
-                                bookedPairsPerVariant[(variant as any)._id] ??
-                                0;
+                                stockTab === "RFD"
+                                  ? (bookedPairsPerVariant[variant.id] ??
+                                      bookedPairsPerVariant[(variant as any)._id] ??
+                                      0)
+                                  : (Number((variant as any).preBookedPairs) || 0);
                               const bookedCtns = Math.floor(bookedPairs / 24);
 
                               return (

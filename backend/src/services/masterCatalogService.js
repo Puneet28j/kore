@@ -1388,23 +1388,31 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
     variant.sizeMap.set(size, cell);
   });
 
-  catalog.markModified("variants");
-  await catalog.save();
-
   const dirLabel = type === "INWARD" ? "Inward" : "Outward";
   const totalPairs = Object.values(delta).reduce((s, v) => s + v, 0);
 
-  // Physical cartons genuinely arrive for these reasons — assign box labels
-  // the same way GRN does (<Carton SKU>-CT<serial>), restarting at CT001 for
-  // this movement. No printed-label rescan gate here (unlike GRN receiving).
-  const PHYSICAL_BOX_REASONS = ["Returned Stock", "Stock Transfer In"];
+  // All inward movements represent real cartons arriving — assign box labels
+  // using a global per-variant counter so serials never restart across inwards.
   let cartonBarcodes = [];
-  if (type === "INWARD" && PHYSICAL_BOX_REASONS.includes(reason)) {
+  if (type === "INWARD") {
+    const Counter = require("../models/Counter");
     const cartonSku = variant.sku || variant.itemName || "CTN";
-    cartonBarcodes = Array.from({ length: cartons }, (_, i) =>
-      `${cartonSku}-CT${String(i + 1).padStart(4, "0")}`
+    const counter = await Counter.findOneAndUpdate(
+      { id: `carton-serial-${variantIdStr}` },
+      { $inc: { seq: cartons } },
+      { new: true, upsert: true }
     );
+    const lastSerial = counter.seq;
+    const firstSerial = lastSerial - cartons + 1;
+    cartonBarcodes = Array.from({ length: cartons }, (_, i) =>
+      `${cartonSku}-CT${String(firstSerial + i).padStart(4, "0")}`
+    );
+    // Register in variant's available pool so dispatch scan can show and validate them
+    variant.availableCartons = [...(variant.availableCartons || []), ...cartonBarcodes];
   }
+
+  catalog.markModified("variants");
+  await catalog.save();
 
   await activityLog.createLog({
     action: type === "INWARD" ? "STOCK_INWARD" : "STOCK_OUTWARD",

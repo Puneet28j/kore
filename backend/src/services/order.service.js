@@ -6,6 +6,22 @@ const Return = require("../models/Return");
 const activityLog = require("./activityLog.service");
 const notification = require("./notification.service");
 
+// Pull cartonCount codes from the front of variant.availableCartons and store on item.
+// No-op if the pool is empty (legacy/GRN orders — backward compat).
+const allocateCartonsToItem = async (item) => {
+  if (!item.variantId || !item.cartonCount) return;
+  const variantCatalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
+  const variantDoc = variantCatalog?.variants.id(item.variantId);
+  if (!variantDoc || !(variantDoc.availableCartons || []).length) return;
+  const pool = variantDoc.availableCartons;
+  const allocated = pool.slice(0, item.cartonCount);
+  if (allocated.length === 0) return;
+  item.allocatedCartons = allocated;
+  variantDoc.availableCartons = pool.slice(allocated.length);
+  variantCatalog.markModified("variants");
+  await variantCatalog.save();
+};
+
 // Extract 2-letter prefix from company name (e.g. "Coding Wala" → "CW", "Aura" → "AU")
 const getCompanyPrefix = (companyName) => {
   if (!companyName) return "OR";
@@ -343,6 +359,16 @@ const createOrder = async (distributorId, orderData) => {
     });
 
     const savedOrder = await order.save();
+
+    // Pre-allocate carton codes from the pool for each REGULAR item
+    let poolChanged = false;
+    for (const item of savedOrder.items) {
+      if (item.bookingType !== "REGULAR") continue;
+      const before = (item.allocatedCartons || []).length;
+      await allocateCartonsToItem(item);
+      if ((item.allocatedCartons || []).length !== before) poolChanged = true;
+    }
+    if (poolChanged) await savedOrder.save();
 
     // Deduct live stock immediately for REGULAR items only — pre-order
     // items have no real stock yet; their deduction happens later, per
@@ -774,6 +800,12 @@ const updateOrderStatus = async (
     // reducing sizeMap.qty.
     if (status === "BOOKED" && previousStatus === "PENDING") {
       await adjustVariantStock(order.items, -1);
+      // Allocate pool codes to items that don't have them yet
+      for (const item of order.items) {
+        if (!(item.allocatedCartons || []).length) {
+          await allocateCartonsToItem(item);
+        }
+      }
     }
 
     // Generate orderNumber when admin confirms (BOOKED) — keeps sequence clean
@@ -914,6 +946,20 @@ const updateOrderStatus = async (
         return { variantId: item.variantId, sizeQuantities: remaining };
       });
       await adjustVariantStock(restoreItems, 1);
+
+      // Return unscanned allocated cartons back to the pool (prepend to keep low serials first)
+      const scannedCodes = new Set((order.cartonTracking || []).map(c => c.code));
+      for (const item of order.items) {
+        if (!(item.allocatedCartons || []).length || !item.variantId) continue;
+        const toReturn = item.allocatedCartons.filter(c => !scannedCodes.has(c));
+        if (!toReturn.length) continue;
+        const variantCatalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
+        const variantDoc = variantCatalog?.variants.id(item.variantId);
+        if (!variantDoc) continue;
+        variantDoc.availableCartons = [...toReturn, ...(variantDoc.availableCartons || [])];
+        variantCatalog.markModified("variants");
+        await variantCatalog.save();
+      }
     }
 
     // Apply updates to the order object
@@ -995,6 +1041,21 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
       (i) => (i.variantId?.toString() || i.articleId?.toString()) === itemKey
     );
     if (!item) throw new Error("Item not found on this order");
+
+    // Validate against this order's pre-allocated carton codes.
+    // If allocatedCartons is empty (legacy/GRN orders), allow any code freely.
+    if ((item.allocatedCartons || []).length > 0) {
+      if (!item.allocatedCartons.includes(cartonCode)) {
+        const alreadyScanned = new Set((order.cartonTracking || []).map(c => c.code));
+        const nextCode = item.allocatedCartons.find(c => !alreadyScanned.has(c));
+        throw new Error(
+          nextCode
+            ? `Scan ${nextCode} next — ${cartonCode} is not allocated to this order`
+            : "No cartons available for this order"
+        );
+      }
+    }
+
     // A pre-order item can dispatch whatever whole cartons its GRN
     // reservations have already backed with real stock — no need to wait
     // for the rest of the order's quantity to arrive (matches how a

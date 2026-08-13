@@ -295,6 +295,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentOrder.cartonTracking]);
 
+
   const handleScanSKU = (sku: string) => {
     if (!sku.trim()) return;
     
@@ -407,14 +408,24 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     if ((currentOrder.cartonTracking || []).some(c => c.code === barcode)) {
       toast.info(`${barcode} already scanned`); setCtnScanInput(''); return;
     }
-    const baseline = getScanBaseline();
+    // Primary: check this order's pre-allocated carton codes
     let matchedItemKey: string | null = null;
-    for (const [itemKey, code] of Object.entries(baseline.itemCodes)) {
-      const remaining = baseline.remaining[itemKey] || 0;
-      for (let n = 1; n <= remaining; n++) {
-        if (`${code}-CT${String(n).padStart(4, '0')}` === barcode) { matchedItemKey = itemKey; break; }
+    for (const item of currentOrder.items) {
+      if ((item.allocatedCartons || []).includes(barcode)) {
+        matchedItemKey = item.variantId || item.articleId || null;
+        break;
       }
-      if (matchedItemKey) break;
+    }
+    // Fallback: old sequential CT0001..N logic (GRN cartons / legacy orders with empty allocatedCartons)
+    if (!matchedItemKey) {
+      const baseline = getScanBaseline();
+      for (const [itemKey, code] of Object.entries(baseline.itemCodes)) {
+        const remaining = baseline.remaining[itemKey] || 0;
+        for (let n = 1; n <= remaining; n++) {
+          if (`${code}-CT${String(n).padStart(4, '0')}` === barcode) { matchedItemKey = itemKey; break; }
+        }
+        if (matchedItemKey) break;
+      }
     }
     if (!matchedItemKey) { toast.error(`Unknown CTN: ${barcode}`); setCtnScanInput(''); return; }
 
@@ -422,9 +433,17 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
     setScanSyncing(true);
     try {
       const updated = await distributorOrderService.scanCarton(currentOrder.id, barcode, matchedItemKey);
-      if (updated) { setCurrentOrder(updated); toast.success(`CTN ${barcode} scanned ✓`); }
+      if (updated) {
+        setCurrentOrder(updated);
+        toast.success(`CTN ${barcode} scanned ✓`);
+      }
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to scan carton');
+      const msg: string = err?.response?.data?.message || err?.message || '';
+      if (msg.includes('is not allocated to this order')) {
+        toast.info(msg);
+      } else {
+        toast.error(msg || 'Failed to scan carton');
+      }
     } finally {
       setScanSyncing(false);
     }
@@ -459,6 +478,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
         setDispatchForm({ vehicleNo: '', lrNo: '', transporterName: '', eWayBillNo: '', driverName: '', driverMobile: '', grossWeightKg: '' });
         setShippingFiles({});
         toast.success(`${codes.length} carton(s) marked In Transit`);
+        setDispatchTab('receive');
       }
     } catch (err: any) {
       console.error('Failed to submit transit details', err);
@@ -1810,6 +1830,36 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                                     <p className="text-[10px] text-slate-400">Scanned cartons appear below immediately and are ready for Transport right away.</p>
                                   </div>
                                 </div>
+
+                                {/* Pre-allocated carton codes for this order */}
+                                {currentOrder.items.some(item => (item.allocatedCartons || []).length > 0) && (
+                                  <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4">
+                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Stock Cartons — Scan These</p>
+                                    <div className="space-y-2">
+                                      {currentOrder.items.map(item => {
+                                        const scanned = new Set((currentOrder.cartonTracking || []).map((c: any) => c.code));
+                                        const codes = (item.allocatedCartons || []).filter((c: string) => !scanned.has(c));
+                                        if (codes.length === 0) return null;
+                                        return (
+                                          <div key={item.variantId || item.articleId}>
+                                            <p className="text-[10px] font-bold text-slate-400 mb-1">{getItemLabel(item.variantId || item.articleId || '')}</p>
+                                            <div className="flex flex-wrap gap-1">
+                                              {codes.map(code => (
+                                                <span
+                                                  key={code}
+                                                  className="text-[10px] font-mono font-bold bg-white border border-indigo-200 text-indigo-700 rounded-lg px-2 py-1"
+                                                >
+                                                  {code}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+
                                 <div className="flex gap-2">
                                   <button onClick={handleDownloadPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><FileText size={12} className="text-indigo-600" /> PI PDF</button>
                                   <button onClick={handleDownloadExcelPI} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"><Download size={12} className="text-green-600" /> PI Excel</button>

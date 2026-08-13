@@ -160,6 +160,15 @@ class DistributorOrderService {
 
   // ── Per-carton dispatch lifecycle (Scan / Transport / Receive tabs) ─────
 
+  async getVariantAvailableCartons(variantId: string): Promise<string[]> {
+    const CATALOG_URL = `${API_BASE_URL}/master-catalog`;
+    const res = await axios.get(
+      `${CATALOG_URL}/variants/${variantId}/available-cartons`,
+      { headers: getAuthHeaders() }
+    );
+    return res.data.availableCartons || [];
+  }
+
   async scanCarton(orderId: string, cartonCode: string, itemKey: string): Promise<Order | undefined> {
     const res = await axios.post(
       `${API_URL}/${orderId}/scan`,

@@ -80,6 +80,7 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
       default: 0,
     },
+    allocatedCartons: { type: [String], default: [] },
   },
   { _id: false }
 );

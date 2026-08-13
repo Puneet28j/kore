@@ -141,6 +141,9 @@ const GRN: React.FC = () => {
   // Track which cartons are already GRN'd (from previous submissions) - stores array of 0-based indices
   const [doneCartons, setDoneCartons] = useState<Record<string, number[]>>({}); // itemName -> array of done carton indices
 
+  // variantId → next serial at the time scanning started (for counter-based barcode display)
+  const [variantCounterBases, setVariantCounterBases] = useState<Record<string, number>>({});
+
   // Cartons that hit 24 pairs AND have had their printed label re-scanned to confirm.
   // Only confirmed cartons count toward being submittable.
   const [confirmedCartons, setConfirmedCartons] = useState<Record<string, number[]>>({});
@@ -473,6 +476,11 @@ const GRN: React.FC = () => {
             if (data.items.length > 0) {
               const firstItem = data.items[0];
               setSelectedItemName(firstItem.variantId || firstItem.itemName);
+              if (firstItem.variantId) {
+                grnService.getVariantCartonCounter(firstItem.variantId)
+                  .then(nextSerial => setVariantCounterBases(prev => ({ ...prev, [firstItem.variantId]: nextSerial })))
+                  .catch(() => {});
+              }
               
               const itemDoneIndices = doneMap[firstItem.variantId || firstItem.itemName] || [];
               let firstPending = 0;
@@ -784,7 +792,10 @@ const GRN: React.FC = () => {
 
     if (newCartonTotal >= 24) {
       const cartonSku = selectedItem.sku || selectedItem.itemName;
-      const barcode = `${cartonSku}-CT${String(currentCartonIdx + 1).padStart(4, "0")}`;
+      const counterBase = selectedItem.variantId
+        ? (variantCounterBases[selectedItem.variantId] ?? 1) - 1
+        : 0;
+      const barcode = `${cartonSku}-CT${String(counterBase + currentCartonIdx + 1).padStart(4, "0")}`;
       setCartonConfirmPopup({
         scanKey: selectedItemName,
         itemLabel: selectedItem.itemName,
@@ -853,6 +864,7 @@ const GRN: React.FC = () => {
     setCurrentCartonIdx(0);
     setScanState({});
     setDoneCartons({});
+    setVariantCounterBases({});
     setScanInput("");
     setForm({
       grnDate: todayISODate(),
@@ -1454,6 +1466,11 @@ const GRN: React.FC = () => {
                                         let fp = 0;
                                         while (dI.includes(fp) && fp < totalCartons) fp++;
                                         setCurrentCartonIdx(fp >= totalCartons ? 0 : fp);
+                                        if (item.variantId && variantCounterBases[item.variantId] === undefined) {
+                                          grnService.getVariantCartonCounter(item.variantId)
+                                            .then(nextSerial => setVariantCounterBases(prev => ({ ...prev, [item.variantId]: nextSerial })))
+                                            .catch(() => {});
+                                        }
                                       }}
                                       className={`w-full text-left rounded-2xl border p-3 mt-2 transition-all ${
                                         isSelected

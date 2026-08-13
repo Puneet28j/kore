@@ -97,6 +97,7 @@ const App: React.FC = () => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showMasterForm, setShowMasterForm] = useState(false);
   const [returnToArticleId, setReturnToArticleId] = useState<string | null>(null);
+  const [catalogueActiveTab, setCatalogueActiveTab] = useState<"AVAILABLE" | "PREORDER">("AVAILABLE");
 
   // Articles state from API
   const [articles, setArticles] = useState<Article[]>([]);
@@ -1049,6 +1050,8 @@ const App: React.FC = () => {
               onAddNewMaster={handleAddNewMaster}
               scrollToArticleId={returnToArticleId}
               onScrollRestored={() => setReturnToArticleId(null)}
+              initialActiveTab={catalogueActiveTab}
+              onActiveTabChange={setCatalogueActiveTab}
             />
           ))}
 

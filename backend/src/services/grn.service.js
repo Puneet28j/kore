@@ -492,6 +492,41 @@ exports.submitDraft = async (draftId, {
     }
   }
 
+  // ─── Assign global carton serials and populate available pool ───────────
+  for (const [variantId, info] of Object.entries(cartonsByVariant)) {
+    if (!variantId || variantId === "UNKNOWN") continue;
+    const catalog = await MasterCatalog.findOne({ "variants._id": variantId });
+    const variant = catalog?.variants.id(variantId);
+    if (!variant) continue;
+
+    const cartonSku = variant.sku || variant.itemName || "CTN";
+    const count = info.count;
+
+    const counter = await Counter.findOneAndUpdate(
+      { id: `carton-serial-${variantId}` },
+      { $inc: { seq: count } },
+      { new: true, upsert: true }
+    );
+    const lastSerial = counter.seq;
+    const firstSerial = lastSerial - count + 1;
+
+    const newCodes = Array.from({ length: count }, (_, i) =>
+      `${cartonSku}-CT${String(firstSerial + i).padStart(4, "0")}`
+    );
+
+    variant.availableCartons = [...(variant.availableCartons || []), ...newCodes];
+    catalog.markModified("variants");
+    await catalog.save();
+
+    // Update carton barcodes in the draft to match the global serials
+    let codeIdx = 0;
+    for (const carton of draft.cartons) {
+      if (String(carton.variantId) === variantId && codeIdx < newCodes.length) {
+        carton.cartonBarcode = newCodes[codeIdx++];
+      }
+    }
+  }
+
   await draft.save();
 
   // Promote any pre-order ITEMS whose stock just arrived — flips them to

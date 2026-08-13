@@ -160,6 +160,52 @@ exports.updateVariantSku = async (req, res) => {
   }
 };
 
+exports.getAvailableCartons = async (req, res) => {
+  try {
+    const MasterCatalog = require("../models/MasterCatalog");
+    const Order = require("../models/Order");
+
+    const catalog = await MasterCatalog.findOne({ "variants._id": req.params.variantId });
+    if (!catalog) return res.status(404).json({ message: "Variant not found" });
+    const variant = catalog.variants.id(req.params.variantId);
+    const allCodes = variant?.availableCartons || [];
+
+    if (allCodes.length === 0) return res.json({ availableCartons: [] });
+
+    // Find codes from this pool that have already been scanned in any order
+    const ordersWithCodes = await Order.find(
+      { "cartonTracking.code": { $in: allCodes } },
+      { "cartonTracking.code": 1 }
+    ).lean();
+    const scannedCodes = new Set(
+      ordersWithCodes.flatMap(o => (o.cartonTracking || []).map(c => c.code))
+    );
+
+    const trulyAvailable = allCodes.filter(c => !scannedCodes.has(c));
+
+    // Clean stale codes from the DB so the pool shrinks over time
+    if (trulyAvailable.length < allCodes.length) {
+      variant.availableCartons = trulyAvailable;
+      catalog.markModified("variants");
+      catalog.save().catch(() => {}); // fire-and-forget, don't block the response
+    }
+
+    res.json({ availableCartons: trulyAvailable });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+exports.getCartonCounter = async (req, res) => {
+  try {
+    const Counter = require("../models/Counter");
+    const counter = await Counter.findOne({ id: `carton-serial-${req.params.variantId}` });
+    return res.json({ nextSerial: (counter?.seq || 0) + 1 });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
 exports.stockMovement = async (req, res) => {
   try {
     const { type, cartons, reason, note } = req.body;

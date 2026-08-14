@@ -35,8 +35,6 @@ import {
 import { getImageUrl } from "../../utils/imageUtils";
 import { poService } from "../../services/poService";
 import { vendorService } from "../../services/vendorService";
-import { masterCatalogService } from "../../services/masterCatalogService";
-import { billService } from "../../services/billService";
 import { exportPOToPDF, exportOrderToExcel } from "../../utils/exportPO";
 import { formatAssortment } from "../../utils/assortmentUtils";
 import Pagination from "../ui/Pagination";
@@ -840,9 +838,13 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     return po?.billStatus === "APPROVED";
   }, [editingPOId, purchaseOrders]);
 
-  // Save draft whenever it changes
+  // Save draft whenever it changes (debounced to avoid UI jank on every keystroke)
   useEffect(() => {
-    if (view === "form") {
+    if (view !== "form") {
+      localStorage.removeItem("kore_po_draft");
+      return;
+    }
+    const timer = setTimeout(() => {
       localStorage.setItem(
         "kore_po_draft",
         JSON.stringify({
@@ -860,9 +862,8 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
           discountPercent,
         })
       );
-    } else {
-      localStorage.removeItem("kore_po_draft");
-    }
+    }, 500);
+    return () => clearTimeout(timer);
   }, [
     view,
     editingPOId,
@@ -1313,112 +1314,8 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
       });
     });
 
-    // 2. Sync with Real Master (Article)
-    if (qtyModalArticleId && qtyModalVariantId) {
-      try {
-        const res = await masterCatalogService.getMasterItem(qtyModalArticleId);
-        const article = res.data || res;
-
-        if (article && article.variants) {
-          // Find and update the specific variant's sizeMap
-          // IMPORTANT: ADD quantities to master catalog, don't replace them
-          // For updates: Subtract old PO quantities, then add new ones
-          const updatedVariants = article.variants.map((v: any) => {
-            const vId = v._id || v.id;
-            if (
-              vId === qtyModalVariantId ||
-              v.id === qtyModalVariantId ||
-              v._id === qtyModalVariantId
-            ) {
-              // Start with existing sizeMap from master catalog
-              const existingSizeMap = v.sizeMap || {};
-
-              // Convert Mongoose Map to plain object if needed
-              const existingPlain: Record<
-                string,
-                { qty: number; sku: string }
-              > = {};
-              if (existingSizeMap instanceof Map) {
-                existingSizeMap.forEach((value, key) => {
-                  existingPlain[String(key)] = {
-                    qty: Number(value?.qty || 0),
-                    sku: String(value?.sku || ""),
-                  };
-                });
-              } else if (typeof existingSizeMap === "object") {
-                Object.entries(existingSizeMap).forEach(
-                  ([key, value]: [string, any]) => {
-                    existingPlain[key] = {
-                      qty: Number(value?.qty || 0),
-                      sku: String(value?.sku || ""),
-                    };
-                  }
-                );
-              }
-
-              // Simply preserve existing sizeMap without any PO adjustments
-              return { ...v, sizeMap: existingPlain };
-            }
-            return v;
-          });
-
-          // Prepare FormData for update - send ALL variants with updated sizeMap
-          const data = new FormData();
-          data.append("articleName", article.articleName || article.name);
-          data.append(
-            "variants",
-            JSON.stringify(
-              updatedVariants.map((v: any) => ({
-                id: v.id || v._id,
-                _id: v._id || v.id,
-                itemName: v.itemName,
-                costPrice: v.costPrice,
-                sellingPrice: v.sellingPrice,
-                mrp: v.mrp,
-                hsnCode: v.hsnCode,
-                color: v.color,
-                sizeRange: v.sizeRange,
-                sizeRangeId: v.sizeRangeId || "",
-                sizeMap: v.sizeMap,
-                sizeQuantities: v.sizeQuantities || {},
-                sizeSkus: v.sizeSkus || {},
-              }))
-            )
-          );
-
-          // Retain existing taxonomy if available
-          if (article.categoryId?._id || article.categoryId)
-            data.append(
-              "categoryId",
-              article.categoryId?._id || article.categoryId
-            );
-          if (article.brandId?._id || article.brandId)
-            data.append("brandId", article.brandId?._id || article.brandId);
-          if (
-            article.manufacturerCompanyId?._id ||
-            article.manufacturerCompanyId
-          )
-            data.append(
-              "manufacturerCompanyId",
-              article.manufacturerCompanyId?._id ||
-                article.manufacturerCompanyId
-            );
-          if (article.unitId?._id || article.unitId)
-            data.append("unitId", article.unitId?._id || article.unitId);
-
-          await masterCatalogService.updateMasterItem(qtyModalArticleId, data);
-          console.log(
-            "✅ Master Catalog updated successfully for article:",
-            qtyModalArticleId
-          );
-          toast.success("Article Master updated successfully");
-          if (onSyncSuccess) onSyncSuccess();
-        }
-      } catch (err) {
-        console.error("❌ Failed to sync with master:", err);
-        toast.error("Warning: Failed to sync changes with Article Master");
-      }
-    }
+    // 2. Notify parent so it can refresh its article list if needed
+    if (onSyncSuccess) onSyncSuccess();
 
     // 3. Auto-save PO to database if editing existing PO
     if (editingPOId) {
@@ -1502,146 +1399,26 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     };
 
     const savePromise = async () => {
-      // Update Master Catalog inventory before saving PO
-      if (status === "SENT") {
-        // Only reserve inventory when PO is actually sent
-        for (const item of itemsWithSizeMap) {
-          if (item.articleId && item.variantId && item.sizeMap) {
-            try {
-              const res = await masterCatalogService.getMasterItem(
-                item.articleId
-              );
-              const article = res.data || res;
-
-              if (article && article.variants) {
-                const updatedVariants = article.variants.map((v: any) => {
-                  const vId = v._id || v.id;
-                  if (
-                    vId === item.variantId ||
-                    v.id === item.variantId ||
-                    v._id === item.variantId
-                  ) {
-                    // Get existing sizeMap
-                    const existingSizeMap = v.sizeMap || {};
-                    const existingPlain: Record<
-                      string,
-                      { qty: number; sku: string }
-                    > = {};
-
-                    if (existingSizeMap instanceof Map) {
-                      existingSizeMap.forEach((value, key) => {
-                        existingPlain[String(key)] = {
-                          qty: Number(value?.qty || 0),
-                          sku: String(value?.sku || ""),
-                        };
-                      });
-                    } else if (typeof existingSizeMap === "object") {
-                      Object.entries(existingSizeMap).forEach(
-                        ([key, value]: [string, any]) => {
-                          existingPlain[key] = {
-                            qty: Number(value?.qty || 0),
-                            sku: String(value?.sku || ""),
-                          };
-                        }
-                      );
-                    }
-
-                    // Simply preserve existing sizeMap without any PO adjustments
-                    return { ...v, sizeMap: existingPlain };
-                  }
-                  return v;
-                });
-
-                // Update Master Catalog if this is a new PO
-                if (!editingPOId) {
-                  const data = new FormData();
-                  data.append(
-                    "articleName",
-                    article.articleName || article.name
-                  );
-                    data.append(
-                      "variants",
-                      JSON.stringify(
-                        updatedVariants.map((v: any) => ({
-                          id: v.id || v._id,
-                          _id: v._id || v.id,
-                          itemName: v.itemName,
-                          costPrice: v.costPrice,
-                          sellingPrice: v.sellingPrice,
-                          mrp: v.mrp,
-                          hsnCode: v.hsnCode,
-                          color: v.color,
-                          sizeRange: v.sizeRange,
-                          sizeRangeId: v.sizeRangeId || "",
-                          sizeMap: v.sizeMap,
-                          sizeQuantities: v.sizeQuantities || {},
-                          sizeSkus: v.sizeSkus || {},
-                        }))
-                      )
-                    );
-
-                  // Retain existing taxonomy
-                  if (article.categoryId?._id || article.categoryId)
-                    data.append(
-                      "categoryId",
-                      article.categoryId?._id || article.categoryId
-                    );
-                  if (article.brandId?._id || article.brandId)
-                    data.append(
-                      "brandId",
-                      article.brandId?._id || article.brandId
-                    );
-                  if (
-                    article.manufacturerCompanyId?._id ||
-                    article.manufacturerCompanyId
-                  )
-                    data.append(
-                      "manufacturerCompanyId",
-                      article.manufacturerCompanyId?._id ||
-                        article.manufacturerCompanyId
-                    );
-                  if (article.unitId?._id || article.unitId)
-                    data.append(
-                      "unitId",
-                      article.unitId?._id || article.unitId
-                    );
-
-                  await masterCatalogService.updateMasterItem(
-                    item.articleId,
-                    data
-                  );
-                }
-              }
-            } catch (err) {
-              console.error("Failed to update master catalog inventory:", err);
-              // Don't fail the PO save, but log the error
-            }
-          }
-        }
-      }
-
       let createdOrUpdatedPO: PurchaseOrder | null = null;
 
       if (editingPOId) {
-        await poService.updatePO(editingPOId, poData);
-        // Fetch the updated PO to get the complete data
-        const res = await poService.listPOs();
-        createdOrUpdatedPO = res.data.find(
-          (p: any) => p._id === editingPOId || p.id === editingPOId
-        );
+        const res = await poService.updatePO(editingPOId, poData);
+        createdOrUpdatedPO = res.data || res;
       } else {
         const res = await poService.createPO(poData);
         createdOrUpdatedPO = res.data || res;
       }
 
-      // Convert PO to Bill and add to bills service
       if (createdOrUpdatedPO) {
-        const bill = billService.convertPOToBill(createdOrUpdatedPO);
-        billService.addBill(bill);
-        console.log("✅ Bill created from PO:", bill.id);
+        const raw = createdOrUpdatedPO as any;
+        const normalized = { ...raw, id: raw._id || raw.id } as PurchaseOrder;
+        setPurchaseOrders((prev) =>
+          editingPOId
+            ? prev.map((p) => (p.id === editingPOId ? normalized : p))
+            : [normalized, ...prev]
+        );
       }
 
-      await fetchData();
       setView("list");
       resetForm();
       localStorage.removeItem("kore_po_draft");
@@ -1726,7 +1503,11 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
             </div>
           </div>
 
-          {filteredPOs.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-20">
+              <Loader2 size={28} className="animate-spin text-indigo-500" />
+            </div>
+          ) : filteredPOs.length === 0 ? (
             <div className="py-20 text-center">
               <div className="inline-flex p-4 bg-slate-50 rounded-full mb-4">
                 <FileText size={32} className="text-slate-300" />

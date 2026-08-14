@@ -1086,8 +1086,10 @@ const App: React.FC = () => {
               />
             );
           })()}
-        {activeTab === "po" && user.role !== UserRole.DISTRIBUTOR && (
-          <POPage articles={articles} onSyncSuccess={fetchArticles} />
+        {user.role !== UserRole.DISTRIBUTOR && (
+          <div style={{ display: activeTab === "po" ? undefined : "none" }}>
+            <POPage articles={articles} onSyncSuccess={fetchArticles} />
+          </div>
         )}
         {activeTab === "grn" && user.role !== UserRole.DISTRIBUTOR && <GRN />}
         {activeTab === "accounts" && user.role !== UserRole.DISTRIBUTOR && (

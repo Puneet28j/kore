@@ -10,6 +10,8 @@ import {
   CreditCard,
   Percent,
   FileText,
+  Minus,
+  Plus,
 } from "lucide-react";
 import TermsModal from "./TermsModal";
 import { User, Article, Assortment } from "../../types";
@@ -26,6 +28,41 @@ const parseSizeRange = (range: string): string[] => {
   return sizes;
 };
 
+// Mirrors Shop.tsx maxCartonsFromStock — computes the hard cap for both
+// AVAILABLE (from live sizeMap stock) and PREORDER (from PO plannedPairs)
+// variants. Returns 0 if no stock/PO data exists.
+const getMaxCartonsForVariant = (variant: any): number => {
+  if (!variant) return 0;
+  const isPreOrder = variant.stage === "PREORDER";
+  const breakdown = variant.sizeQuantities || {};
+  const totalPairsPerCarton = Object.values(breakdown).reduce(
+    (a: number, b: any) => a + (Number(b) || 0), 0
+  );
+
+  if (isPreOrder) {
+    // Cap by PO planned qty minus what's already pre-booked by all distributors
+    if (totalPairsPerCarton <= 0) return 0;
+    const plannedPairs = Number(variant.plannedPairs) || 0;
+    const preBookedPairs = Number(variant.preBookedPairs) || 0;
+    const remaining = Math.max(0, plannedPairs - preBookedPairs);
+    return Math.floor(remaining / totalPairsPerCarton);
+  }
+
+  // AVAILABLE: cap by live per-size stock in sizeMap
+  const sizeMap = variant.sizeMap || {};
+  const sizes = Object.keys(breakdown);
+  if (sizes.length === 0) return Infinity; // no assortment data — no client cap
+  let min = Infinity;
+  for (const sz of sizes) {
+    const assortQty = Number(breakdown[sz]) || 0;
+    if (assortQty === 0) continue;
+    const stockEntry = sizeMap[sz];
+    const available = stockEntry ? Math.max(0, Number(stockEntry.qty ?? stockEntry) || 0) : 0;
+    min = Math.min(min, Math.floor(available / assortQty));
+  }
+  return min === Infinity ? 0 : min;
+};
+
 interface CartProps {
   articles: Article[];
   cart: {
@@ -40,6 +77,7 @@ interface CartProps {
   addToCart?: (id: string) => void;
   removeFromCart?: (id: string, variantId?: string) => void;
   clearCartItem: (articleId: string, variantId?: string) => void;
+  updateCartItem?: (articleId: string, variantId: string | undefined, newCartonCount: number) => void;
   onCheckout: (gstPercent: number) => void;
   total: number;
   assortments: Assortment[];
@@ -56,6 +94,7 @@ const Cart: React.FC<CartProps> = ({
   articles,
   cart,
   clearCartItem,
+  updateCartItem,
   onCheckout,
   total,
   user,
@@ -114,6 +153,11 @@ const Cart: React.FC<CartProps> = ({
       ? parseSizeRange(variant.sizeRange || "")
       : Object.keys(item.sizeQuantities || {});
 
+    // Stock cap — mirrors Shop.tsx logic
+    const maxCartons = getMaxCartonsForVariant(variant);
+    const atStockMax = isFinite(maxCartons) && item.cartonCount >= maxCartons;
+    const isPreOrder = (variant?.stage || article.status) === "PREORDER";
+
     // Show discounted price per item (discount applied once in summary, so show it here too for clarity)
     const itemDiscountedPrice = item.price * (1 - discountPercentage / 100);
 
@@ -158,7 +202,7 @@ const Cart: React.FC<CartProps> = ({
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-4">
           <div className="text-right whitespace-nowrap">
             <p className="font-bold text-sm text-indigo-700 tracking-tight">
               ₹{Math.round(itemDiscountedPrice).toLocaleString()}
@@ -172,6 +216,35 @@ const Cart: React.FC<CartProps> = ({
               {item.pairCount} Pairs · {item.cartonCount} Ctn
             </p>
           </div>
+          {/* Carton stepper */}
+          <div className="flex flex-col items-center gap-0.5">
+            <div className="flex items-center gap-0 bg-slate-100 rounded-lg overflow-hidden border border-slate-200">
+              <button
+                onClick={() => updateCartItem?.(item.articleId, item.variantId, item.cartonCount - 1)}
+                disabled={item.cartonCount <= 1}
+                className="w-7 h-7 flex items-center justify-center text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <Minus size={12} />
+              </button>
+              <span className="px-2 min-w-[28px] text-center text-xs font-bold text-slate-800">
+                {item.cartonCount}
+              </span>
+              <button
+                onClick={() => updateCartItem?.(item.articleId, item.variantId, item.cartonCount + 1)}
+                disabled={atStockMax}
+                title={atStockMax ? `Max stock: ${maxCartons} carton(s)` : undefined}
+                className="w-7 h-7 flex items-center justify-center text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <Plus size={12} />
+              </button>
+            </div>
+            {atStockMax && (
+              <span className="text-[8px] font-bold text-red-500 uppercase tracking-tight leading-none">
+                {isPreOrder ? "Max pre-book" : "Max stock"}
+              </span>
+            )}
+          </div>
+          {/* Delete button */}
           <button
             onClick={() => clearCartItem(item.articleId, item.variantId)}
             className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-300 hover:bg-red-50 hover:text-red-500 transition-all"

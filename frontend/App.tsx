@@ -755,6 +755,91 @@ const App: React.FC = () => {
     );
   };
 
+  // update the carton count for an existing cart item (min 1, max = live stock or PO cap)
+  const updateCartItem = (
+    articleId: string,
+    variantId: string | undefined,
+    newCartonCount: number
+  ) => {
+    if (newCartonCount < 1) return;
+
+    const art = articles.find((a) => a.id === articleId);
+    const variant = art?.variants?.find(
+      (v) => v.id === variantId || (v as any)._id === variantId
+    );
+    const isPreOrder = (variant?.stage || art?.status) === "PREORDER";
+
+    if (variant) {
+      const breakdown = variant.sizeQuantities || {};
+      const totalPairsPerCarton = Object.values(breakdown).reduce(
+        (a: number, b: any) => a + (Number(b) || 0), 0
+      );
+
+      if (isPreOrder) {
+        // Cap by PO planned quantity minus what's already pre-booked
+        if (totalPairsPerCarton > 0) {
+          const plannedPairs = Number((variant as any).plannedPairs) || 0;
+          const preBookedPairs = Number((variant as any).preBookedPairs) || 0;
+          const remaining = Math.max(0, plannedPairs - preBookedPairs);
+          const maxCartons = Math.floor(remaining / totalPairsPerCarton);
+          if (newCartonCount > maxCartons) {
+            toast.error(
+              maxCartons === 0
+                ? "This variant is fully pre-booked"
+                : `Only ${maxCartons} carton(s) can be pre-booked for this variant`
+            );
+            newCartonCount = maxCartons;
+            if (newCartonCount < 1) return;
+          }
+        }
+      } else {
+        // Cap by live sizeMap stock
+        const sizeMap = (variant as any).sizeMap || {};
+        const sizes = Object.keys(breakdown);
+        if (sizes.length > 0) {
+          let min = Infinity;
+          for (const sz of sizes) {
+            const assortQty = Number(breakdown[sz]) || 0;
+            if (assortQty === 0) continue;
+            const stockEntry = sizeMap[sz];
+            const available = stockEntry
+              ? Math.max(0, Number(stockEntry.qty ?? stockEntry) || 0)
+              : 0;
+            min = Math.min(min, Math.floor(available / assortQty));
+          }
+          const maxCartons = min === Infinity ? 0 : min;
+          if (newCartonCount > maxCartons) {
+            toast.error(`Only ${maxCartons} carton(s) available in stock`);
+            newCartonCount = maxCartons;
+            if (newCartonCount < 1) return;
+          }
+        }
+      }
+    }
+
+    setCart((prev) =>
+      prev.map((i) => {
+        if (i.articleId !== articleId || i.variantId !== variantId) return i;
+        const pairsPerCarton = i.cartonCount > 0 ? i.pairCount / i.cartonCount : 24;
+        const newPairCount = Math.round(pairsPerCarton * newCartonCount);
+        const pricePerPair = articles.find((a) => a.id === articleId)?.pricePerPair || 0;
+        // Scale sizeQuantities proportionally
+        const scale = newCartonCount / i.cartonCount;
+        const newSizeQty: Record<string, number> = {};
+        Object.entries(i.sizeQuantities || {}).forEach(([sz, qty]) => {
+          newSizeQty[sz] = Math.round(qty * scale);
+        });
+        return {
+          ...i,
+          cartonCount: newCartonCount,
+          pairCount: newPairCount,
+          price: newPairCount * pricePerPair,
+          sizeQuantities: newSizeQty,
+        };
+      })
+    );
+  };
+
   const handleInwardStock = (articleId: string, cartons: number) => {
     setInventory((prev) =>
       prev.map((inv) => {
@@ -1175,6 +1260,7 @@ const App: React.FC = () => {
             articles={articles}
             cart={cart}
             clearCartItem={clearCartItem}
+            updateCartItem={updateCartItem}
             onCheckout={(gst) => placeOrder(gst)}
             total={cartTotal}
             assortments={ASSORTMENTS as Assortment[]}

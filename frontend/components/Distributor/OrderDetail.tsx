@@ -100,9 +100,11 @@ interface OrderDetailProps {
   inventory: Inventory[];
   onBack: () => void;
   isDistributor?: boolean;
+  breakdownOnly?: boolean;
+  hideBackButton?: boolean;
 }
 
-const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, onBack, isDistributor = false }) => {
+const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, onBack, isDistributor = false, breakdownOnly = false, hideBackButton = false }) => {
   const [uploading, setUploading] = useState(false);
   const [currentOrder, setCurrentOrder] = useState<Order>(order);
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
@@ -1211,12 +1213,14 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
       {/* Header - Compact */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white px-5 py-4 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-4">
-          <button 
-            onClick={onBack}
-            className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-50 text-slate-500 hover:bg-slate-900 hover:text-white transition-all active:scale-95"
-          >
-            <ArrowLeft size={18} />
-          </button>
+          {!hideBackButton && (
+            <button 
+              onClick={onBack}
+              className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-50 text-slate-500 hover:bg-slate-900 hover:text-white transition-all active:scale-95"
+            >
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div>
             <div className="flex items-center gap-2 mb-0.5">
               <h2 className="text-lg font-bold text-slate-900 tracking-tight">Order #{currentOrder.orderNumber || currentOrder.id.slice(-6).toUpperCase()}</h2>
@@ -1228,7 +1232,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        {!breakdownOnly && <div className="flex items-center gap-2 flex-wrap">
           {!editMode && (
             <>
               {canEdit && (
@@ -1277,7 +1281,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
           >
             <Printer size={14} /> Print
           </button>
-        </div>
+        </div>}
       </div>
 
       {/* Cancel Order Confirmation Dialog */}
@@ -1319,6 +1323,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
 
       <div className="space-y-6">
         {/* Status Timeline - Compact */}
+        {!breakdownOnly && <>
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
             <div className="relative flex justify-between">
               {/* Progress Line */}
@@ -1485,11 +1490,12 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
               </div>
             );
           })()}
+        </>}
 
           {/* Main Content — full width */}
           <div className="space-y-6">
               {/* Tabs Navigation */}
-              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-2xl w-fit">
+              {!breakdownOnly && <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-2xl w-fit">
                 <button
                   onClick={() => setActiveTab('items')}
                   className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-2 ${
@@ -1522,7 +1528,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                     {currentOrder.fulfillmentHistory?.length || 0}
                   </span>
                 </button>
-              </div>
+              </div>}
 
               <div className="transition-all duration-500 min-h-[400px]">
 {activeTab === 'items' ? (
@@ -1533,14 +1539,14 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                 {/* Items Detail - Sleek Rows */}
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                   <button
-                    onClick={() => setBreakdownOpen(p => !p)}
-                    className="w-full px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between gap-4 text-left hover:bg-slate-50 transition-colors"
+                    onClick={() => !breakdownOnly && setBreakdownOpen(p => !p)}
+                    className={`w-full px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between gap-4 text-left ${!breakdownOnly ? 'hover:bg-slate-50 transition-colors' : ''}`}
                   >
                     <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest flex items-center gap-2">
                       <Package size={14} className="text-indigo-600" />
                       Order Breakdown
                     </h3>
-                    <ChevronRight size={14} className={`text-slate-400 transition-transform duration-200 ${breakdownOpen ? 'rotate-90' : ''}`} />
+                    {!breakdownOnly && <ChevronRight size={14} className={`text-slate-400 transition-transform duration-200 ${breakdownOpen ? 'rotate-90' : ''}`} />}
                   </button>
 
                   {breakdownOpen && <div className="overflow-x-auto">
@@ -1767,7 +1773,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                   </div>}
 
                   {(() => {
-                    if (isDistributor || !['BOOKED', 'PARTIAL', 'PFD', 'RFD'].includes(currentOrder.status)) return null;
+                    if (isDistributor || breakdownOnly || !['BOOKED', 'PARTIAL', 'PFD', 'RFD'].includes(currentOrder.status)) return null;
 
                     const tabs: { key: 'scan' | 'transport' | 'receive'; label: string; count: number }[] = [
                       { key: 'scan',      label: 'Scan Cartons',      count: totalRemainingToScan },
@@ -2303,7 +2309,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
             </div>
 
           {/* Payment Breakdown — bottom full-width */}
-          {(() => {
+          {!breakdownOnly && (() => {
             const subtotal   = currentOrder.totalAmount || 0;
             const discAmt    = currentOrder.discountAmount || 0;
             const taxable    = currentOrder.finalAmount ?? (subtotal - discAmt);

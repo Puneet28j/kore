@@ -48,6 +48,7 @@ import Returns from "./components/Admin/Returns";
 import ActivityLogPage from "./components/Admin/ActivityLogPage";
 import StockReport from "./components/Admin/StockReport";
 import DispatchReport from "./components/Admin/DispatchReport";
+import DispatchOrderBreakdown from "./components/Admin/DispatchOrderBreakdown";
 import ReturnReport from "./components/Admin/ReturnReport";
 import AccountantPage from "./components/Admin/AccountantPage";
 import TermsPage from "./components/Admin/TermsPage";
@@ -77,7 +78,7 @@ const App: React.FC = () => {
     const hash = window.location.hash.replace("#", "");
     return hash || localStorage.getItem("kore_activeTab") || "dashboard";
   });
-  const [reportOrderToOpen, setReportOrderToOpen] = useState<Order | null>(null);
+  const [dispatchBreakdownOrder, setDispatchBreakdownOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     localStorage.setItem("kore_activeTab", activeTab);
@@ -134,6 +135,7 @@ const App: React.FC = () => {
   }, [editingArticleId, viewingVariant, catalogueExpandedIds, previousTab]);
 
   const handleTabChange = (tab: string) => {
+    setDispatchBreakdownOrder(null);
     setShowMasterForm(false);
     setEditingArticleId(null);
     setViewingVariant(null);
@@ -144,13 +146,8 @@ const App: React.FC = () => {
   };
 
   const handleOpenOrderFromReport = (order: Order) => {
-    setReportOrderToOpen(order);
-    setActiveTab("orders");
-  };
-
-  const handleReportOrderBack = () => {
-    setReportOrderToOpen(null);
-    setActiveTab("report_dispatch");
+    setDispatchBreakdownOrder(order);
+    setActiveTab("dispatch_breakdown");
   };
 
   const handleViewVariant = (articleId: string, variantId: string) => {
@@ -1230,8 +1227,6 @@ const App: React.FC = () => {
               inventory={inventory}
               isLoading={loadingOrders}
               lastUpdated={lastUpdated}
-              orderToOpen={reportOrderToOpen}
-              onExternalOrderBack={handleReportOrderBack}
             />
           ) : (
             <MyOrders
@@ -1242,6 +1237,25 @@ const App: React.FC = () => {
               lastUpdated={lastUpdated}
             />
           ))}
+
+        {activeTab === "dispatch_breakdown" && user.role !== UserRole.DISTRIBUTOR && (
+          dispatchBreakdownOrder ? (
+            <DispatchOrderBreakdown
+              order={dispatchBreakdownOrder}
+              articles={articles}
+              inventory={inventory}
+              onBack={() => {
+                setDispatchBreakdownOrder(null);
+                setActiveTab("report_dispatch");
+              }}
+            />
+          ) : (
+            <div className="bg-white rounded-2xl border border-dashed border-slate-200 p-12 text-center">
+              <p className="text-sm font-bold text-slate-500">No dispatch order selected</p>
+              <p className="text-xs text-slate-400 mt-1">Open an order from the Dispatch Report to view its breakdown.</p>
+            </div>
+          )
+        )}
 
         {activeTab === "returns" && user.role !== UserRole.DISTRIBUTOR && (
           <Returns

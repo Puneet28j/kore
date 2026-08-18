@@ -36,8 +36,6 @@ interface OrderProcessorProps {
   updateStatus: (id: string, status: OrderStatus) => void;
   isLoading?: boolean;
   lastUpdated?: Date;
-  orderToOpen?: Order | null;
-  onExternalOrderBack?: () => void;
 }
 
 const OrderProcessor: React.FC<OrderProcessorProps> = ({
@@ -46,8 +44,6 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
   updateStatus,
   isLoading: globalLoading,
   lastUpdated,
-  orderToOpen,
-  onExternalOrderBack,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OrderStatus | "ALL">("ALL");
@@ -122,7 +118,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
     if (lastUpdated) fetchOrders(true); // Silent update for socket events
   }, [lastUpdated]);
 
-  const selectedOrder = orderToOpen || orders.find((o) => o.id === selectedOrderId);
+  const selectedOrder = orders.find((o) => o.id === selectedOrderId);
 
   if (selectedOrder) {
     return (
@@ -131,9 +127,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
         articles={articles}
         inventory={inventory}
         onBack={() => {
-          const wasOpenedExternally = Boolean(orderToOpen);
           setSelectedOrderId(null);
-          if (wasOpenedExternally) onExternalOrderBack?.();
         }}
       />
     );
@@ -193,7 +187,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
       {(() => {
         const statCards = [
           {
-            label: "Total CTN",
+            label: "Active CTN",
             val: stats.totalCartons || 0,
             color: "text-slate-700",
             bg: "bg-slate-50",

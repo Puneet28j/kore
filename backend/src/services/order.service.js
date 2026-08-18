@@ -1716,41 +1716,125 @@ const propagatePriceUpdate = async (articleId, newPricePerPair) => {
 };
 
 const getOrderStats = async () => {
-  const result = await Order.aggregate([
+  const [stats] = await Order.aggregate([
+    // The operational flow begins only after an order leaves the pre-order
+    // queue; cancelled demand is deliberately excluded from Active CTN.
+    { $match: { status: { $nin: [...PREORDER_STATUSES, "CANCELLED"] } } },
     {
-      $facet: {
-        total: [{ $group: { _id: null, cartons: { $sum: { $ifNull: ["$totalCartons", 0] } } } }],
-        booked: [
-          { $match: { status: "BOOKED" } },
-          { $group: { _id: null, cartons: { $sum: { $ifNull: ["$totalCartons", 0] } } } },
-        ],
-        tracked: [
-          { $unwind: "$cartonTracking" },
-          { $group: { _id: "$cartonTracking.status", cartons: { $sum: 1 } } },
-        ],
-        legacy: [
-          {
-            $match: {
-              status: { $in: ["PFD", "RFD", "RECEIVED"] },
-              $expr: { $eq: [{ $size: { $ifNull: ["$cartonTracking", []] } }, 0] },
+      $project: {
+        status: 1,
+        totalCartons: { $ifNull: ["$totalCartons", 0] },
+        trackingCount: { $size: { $ifNull: ["$cartonTracking", []] } },
+        dispatched: {
+          $size: {
+            $filter: {
+              input: { $ifNull: ["$cartonTracking", []] },
+              as: "carton",
+              cond: { $eq: ["$$carton.status", "DISPATCHED"] },
             },
           },
-          { $group: { _id: "$status", cartons: { $sum: { $ifNull: ["$totalCartons", 0] } } } },
-        ],
+        },
+        inTransit: {
+          $size: {
+            $filter: {
+              input: { $ifNull: ["$cartonTracking", []] },
+              as: "carton",
+              cond: { $eq: ["$$carton.status", "IN_TRANSIT"] },
+            },
+          },
+        },
+        received: {
+          $size: {
+            $filter: {
+              input: { $ifNull: ["$cartonTracking", []] },
+              as: "carton",
+              cond: { $eq: ["$$carton.status", "RECEIVED"] },
+            },
+          },
+        },
+        // Some historical PARTIAL orders predate cartonTracking. Their known
+        // fulfilled cartons are treated as dispatched; the remainder stays
+        // pending so every active carton is represented exactly once.
+        fulfilledCartons: {
+          $sum: {
+            $map: {
+              input: { $ifNull: ["$items", []] },
+              as: "item",
+              in: { $ifNull: ["$$item.fulfilledCartonCount", 0] },
+            },
+          },
+        },
+      },
+    },
+    {
+      $project: {
+        totalCartons: 1,
+        BOOKED: {
+          $cond: [
+            { $gt: ["$trackingCount", 0] },
+            { $max: [{ $subtract: ["$totalCartons", "$trackingCount"] }, 0] },
+            {
+              $cond: [
+                { $in: ["$status", ["PFD", "RFD", "RECEIVED"]] },
+                0,
+                { $max: [{ $subtract: ["$totalCartons", "$fulfilledCartons"] }, 0] },
+              ],
+            },
+          ],
+        },
+        PFD: {
+          $cond: [
+            { $gt: ["$trackingCount", 0] },
+            "$dispatched",
+            {
+              $cond: [
+                { $eq: ["$status", "PFD"] },
+                "$totalCartons",
+                {
+                  $cond: [
+                    { $in: ["$status", ["PENDING", "BOOKED", "PARTIAL"]] },
+                    { $min: ["$fulfilledCartons", "$totalCartons"] },
+                    0,
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        RFD: {
+          $cond: [
+            { $gt: ["$trackingCount", 0] },
+            "$inTransit",
+            { $cond: [{ $eq: ["$status", "RFD"] }, "$totalCartons", 0] },
+          ],
+        },
+        RECEIVED: {
+          $cond: [
+            { $gt: ["$trackingCount", 0] },
+            "$received",
+            { $cond: [{ $eq: ["$status", "RECEIVED"] }, "$totalCartons", 0] },
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalCartons: { $sum: "$totalCartons" },
+        BOOKED: { $sum: "$BOOKED" },
+        PFD: { $sum: "$PFD" },
+        RFD: { $sum: "$RFD" },
+        RECEIVED: { $sum: "$RECEIVED" },
       },
     },
   ]);
 
-  const facet = result[0] || {};
-  const tracked = Object.fromEntries((facet.tracked || []).map((row) => [row._id, row.cartons || 0]));
-  const legacy = Object.fromEntries((facet.legacy || []).map((row) => [row._id, row.cartons || 0]));
-
   return {
-    totalCartons: facet.total?.[0]?.cartons || 0,
-    BOOKED: facet.booked?.[0]?.cartons || 0,
-    PFD: (tracked.DISPATCHED || 0) + (legacy.PFD || 0),
-    RFD: (tracked.IN_TRANSIT || 0) + (legacy.RFD || 0),
-    RECEIVED: (tracked.RECEIVED || 0) + (legacy.RECEIVED || 0),
+    totalCartons: stats?.totalCartons || 0,
+    BOOKED: stats?.BOOKED || 0,
+    PFD: stats?.PFD || 0,
+    RFD: stats?.RFD || 0,
+    RECEIVED: stats?.RECEIVED || 0,
   };
 };
 

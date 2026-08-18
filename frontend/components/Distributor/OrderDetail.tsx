@@ -115,6 +115,20 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
   const inTransitCartons  = (currentOrder.cartonTracking || []).filter(c => c.status === 'IN_TRANSIT');
   const receivedCartons   = (currentOrder.cartonTracking || []).filter(c => c.status === 'RECEIVED');
   const totalExpectedCartons = currentOrder.items.reduce((s, i) => s + (i.cartonCount || 0), 0);
+  const orderBreakdownTotals = currentOrder.items.reduce(
+    (totals, item) => {
+      const ordered = item.cartonCount || 0;
+      const dispatched = item.fulfilledCartonCount || 0;
+      const returned = item.returnedCartonCount || 0;
+      return {
+        ordered: totals.ordered + ordered,
+        dispatched: totals.dispatched + dispatched,
+        returned: totals.returned + returned,
+        remaining: totals.remaining + Math.max(0, ordered - dispatched),
+      };
+    },
+    { ordered: 0, dispatched: 0, returned: 0, remaining: 0 }
+  );
   // Scannable remaining = cartons backed by real stock right now, minus
   // what's already been scanned. For a still-PREORDER item that's only
   // whatever a partial GRN reservation covers (computeReservedCartons) —
@@ -1740,6 +1754,15 @@ const OrderDetail: React.FC<OrderDetailProps> = ({ order, articles, inventory, o
                           );
                         })}
                       </tbody>
+                      <tfoot className="border-t-2 border-slate-200 bg-slate-50/70">
+                        <tr>
+                          <td colSpan={2} className="px-6 py-3 text-right text-[10px] font-black text-slate-500 uppercase tracking-widest">Totals</td>
+                          <td className="px-4 py-3 text-center text-sm font-black text-slate-900">{orderBreakdownTotals.ordered}</td>
+                          <td className="px-4 py-3 text-center text-sm font-black text-emerald-600">{orderBreakdownTotals.dispatched}</td>
+                          <td className="px-4 py-3 text-center text-sm font-black text-rose-600">{orderBreakdownTotals.returned}</td>
+                          <td className="px-4 py-3 text-center text-sm font-black text-slate-500">{orderBreakdownTotals.remaining}</td>
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>}
 

@@ -100,30 +100,90 @@ const getStockReport = async (req, res) => {
 const getDispatchReport = async (req, res) => {
   try {
     const { startDate, endDate, page = 1, limit = 20 } = req.query;
-    const query = { status: { $in: ["OFD", "RECEIVED", "PARTIAL"] } };
+    // Base this report on cartons actually scanned from the warehouse rather
+    // than the order's current lifecycle status.
+    const query = { "items.fulfilledCartonCount": { $gt: 0 } };
     if (startDate || endDate) {
       query.date = {};
       if (startDate) query.date.$gte = startDate;
       if (endDate) query.date.$lte = endDate;
     }
 
-    const total = await Order.countDocuments(query);
-    const orders = await Order.find(query)
-      .sort({ date: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit))
-      .lean();
+    const [total, orders, summaryRows] = await Promise.all([
+      Order.countDocuments(query),
+      Order.find(query)
+        .sort({ date: -1 })
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean(),
+      Order.aggregate([
+        { $match: query },
+        { $unwind: "$items" },
+        { $match: { "items.fulfilledCartonCount": { $gt: 0 } } },
+        {
+          $group: {
+            _id: "$_id",
+            dispatchedCartons: { $sum: { $ifNull: ["$items.fulfilledCartonCount", 0] } },
+            dispatchedAmount: {
+              $sum: {
+                $cond: [
+                  { $gt: [{ $ifNull: ["$items.cartonCount", 0] }, 0] },
+                  {
+                    $multiply: [
+                      { $ifNull: ["$items.price", 0] },
+                      {
+                        $divide: [
+                          { $ifNull: ["$items.fulfilledCartonCount", 0] },
+                          "$items.cartonCount",
+                        ],
+                      },
+                    ],
+                  },
+                  0,
+                ],
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            totalCartons: { $sum: "$dispatchedCartons" },
+            totalAmount: { $sum: "$dispatchedAmount" },
+          },
+        },
+      ]),
+    ]);
 
-    const summary = {
-      totalOrders: total,
-      totalAmount: orders.reduce((s, o) => s + (o.totalAmount || 0), 0),
-      totalPairs: orders.reduce((s, o) => s + (o.totalPairs || 0), 0),
-    };
+    const data = orders.map((order) => {
+      const dispatchedCartons = (order.items || []).reduce(
+        (sum, item) => sum + (Number(item.fulfilledCartonCount) || 0),
+        0
+      );
+      const dispatchedAmount = (order.items || []).reduce((sum, item) => {
+        const orderedCartons = Number(item.cartonCount) || 0;
+        const dispatched = Number(item.fulfilledCartonCount) || 0;
+        if (orderedCartons <= 0 || dispatched <= 0) return sum;
+        return sum + (Number(item.price) || 0) * (dispatched / orderedCartons);
+      }, 0);
+
+      return {
+        ...order,
+        id: String(order._id),
+        dispatchedCartons,
+        dispatchedAmount: Math.round(dispatchedAmount * 100) / 100,
+      };
+    });
 
     res.json({
       success: true,
-      data: orders,
-      summary,
+      data,
+      summary: {
+        totalOrders: summaryRows[0]?.totalOrders || 0,
+        totalCartons: summaryRows[0]?.totalCartons || 0,
+        totalAmount: Math.round((summaryRows[0]?.totalAmount || 0) * 100) / 100,
+      },
       meta: {
         total,
         page: Number(page),

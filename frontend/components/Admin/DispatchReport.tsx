@@ -3,19 +3,19 @@ import { Truck, Download, RefreshCw, Calendar, AlertCircle } from "lucide-react"
 import { apiFetch } from "../../services/api";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
+import { Order } from "../../types";
 
-interface DispatchOrder {
+interface DispatchOrder extends Order {
   _id: string;
-  orderNumber: string;
-  distributorName: string;
-  date: string;
-  status: string;
-  totalAmount: number;
-  totalPairs: number;
-  items: any[];
+  dispatchedAmount: number;
+  dispatchedCartons: number;
 }
 
-interface Summary { totalOrders: number; totalAmount: number; totalPairs: number; }
+interface Summary {
+  totalOrders: number;
+  totalCartons: number;
+  totalAmount: number;
+}
 
 const statusColor: Record<string, string> = {
   RFD:      "bg-blue-100 text-blue-700",
@@ -23,10 +23,14 @@ const statusColor: Record<string, string> = {
   PARTIAL:  "bg-amber-100 text-amber-700",
 };
 
-const DispatchReport: React.FC = () => {
+interface DispatchReportProps {
+  onOpenOrder: (order: Order) => void;
+}
+
+const DispatchReport: React.FC<DispatchReportProps> = ({ onOpenOrder }) => {
   const [pageSize, setPageSize]   = usePageSize("dispatchReport", 20);
   const [rows, setRows]           = useState<DispatchOrder[]>([]);
-  const [summary, setSummary]     = useState<Summary>({ totalOrders: 0, totalAmount: 0, totalPairs: 0 });
+  const [summary, setSummary]     = useState<Summary>({ totalOrders: 0, totalCartons: 0, totalAmount: 0 });
   const [loading, setLoading]     = useState(false);
   const [page, setPage]           = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -44,7 +48,7 @@ const DispatchReport: React.FC = () => {
       if (endDate) params.set("endDate", endDate);
       const d = await apiFetch(`/reports/dispatch?${params.toString()}`);
       setRows(d.data || []);
-      setSummary(d.summary || { totalOrders: 0, totalAmount: 0, totalPairs: 0 });
+      setSummary(d.summary || { totalOrders: 0, totalCartons: 0, totalAmount: 0 });
       setTotal(d.meta?.total || 0);
       setTotalPages(d.meta?.totalPages || 1);
     } catch (err: any) {
@@ -67,9 +71,9 @@ const DispatchReport: React.FC = () => {
   const handleFilter = () => { setPage(1); fetch(); };
 
   const exportCsv = () => {
-    const lines = ["Order #,Distributor,Date,Status,Total Amount,Total Pairs"];
+    const lines = ["Order #,Distributor,Date,Status,Dispatched Cartons,Dispatched Amount"];
     rows.forEach(r => {
-      lines.push(`"${r.orderNumber}","${r.distributorName}","${new Date(r.date).toLocaleDateString()}","${r.status}",${r.totalAmount},${r.totalPairs}`);
+      lines.push(`"${r.orderNumber}","${r.distributorName}","${new Date(r.date).toLocaleDateString()}","${r.status}",${r.dispatchedCartons},${r.dispatchedAmount}`);
     });
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -86,7 +90,7 @@ const DispatchReport: React.FC = () => {
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <Truck size={20} className="text-blue-500" /> Dispatch Report
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">Dispatched, Delivered & Confirmed orders</p>
+          <p className="text-sm text-slate-500 mt-0.5">Dispatched cartons and their prorated order value</p>
         </div>
         <div className="flex gap-2">
           <button onClick={fetch} className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-200 transition-all">
@@ -98,16 +102,15 @@ const DispatchReport: React.FC = () => {
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {[
-          { label: "Total Orders",  value: summary.totalOrders.toLocaleString(),       color: "text-indigo-600" },
-          { label: "Total Revenue", value: `₹${summary.totalAmount.toLocaleString()}`, color: "text-emerald-600" },
-          { label: "Total Pairs",   value: summary.totalPairs.toLocaleString(),         color: "text-blue-600" },
-        ].map(s => (
-          <div key={s.label} className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-1">{s.label}</p>
-            <p className={`text-2xl font-black ${s.color}`}>{s.value}</p>
+          { label: "Total Orders", value: summary.totalOrders.toLocaleString(), color: "text-indigo-600" },
+          { label: "Dispatched Revenue", value: `₹${summary.totalAmount.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`, color: "text-emerald-600" },
+          { label: "Dispatched Cartons", value: summary.totalCartons.toLocaleString(), color: "text-blue-600" },
+        ].map(card => (
+          <div key={card.label} className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-1">{card.label}</p>
+            <p className={`text-2xl font-black ${card.color}`}>{card.value}</p>
           </div>
         ))}
       </div>
@@ -148,7 +151,7 @@ const DispatchReport: React.FC = () => {
             <span className="text-sm font-medium">{error}</span>
           </div>
         ) : rows.length === 0 ? (
-          <div className="text-center py-20 text-slate-400">No dispatch data found</div>
+          <div className="text-center py-20 text-slate-400">No dispatched cartons found</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm whitespace-nowrap">
@@ -158,13 +161,26 @@ const DispatchReport: React.FC = () => {
                   <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider text-xs">Distributor</th>
                   <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider text-xs">Date</th>
                   <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider text-xs">Status</th>
-                  <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider text-xs text-right">Pairs</th>
+                  <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider text-xs text-center">Dispatched Cartons</th>
                   <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider text-xs text-right">Amount</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {rows.map(r => (
-                  <tr key={r._id} className="hover:bg-slate-50">
+                  <tr
+                    key={r._id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open order ${r.orderNumber}`}
+                    onClick={() => onOpenOrder(r)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onOpenOrder(r);
+                      }
+                    }}
+                    className="cursor-pointer hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500"
+                  >
                     <td className="px-4 py-3 font-mono font-semibold text-indigo-600">#{r.orderNumber}</td>
                     <td className="px-4 py-3 text-slate-800 font-medium">{r.distributorName}</td>
                     <td className="px-4 py-3 text-slate-500">{new Date(r.date).toLocaleDateString("en-IN")}</td>
@@ -173,8 +189,8 @@ const DispatchReport: React.FC = () => {
                         {r.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-right font-semibold text-slate-700">{r.totalPairs?.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right font-bold text-emerald-700">₹{r.totalAmount?.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-slate-700">{r.dispatchedCartons?.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right font-bold text-emerald-700">₹{r.dispatchedAmount?.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</td>
                   </tr>
                 ))}
               </tbody>

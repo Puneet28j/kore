@@ -77,6 +77,7 @@ const App: React.FC = () => {
     const hash = window.location.hash.replace("#", "");
     return hash || localStorage.getItem("kore_activeTab") || "dashboard";
   });
+  const [reportOrderToOpen, setReportOrderToOpen] = useState<Order | null>(null);
 
   useEffect(() => {
     localStorage.setItem("kore_activeTab", activeTab);
@@ -140,6 +141,16 @@ const App: React.FC = () => {
     localStorage.removeItem("kore_app_draft");
     localStorage.removeItem("kore_po_draft");
     setActiveTab(tab);
+  };
+
+  const handleOpenOrderFromReport = (order: Order) => {
+    setReportOrderToOpen(order);
+    setActiveTab("orders");
+  };
+
+  const handleReportOrderBack = () => {
+    setReportOrderToOpen(null);
+    setActiveTab("report_dispatch");
   };
 
   const handleViewVariant = (articleId: string, variantId: string) => {
@@ -1219,6 +1230,8 @@ const App: React.FC = () => {
               inventory={inventory}
               isLoading={loadingOrders}
               lastUpdated={lastUpdated}
+              orderToOpen={reportOrderToOpen}
+              onExternalOrderBack={handleReportOrderBack}
             />
           ) : (
             <MyOrders
@@ -1289,7 +1302,7 @@ const App: React.FC = () => {
           <StockReport />
         )}
         {activeTab === "report_dispatch" &&
-          user.role !== UserRole.DISTRIBUTOR && <DispatchReport />}
+          user.role !== UserRole.DISTRIBUTOR && <DispatchReport onOpenOrder={handleOpenOrderFromReport} />}
         {activeTab === "report_return" &&
           user.role !== UserRole.DISTRIBUTOR && <ReturnReport />}
 

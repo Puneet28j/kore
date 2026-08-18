@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Package,
   Truck,
@@ -36,6 +36,8 @@ interface OrderProcessorProps {
   updateStatus: (id: string, status: OrderStatus) => void;
   isLoading?: boolean;
   lastUpdated?: Date;
+  orderToOpen?: Order | null;
+  onExternalOrderBack?: () => void;
 }
 
 const OrderProcessor: React.FC<OrderProcessorProps> = ({
@@ -44,6 +46,8 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
   updateStatus,
   isLoading: globalLoading,
   lastUpdated,
+  orderToOpen,
+  onExternalOrderBack,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OrderStatus | "ALL">("ALL");
@@ -115,10 +119,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
     if (lastUpdated) fetchOrders(true); // Silent update for socket events
   }, [lastUpdated]);
 
-  const selectedOrder = useMemo(
-    () => orders.find((o) => o.id === selectedOrderId),
-    [orders, selectedOrderId]
-  );
+  const selectedOrder = orderToOpen || orders.find((o) => o.id === selectedOrderId);
 
   if (selectedOrder) {
     return (
@@ -126,7 +127,11 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
         order={selectedOrder}
         articles={articles}
         inventory={inventory}
-        onBack={() => setSelectedOrderId(null)}
+        onBack={() => {
+          const wasOpenedExternally = Boolean(orderToOpen);
+          setSelectedOrderId(null);
+          if (wasOpenedExternally) onExternalOrderBack?.();
+        }}
       />
     );
   }

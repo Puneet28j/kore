@@ -27,6 +27,8 @@ interface MyOrdersProps {
   inventory: Inventory[];
   isLoading?: boolean;
   lastUpdated?: Date;
+  initialOrder?: Order | null;
+  onInitialOrderHandled?: () => void;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -57,11 +59,11 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   );
 };
 
-const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoading: globalLoading, lastUpdated }) => {
+const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoading: globalLoading, lastUpdated, initialOrder, onInitialOrderHandled }) => {
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<OrderStatus | 'ALL'>('ALL');
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(initialOrder || null);
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [meta, setMeta] = useState<any>(null);
@@ -108,6 +110,12 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
 
+  // Keep the order passed from the dashboard available while this page loads.
+  // Clear the parent handoff after mounting so it is not reopened later.
+  useEffect(() => {
+    if (initialOrder) onInitialOrderHandled?.();
+  }, [initialOrder, onInitialOrderHandled]);
+
   const mountedRef = useRef(false);
   useEffect(() => {
     if (!mountedRef.current) { mountedRef.current = true; return; }
@@ -116,15 +124,13 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
 
   const statusCounts: Record<string, number> = useMemo(() => meta?.stats?.statusCounts || {}, [meta]);
 
-  const selectedOrder = useMemo(() => orders.find(o => o.id === selectedOrderId), [orders, selectedOrderId]);
-
   if (selectedOrder) {
     return (
       <OrderDetail
         order={selectedOrder}
         articles={articles}
         inventory={inventory}
-        onBack={() => setSelectedOrderId(null)}
+        onBack={() => setSelectedOrder(null)}
         isDistributor={true}
       />
     );
@@ -258,7 +264,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
             return (
               <div
                 key={order.id}
-                onClick={() => setSelectedOrderId(order.id)}
+                onClick={() => setSelectedOrder(order)}
                 className="bg-white rounded-xl border border-slate-100 shadow-sm hover:border-indigo-100 transition-all group overflow-hidden cursor-pointer relative"
               >
                 <div className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

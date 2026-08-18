@@ -79,6 +79,7 @@ const App: React.FC = () => {
     return hash || localStorage.getItem("kore_activeTab") || "dashboard";
   });
   const [dispatchBreakdownOrder, setDispatchBreakdownOrder] = useState<Order | null>(null);
+  const [distributorOrderToOpen, setDistributorOrderToOpen] = useState<Order | null>(null);
 
   useEffect(() => {
     localStorage.setItem("kore_activeTab", activeTab);
@@ -270,7 +271,9 @@ const App: React.FC = () => {
         if (user.role === UserRole.DISTRIBUTOR) {
           const res = await distributorOrderService.getOrdersByDistributor(
             user.id,
-            { limit: 100 }
+            // The dashboard Recent Orders card must include regular orders
+            // as well as PRE_BOOKED/CONFIRMED preorder orders.
+            { limit: 100, orderType: "ALL" }
           );
           items = res.items;
           if (res.meta?.stats) setDistributorDashStats(res.meta.stats);
@@ -1107,6 +1110,11 @@ const App: React.FC = () => {
               dashboardStats={distributorDashStats}
               cartCount={cartItemsCount}
               goToCart={() => setActiveTab("cart")}
+              goToOrders={() => setActiveTab("orders")}
+              onOpenOrder={(order) => {
+                setDistributorOrderToOpen(order);
+                setActiveTab("orders");
+              }}
             />
           ))}
 
@@ -1235,6 +1243,8 @@ const App: React.FC = () => {
               inventory={inventory}
               isLoading={loadingOrders}
               lastUpdated={lastUpdated}
+              initialOrder={distributorOrderToOpen}
+              onInitialOrderHandled={() => setDistributorOrderToOpen(null)}
             />
           ))}
 
@@ -1347,8 +1357,8 @@ const STATUS_CHIP: Record<string, { label: string; color: string }> = {
   CONFIRMED: { label: "Confirmed", color: "bg-blue-100 text-blue-700" },
   PENDING: { label: "Pending", color: "bg-slate-100 text-slate-600" },
   BOOKED: { label: "Booked", color: "bg-indigo-100 text-indigo-700" },
-  PFD: { label: "PFD", color: "bg-purple-100 text-purple-700" },
-  RFD: { label: "RFD", color: "bg-sky-100 text-sky-700" },
+  PFD: { label: "Dispatched", color: "bg-purple-100 text-purple-700" },
+  RFD: { label: "In Transit", color: "bg-sky-100 text-sky-700" },
   RECEIVED: { label: "Received", color: "bg-emerald-100 text-emerald-700" },
   PARTIAL: { label: "Partial", color: "bg-orange-100 text-orange-700" },
   CANCELLED: { label: "Cancelled", color: "bg-rose-100 text-rose-700" },
@@ -1360,17 +1370,58 @@ const DistributorDashboard: React.FC<{
   dashboardStats: any;
   cartCount: number;
   goToCart: () => void;
-}> = ({ user, orders, dashboardStats, cartCount, goToCart }) => {
-  const userOrders = orders.filter((o) => o.distributorId === user.id);
+  goToOrders: () => void;
+  onOpenOrder: (order: Order) => void;
+}> = ({ user, orders, dashboardStats, cartCount, goToCart, goToOrders, onOpenOrder }) => {
+  const userOrders = orders.filter((o) => {
+    const distributorId =
+      typeof o.distributorId === "object"
+        ? o.distributorId.id || (o.distributorId as any)._id
+        : o.distributorId;
+    return String(distributorId) === String(user.id);
+  });
 
   // Use server-side aggregated stats when available (avoids limit-cap undercount)
   const sc: Record<string, number> = dashboardStats?.statusCounts || {};
   const totalValue =
     dashboardStats?.totalSpent ??
     userOrders.reduce((s, o) => s + (o.finalAmount || o.totalAmount || 0), 0);
-  const totalPairs =
-    dashboardStats?.totalPairs ??
-    userOrders.reduce((s, o) => s + (o.totalPairs || 0), 0);
+  const fallbackOperationalOrders = userOrders.filter(
+    (order) =>
+      ![
+        OrderStatus.PRE_BOOKED,
+        OrderStatus.CONFIRMED,
+        OrderStatus.CANCELLED,
+      ].includes(order.status)
+  );
+  const fallbackDispatchedCartons = fallbackOperationalOrders.reduce((sum, order) => {
+    const orderedCartons = Number(order.totalCartons) || 0;
+    const fulfilledCartons = (order.items || []).reduce(
+      (itemSum, item) => itemSum + (Number(item.fulfilledCartonCount) || 0),
+      0
+    );
+
+    // Fulfilled cartons represent partial dispatches. For older orders without
+    // item-level fulfillment data, use their lifecycle status as the fallback.
+    if (fulfilledCartons > 0) {
+      return sum + Math.min(orderedCartons, fulfilledCartons);
+    }
+    return sum +
+      ([OrderStatus.PFD, OrderStatus.RFD, OrderStatus.RECEIVED].includes(
+        order.status
+      )
+        ? orderedCartons
+        : 0);
+  }, 0);
+  const fallbackTotalCartons = fallbackOperationalOrders.reduce(
+    (sum, order) => sum + (Number(order.totalCartons) || 0),
+    0
+  );
+  const dispatchedCartons =
+    dashboardStats?.dispatchedCartons ?? fallbackDispatchedCartons;
+  const remainingCartons =
+    dashboardStats?.remainingCartons ??
+    Math.max(0, fallbackTotalCartons - fallbackDispatchedCartons);
   const totalOrders = dashboardStats ? sc.total || 0 : userOrders.length;
   const activeCount =
     dashboardStats?.activeOrders ??
@@ -1428,16 +1479,16 @@ const DistributorDashboard: React.FC<{
             bg: "bg-emerald-50",
           },
           {
-            label: "Total Pairs",
-            value: totalPairs.toLocaleString(),
-            icon: <Package size={16} />,
+            label: "Dispatched Cartons",
+            value: dispatchedCartons.toLocaleString(),
+            icon: <Truck size={16} />,
             color: "text-blue-600",
             bg: "bg-blue-50",
           },
           {
-            label: "Pre-Orders",
-            value: preOrderCount.toLocaleString(),
-            icon: <Star size={16} />,
+            label: "Remaining",
+            value: remainingCartons.toLocaleString(),
+            icon: <Package size={16} />,
             color: "text-amber-600",
             bg: "bg-amber-50",
           },
@@ -1484,8 +1535,19 @@ const DistributorDashboard: React.FC<{
 
         {/* Quick stats row */}
         <div className="grid grid-cols-2 gap-3">
-          <div className="bg-slate-50 rounded-xl p-3 flex items-center gap-3">
-            <div className="p-1.5 bg-indigo-100 rounded-lg">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={goToOrders}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                goToOrders();
+              }
+            }}
+            className="bg-slate-50 rounded-xl p-3 flex items-center gap-3 cursor-pointer hover:bg-indigo-50 transition-colors group"
+          >
+            <div className="p-1.5 bg-indigo-100 rounded-lg group-hover:bg-indigo-200 transition-colors">
               <Clock size={13} className="text-indigo-600" />
             </div>
             <div>
@@ -1557,7 +1619,16 @@ const DistributorDashboard: React.FC<{
                 return (
                   <div
                     key={order.id}
-                    className="flex items-center justify-between px-5 py-3 hover:bg-slate-50 transition-colors"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onOpenOrder(order)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onOpenOrder(order);
+                      }
+                    }}
+                    className="flex items-center justify-between px-5 py-3 hover:bg-slate-50 transition-colors cursor-pointer"
                   >
                     <div className="flex items-center gap-3">
                       <div

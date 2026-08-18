@@ -24,6 +24,7 @@ import { Article, Inventory, Variant, User } from "../../types";
 import { toast } from "sonner";
 import { getImageUrl } from "../../utils/imageUtils";
 import { masterCatalogService } from "../../services/masterCatalogService";
+import { distributorOrderService } from "../../services/distributorOrderService";
 
 interface ShopProps {
   articles: Article[];
@@ -173,6 +174,7 @@ const ArticleCard: React.FC<{
   priceView: PriceView;
   distributorTag?: "online" | "offline";
   articleStatus?: string;
+  pendingDispatchByVariant: Record<string, { cartons: number; pairs: number }>;
 }> = ({
   group,
   inv,
@@ -182,6 +184,7 @@ const ArticleCard: React.FC<{
   priceView,
   distributorTag,
   articleStatus,
+  pendingDispatchByVariant,
 }) => {
   const { article, color, variants } = group;
 
@@ -189,8 +192,12 @@ const ArticleCard: React.FC<{
     variants.length > 0 ? variants[0].id : ""
   );
   const [cartonCount, setCartonCount] = useState(1);
+  const [showPendingTooltip, setShowPendingTooltip] = useState(false);
 
   const selectedVariant = variants.find((v) => v.id === selectedVariantId);
+  const pendingDispatch = selectedVariant
+    ? pendingDispatchByVariant[selectedVariant.id] || { cartons: 0, pairs: 0 }
+    : { cartons: 0, pairs: 0 };
   const baseBreakdown = selectedVariant?.sizeQuantities || {};
   const totalPairsPerCarton = Object.values(baseBreakdown).reduce(
     (a, b) => a + (Number(b) || 0),
@@ -420,7 +427,7 @@ const ArticleCard: React.FC<{
 
   return (
     <div
-      className={`bg-white rounded-3xl overflow-hidden border shadow-sm group transition-all duration-300 ${
+      className={`bg-white rounded-3xl overflow-visible border shadow-sm group transition-all duration-300 ${
         isOutOfStock
           ? "border-slate-200 opacity-75"
           : "border-slate-200 hover:shadow-xl hover:border-indigo-200"
@@ -672,15 +679,24 @@ const ArticleCard: React.FC<{
                 {isOutOfStock ? 0 : cartonCount}
               </span>
             </div>
-            <button
-              onClick={() =>
-                setCartonCount((p) => Math.min(maxAdditionalCartons, p + 1))
-              }
-              className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all disabled:opacity-20"
-              disabled={isOutOfStock || isAtMax}
-            >
-              <Plus size={14} />
-            </button>
+            <div className="relative group/quantity-plus">
+              <button
+                onClick={() =>
+                  setCartonCount((p) => Math.min(maxAdditionalCartons, p + 1))
+                }
+                className="p-2 hover:bg-white rounded-xl text-slate-500 hover:text-indigo-600 transition-all disabled:opacity-20"
+                disabled={isOutOfStock || isAtMax}
+                aria-label="Increase carton quantity"
+                onTouchStart={() => setShowPendingTooltip(true)}
+                onTouchEnd={() => window.setTimeout(() => setShowPendingTooltip(false), 2200)}
+              >
+                <Plus size={14} />
+              </button>
+              <div className={`pointer-events-none absolute bottom-full right-0 z-30 mb-1 whitespace-nowrap rounded-lg bg-slate-900 px-2 py-1 text-[9px] font-semibold text-white shadow-lg transition-all group-hover/quantity-plus:translate-y-0 group-hover/quantity-plus:opacity-100 ${showPendingTooltip ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0"}`}>
+                {pendingDispatch.cartons} carton{pendingDispatch.cartons === 1 ? "" : "s"} pending to dispatch
+                <span className="absolute -bottom-1 right-3 h-2 w-2 rotate-45 bg-slate-900" />
+              </div>
+            </div>
           </div>
 
           <button
@@ -788,7 +804,51 @@ const Shop: React.FC<ShopProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
 
   const [backendArticles, setBackendArticles] = useState<Article[]>([]);
+  const [pendingDispatchByVariant, setPendingDispatchByVariant] = useState<
+    Record<string, { cartons: number; pairs: number }>
+  >({});
   const observerRef = useRef<HTMLDivElement | null>(null);
+
+  const fetchPendingDispatch = useCallback(async () => {
+    if (!user?.id) {
+      setPendingDispatchByVariant({});
+      return;
+    }
+
+    try {
+      const { items } = await distributorOrderService.getOrdersByDistributor(user.id, {
+        page: 1,
+        limit: 2000,
+        orderType: "ALL",
+        sortBy: "createdAt",
+        sortDesc: true,
+      });
+      const totals: Record<string, { cartons: number; pairs: number }> = {};
+
+      items.forEach((order: any) => {
+        if (order.status === "CANCELLED") return;
+        (order.items || []).forEach((item: any) => {
+          if (!item.variantId) return;
+          const pendingCartons = Math.max(0, Number(item.cartonCount || 0) - Number(item.fulfilledCartonCount || 0));
+          const pendingPairs = Math.max(0, Number(item.pairCount || 0) - Number(item.fulfilledPairCount || 0));
+          if (pendingCartons === 0 && pendingPairs === 0) return;
+          const key = String(item.variantId);
+          const current = totals[key] || { cartons: 0, pairs: 0 };
+          totals[key] = { cartons: current.cartons + pendingCartons, pairs: current.pairs + pendingPairs };
+        });
+      });
+      setPendingDispatchByVariant(totals);
+    } catch {
+      // The catalogue remains usable if order history is temporarily unavailable.
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchPendingDispatch();
+    const refresh = () => fetchPendingDispatch();
+    window.addEventListener("orderUpdatedSocket", refresh);
+    return () => window.removeEventListener("orderUpdatedSocket", refresh);
+  }, [fetchPendingDispatch]);
 
   // Fetch Page 1 whenever search, gender, sort, or status changes
   const fetchInitialPage = useCallback(async () => {
@@ -1102,6 +1162,7 @@ const Shop: React.FC<ShopProps> = ({
                   priceView={priceView}
                   distributorTag={distributorTag}
                   articleStatus={cardStage}
+                  pendingDispatchByVariant={pendingDispatchByVariant}
                 />
               );
             })}

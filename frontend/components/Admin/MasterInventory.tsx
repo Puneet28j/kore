@@ -144,12 +144,21 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   const [exporting, setExporting] = useState(false);
 
   const buildExportRows = async () => {
-    const res = await masterCatalogService.listMasterItems({
-      q: searchTerm || undefined,
-      stage: stageForTab,
-      limit: 10000,
-    });
-    const items: any[] = res.data || [];
+    const items: any[] = [];
+    const exportLimit = 1000;
+    let page = 1;
+    let totalPages = 1;
+    do {
+      const res = await masterCatalogService.listMasterItems({
+        page,
+        q: searchTerm.trim() || undefined,
+        stage: stageForTab,
+        limit: exportLimit,
+      });
+      items.push(...(res.data || []));
+      totalPages = Math.max(1, Number(res.meta?.totalPages) || 1);
+      page += 1;
+    } while (page <= totalPages);
     const rows: {
       article: string; sku: string; category: string; brand: string;
       variant: string; color: string; sizeRange: string; mrp: number;

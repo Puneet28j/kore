@@ -435,6 +435,9 @@ const getOrdersByDistributor = async (
       // Pre-order specific query: only PRE_BOOKED and CONFIRMED
       q.orderType = "PREORDER";
       q.status = { $in: PREORDER_STATUSES };
+    } else if (orderType === "ALL") {
+      // Dashboard requests need both regular and preorder orders.
+      // Leave status unrestricted so PRE_BOOKED/CONFIRMED are included.
     } else if (status) {
       q.status = status;
     } else {
@@ -464,7 +467,10 @@ const getOrdersByDistributor = async (
     // Base query without search/status for global stats sidebar
     // Use ObjectId cast so the aggregate $match works correctly (Mongoose find() auto-casts, aggregate() does not)
     const distObjId = new mongoose.Types.ObjectId(distributorId);
-    const baseQ = { distributorId: distObjId, status: { $nin: PREORDER_STATUSES } };
+    const baseQ = {
+      distributorId: distObjId,
+      status: { $nin: [...PREORDER_STATUSES, "CANCELLED"] },
+    };
     // "Has pre-orders" now means: an active order still carrying at least
     // one PREORDER-tagged item (awaiting its GRN) — not a dead order-level
     // status, since every order books immediately regardless of mix.
@@ -523,9 +529,113 @@ const getOrdersByDistributor = async (
             },
           },
         ]),
+        // Match Admin Orders: summarize cartons by their actual lifecycle
+        // pool, so PARTIAL orders are split instead of being assigned wholly
+        // to their top-level order status.
         Order.aggregate([
           { $match: baseQ },
-          { $group: { _id: "$status", count: { $sum: 1 }, cartons: { $sum: "$totalCartons" } } },
+          {
+            $project: {
+              status: 1,
+              totalCartons: { $ifNull: ["$totalCartons", 0] },
+              trackingCount: { $size: { $ifNull: ["$cartonTracking", []] } },
+              dispatched: {
+                $size: {
+                  $filter: {
+                    input: { $ifNull: ["$cartonTracking", []] },
+                    as: "carton",
+                    cond: { $eq: ["$$carton.status", "DISPATCHED"] },
+                  },
+                },
+              },
+              inTransit: {
+                $size: {
+                  $filter: {
+                    input: { $ifNull: ["$cartonTracking", []] },
+                    as: "carton",
+                    cond: { $eq: ["$$carton.status", "IN_TRANSIT"] },
+                  },
+                },
+              },
+              received: {
+                $size: {
+                  $filter: {
+                    input: { $ifNull: ["$cartonTracking", []] },
+                    as: "carton",
+                    cond: { $eq: ["$$carton.status", "RECEIVED"] },
+                  },
+                },
+              },
+              fulfilledCartons: {
+                $sum: {
+                  $map: {
+                    input: { $ifNull: ["$items", []] },
+                    as: "item",
+                    in: { $ifNull: ["$$item.fulfilledCartonCount", 0] },
+                  },
+                },
+              },
+            },
+          },
+          {
+            $project: {
+              BOOKED: {
+                $cond: [
+                  { $gt: ["$trackingCount", 0] },
+                  { $max: [{ $subtract: ["$totalCartons", "$trackingCount"] }, 0] },
+                  {
+                    $cond: [
+                      { $in: ["$status", ["PFD", "RFD", "RECEIVED"]] },
+                      0,
+                      { $max: [{ $subtract: ["$totalCartons", "$fulfilledCartons"] }, 0] },
+                    ],
+                  },
+                ],
+              },
+              PFD: {
+                $cond: [
+                  { $gt: ["$trackingCount", 0] },
+                  "$dispatched",
+                  {
+                    $cond: [
+                      { $eq: ["$status", "PFD"] },
+                      "$totalCartons",
+                      {
+                        $cond: [
+                          { $in: ["$status", ["PENDING", "BOOKED", "PARTIAL"]] },
+                          { $min: ["$fulfilledCartons", "$totalCartons"] },
+                          0,
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+              RFD: {
+                $cond: [
+                  { $gt: ["$trackingCount", 0] },
+                  "$inTransit",
+                  { $cond: [{ $eq: ["$status", "RFD"] }, "$totalCartons", 0] },
+                ],
+              },
+              RECEIVED: {
+                $cond: [
+                  { $gt: ["$trackingCount", 0] },
+                  "$received",
+                  { $cond: [{ $eq: ["$status", "RECEIVED"] }, "$totalCartons", 0] },
+                ],
+              },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              BOOKED: { $sum: "$BOOKED" },
+              PFD: { $sum: "$PFD" },
+              RFD: { $sum: "$RFD" },
+              RECEIVED: { $sum: "$RECEIVED" },
+            },
+          },
         ]),
         Order.countDocuments(preOrderQ),
       ]);
@@ -538,8 +648,20 @@ const getOrdersByDistributor = async (
       total: 0,
       totalCartons: 0,
     };
-    const statusCounts = { total: stats.totalCartons || 0 };
-    for (const s of statusAgg) statusCounts[s._id] = s.cartons || 0;
+    const lifecycleStats = statusAgg[0] || {};
+    const statusCounts = {
+      total: stats.totalCartons || 0,
+      BOOKED: lifecycleStats.BOOKED || 0,
+      PFD: lifecycleStats.PFD || 0,
+      RFD: lifecycleStats.RFD || 0,
+      RECEIVED: lifecycleStats.RECEIVED || 0,
+    };
+    const dispatchedCartons =
+      statusCounts.PFD + statusCounts.RFD + statusCounts.RECEIVED;
+    const remainingCartons = Math.max(
+      0,
+      statusCounts.total - dispatchedCartons
+    );
 
     return {
       items,
@@ -554,6 +676,8 @@ const getOrdersByDistributor = async (
           totalPaid: stats.totalPaid || 0,
           activeOrders: stats.activeOrders,
           preOrderCount,
+          dispatchedCartons,
+          remainingCartons,
           statusCounts,
         },
       },

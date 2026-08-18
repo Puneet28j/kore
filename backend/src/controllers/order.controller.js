@@ -60,8 +60,8 @@ const getDistributorOrders = async (req, res) => {
 
 const getAllOrders = async (req, res) => {
   try {
-    const { page, limit, q, status, startDate, endDate, sortBy, sortDesc, orderType } = req.query;
-    const result = await OrderService.getAllOrders({ page, limit, search: q, status, startDate, endDate, sortBy, sortDesc, orderType });
+    const { page, limit, q, status, lifecycle, startDate, endDate, sortBy, sortDesc, orderType } = req.query;
+    const result = await OrderService.getAllOrders({ page, limit, search: q, status, lifecycle, startDate, endDate, sortBy, sortDesc, orderType });
 
     res.status(200).json({
       success: true,

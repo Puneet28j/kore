@@ -51,6 +51,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OrderStatus | "ALL">("ALL");
+  const [lifecycleFilter, setLifecycleFilter] = useState<"DISPATCHED" | "IN_TRANSIT" | "RECEIVED" | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [bookingOrder, setBookingOrder] = useState<Order | null>(null);
   const [stats, setStats] = useState<Record<string, number>>({});
@@ -83,6 +84,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           limit: pageSize,
           q: searchQuery,
           status: statusFilter === "ALL" ? undefined : statusFilter,
+          lifecycle: lifecycleFilter || undefined,
           startDate: startDate || undefined,
           endDate: endDate || undefined,
           sortBy,
@@ -102,6 +104,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
       pageSize,
       searchQuery,
       statusFilter,
+      lifecycleFilter,
       startDate,
       endDate,
       sortBy,
@@ -196,6 +199,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             bg: "bg-slate-50",
             border: "border-slate-200",
             filter: "ALL" as const,
+            lifecycle: null,
           },
           {
             label: "Pending",
@@ -204,6 +208,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             bg: "bg-rose-50",
             border: "border-rose-100",
             filter: OrderStatus.BOOKED,
+            lifecycle: null,
           },
           {
             label: "Dispatched",
@@ -211,7 +216,8 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             color: "text-amber-600",
             bg: "bg-amber-50",
             border: "border-amber-100",
-            filter: OrderStatus.PFD,
+            filter: "ALL" as const,
+            lifecycle: "DISPATCHED" as const,
           },
           {
             label: "In Transit",
@@ -219,7 +225,8 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             color: "text-blue-600",
             bg: "bg-blue-50",
             border: "border-blue-100",
-            filter: OrderStatus.RFD,
+            filter: "ALL" as const,
+            lifecycle: "IN_TRANSIT" as const,
           },
           // {
           //   label: "Out for Del",
@@ -235,7 +242,8 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             color: "text-green-700",
             bg: "bg-green-50",
             border: "border-green-100",
-            filter: OrderStatus.RECEIVED,
+            filter: "ALL" as const,
+            lifecycle: "RECEIVED" as const,
           },
         ];
         return (
@@ -246,16 +254,17 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             {statCards.map((s) => (
               <button
                 key={s.label}
-                onClick={() =>
-                  s.filter !== null &&
-                  (setStatusFilter(s.filter as any), setCurrentPage(1))
-                }
+                onClick={() => {
+                  setStatusFilter(s.filter);
+                  setLifecycleFilter(s.lifecycle);
+                  setCurrentPage(1);
+                }}
                 className={`${s.bg} border ${
                   s.border
                 } rounded-xl p-3 text-left transition-all hover:shadow-sm ${
                   s.filter !== null ? "cursor-pointer" : "cursor-default"
                 } ${
-                  statusFilter === s.filter ? "ring-2 ring-indigo-400/40" : ""
+                  statusFilter === s.filter && lifecycleFilter === s.lifecycle ? "ring-2 ring-indigo-400/40" : ""
                 }`}
               >
                 <p className={`text-lg font-black ${s.color} leading-none`}>
@@ -347,6 +356,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
               key={status}
               onClick={() => {
                 setStatusFilter(status as any);
+                setLifecycleFilter(null);
                 setCurrentPage(1);
               }}
               className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider whitespace-nowrap transition-all border shrink-0 ${

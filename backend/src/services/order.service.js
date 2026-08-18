@@ -568,6 +568,7 @@ const getAllOrders = async ({
   limit = 10,
   search = "",
   status = "",
+  lifecycle = "",
   startDate,
   endDate,
   sortBy = "createdAt",
@@ -584,6 +585,31 @@ const getAllOrders = async ({
     // UI) — no default status exclusion. Explicit status/orderType filters
     // (tab clicks) still narrow the list as before.
     if (status) q.status = status;
+    if (lifecycle) {
+      const legacyStatus = {
+        DISPATCHED: "PFD",
+        IN_TRANSIT: "RFD",
+        RECEIVED: "RECEIVED",
+      }[lifecycle];
+      if (!legacyStatus) throw new Error("Invalid lifecycle filter");
+
+      // Modern orders can have cartons in multiple lifecycle pools while the
+      // order itself remains PARTIAL. Historical orders have no tracking, so
+      // retain their legacy order-wide status as a fallback.
+      q.$and = [
+        {
+          $or: [
+            { "cartonTracking.status": lifecycle },
+            {
+              status: legacyStatus,
+              $expr: {
+                $eq: [{ $size: { $ifNull: ["$cartonTracking", []] } }, 0],
+              },
+            },
+          ],
+        },
+      ];
+    }
     if (orderType) q.orderType = orderType;
     if (startDate || endDate) {
       q.createdAt = {};
@@ -1691,36 +1717,41 @@ const propagatePriceUpdate = async (articleId, newPricePerPair) => {
 
 const getOrderStats = async () => {
   const result = await Order.aggregate([
-    { $match: { status: { $nin: PREORDER_STATUSES } } },
     {
       $facet: {
-        byStatus: [{ $group: { _id: "$status", count: { $sum: 1 }, cartons: { $sum: "$totalCartons" } } }],
-        byType: [{ $group: { _id: "$orderType", count: { $sum: 1 } } }],
-        urgent: [
+        total: [{ $group: { _id: null, cartons: { $sum: { $ifNull: ["$totalCartons", 0] } } } }],
+        booked: [
+          { $match: { status: "BOOKED" } },
+          { $group: { _id: null, cartons: { $sum: { $ifNull: ["$totalCartons", 0] } } } },
+        ],
+        tracked: [
+          { $unwind: "$cartonTracking" },
+          { $group: { _id: "$cartonTracking.status", cartons: { $sum: 1 } } },
+        ],
+        legacy: [
           {
             $match: {
-              bookingPriority: "URGENT",
-              status: { $nin: ["RECEIVED", "CANCELLED"] },
+              status: { $in: ["PFD", "RFD", "RECEIVED"] },
+              $expr: { $eq: [{ $size: { $ifNull: ["$cartonTracking", []] } }, 0] },
             },
           },
-          { $count: "count" },
+          { $group: { _id: "$status", cartons: { $sum: { $ifNull: ["$totalCartons", 0] } } } },
         ],
       },
     },
   ]);
 
-  const stats = { total: 0, totalCartons: 0, urgent: 0 };
-  const statusCounts = result[0]?.byStatus || [];
-  for (const s of statusCounts) {
-    stats[s._id] = s.cartons || 0;
-    stats[`${s._id}_orders`] = s.count;
-    if (!["CANCELLED"].includes(s._id)) {
-      stats.total += s.count;
-      stats.totalCartons += s.cartons || 0;
-    }
-  }
-  stats.urgent = result[0]?.urgent?.[0]?.count || 0;
-  return stats;
+  const facet = result[0] || {};
+  const tracked = Object.fromEntries((facet.tracked || []).map((row) => [row._id, row.cartons || 0]));
+  const legacy = Object.fromEntries((facet.legacy || []).map((row) => [row._id, row.cartons || 0]));
+
+  return {
+    totalCartons: facet.total?.[0]?.cartons || 0,
+    BOOKED: facet.booked?.[0]?.cartons || 0,
+    PFD: (tracked.DISPATCHED || 0) + (legacy.PFD || 0),
+    RFD: (tracked.IN_TRANSIT || 0) + (legacy.RFD || 0),
+    RECEIVED: (tracked.RECEIVED || 0) + (legacy.RECEIVED || 0),
+  };
 };
 
 /** Full-catalog (non-paginated) metrics for admin dashboard cards */

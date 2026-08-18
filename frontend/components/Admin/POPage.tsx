@@ -963,14 +963,20 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
 
     if (article.variants && article.variants.length > 0) {
       article.variants.forEach((variant: any) => {
-        const assortmentStr = formatAssortment(variant.sizeQuantities) || variant.sizeRange || "NoRange";
-        const dedupeKey = `${variant.sku || article.sku || ""}__${assortmentStr}`;
+        const variantId = String(variant.id || variant._id || "");
+        const sku = String(variant.sku || article.sku || "").trim().toLowerCase();
+        const color = String(variant.color || "Default").trim().toLowerCase();
+        const sizeRange = String(variant.sizeRange || "NoRange").trim().toLowerCase();
+        const assortment = formatAssortment(variant.sizeQuantities);
+        // Retain separate colours even when they share SKU and assortment,
+        // but collapse duplicate catalog variants representing the same PO item.
+        const dedupeKey = `item__${articleId}__${color}__${sku}__${sizeRange}__${assortment}`;
         if (seen.has(dedupeKey)) return;
         seen.add(dedupeKey);
         list.push({
           articleId,
           masterName: article.name,
-          variantId: variant.id || variant._id || "",
+          variantId,
           name: `${article.name}-${variant.color || "Default"}-${
             variant.sizeRange || "NoRange"
           }`,
@@ -998,14 +1004,14 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
             article.pricePerPair ||
             0,
           mrp: variant.mrp || article.mrp || 0,
-          assortment: formatAssortment(variant.sizeQuantities),
+          assortment,
           gender: article.category || "",
           color: variant.color || "",
           status: article.status || "AVAILABLE",
         });
       });
     } else {
-      const dedupeKey = `${article.sku || ""}__no-variant`;
+      const dedupeKey = `article__${articleId}__no-variant`;
       if (!seen.has(dedupeKey)) {
         seen.add(dedupeKey);
       } else {

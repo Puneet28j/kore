@@ -6,6 +6,8 @@ import React, {
   useCallback,
 } from "react";
 import { toast } from "sonner";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
 import {
   Plus,
   Search,
@@ -28,6 +30,7 @@ import {
   Clock,
 } from "lucide-react";
 import { Article, AssortmentType } from "../../types";
+import { COMPANY_CONFIG } from "../../constants";
 import Switch from "../ui/Switch";
 import { masterCatalogService } from "../../services/masterCatalogService";
 import { getImageUrl } from "../../utils/imageUtils";
@@ -36,6 +39,13 @@ import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
 
 type CatalogStatus = "AVAILABLE" | "PREORDER";
+
+function effectiveCatalogStatus(
+  variant: { stage?: CatalogStatus },
+  articleStatus?: CatalogStatus
+): CatalogStatus {
+  return variant.stage || articleStatus || "AVAILABLE";
+}
 
 type CatalogueForm = {
   name: string;
@@ -482,7 +492,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   initialActiveTab,
   onActiveTabChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<CatalogStatus>(initialActiveTab ?? "AVAILABLE");
+  const [activeTab, setActiveTab] = useState<CatalogStatus>(
+    initialActiveTab ?? "AVAILABLE"
+  );
   const [searchTerm, setSearchTerm] = useState("");
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
   const [sortOption, setSortOption] = useState<string>("name_asc");
@@ -499,6 +511,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageLoading, setPageLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [appliedSearchTerm, setAppliedSearchTerm] = useState("");
+  const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const observerRef = useRef<HTMLDivElement | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useRef("");
@@ -1436,7 +1451,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           page,
           limit: BATCH_SIZE,
           q: q || undefined,
-          stage: tab,
+          // An active search is global across Available and Pre-Order.
+          // Without a search, preserve the selected tab as a stage filter.
+          stage: q.trim() ? undefined : tab,
           gender: gender !== "ALL" ? gender : undefined,
           sort,
         });
@@ -1479,11 +1496,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     searchDebounceRef.current = setTimeout(() => {
-      debouncedSearch.current = searchTerm.trim();
+      const nextSearchTerm = searchTerm.trim();
+      debouncedSearch.current = nextSearchTerm;
+      setAppliedSearchTerm(nextSearchTerm);
       setCurrentPage(1);
       fetchLocalArticles(
         1,
-        searchTerm.trim(),
+        nextSearchTerm,
         activeTab,
         false,
         genderFilter,
@@ -1557,6 +1576,339 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
   // Keep App-level articles in sync when a save/delete happens (so modals etc. work)
   const filteredMasters = localArticles;
+  const isGlobalSearchActive = appliedSearchTerm.length > 0;
+
+  // ---------- Detailed Excel export ----------
+  const exportCatalogueExcel = async (
+    exportScope: "CURRENT" | "COMBINED" = "CURRENT"
+  ) => {
+    setExportingExcel(true);
+    try {
+      const exportSearch = appliedSearchTerm.trim();
+      const isCombinedExport = exportScope === "COMBINED";
+      const exportStage =
+        isCombinedExport || exportSearch ? undefined : activeTab;
+      const exportGender = genderFilter !== "ALL" ? genderFilter : undefined;
+      const exportLimit = 1000;
+      const allItems: any[] = [];
+      let page = 1;
+      let totalPages = 1;
+
+      // The API accepts up to 1,000 records per page, so walk every page to
+      // export the complete filtered dataset rather than only loaded rows.
+      do {
+        const res = await masterCatalogService.listMasterItems({
+          page,
+          limit: exportLimit,
+          q: exportSearch || undefined,
+          stage: exportStage,
+          gender: exportGender,
+          sort: sortOption,
+        });
+        allItems.push(...(res.data || []));
+        totalPages = Math.max(1, Number(res.meta?.totalPages) || 1);
+        page += 1;
+      } while (page <= totalPages);
+
+      const bookedMapResponse = await masterCatalogService.getBookedMap();
+      const bookedPairsByVariant = bookedMapResponse?.data || {};
+
+      const exportRows: Array<Record<string, string | number | boolean>> = [];
+      let serialNumber = 0;
+
+      allItems.forEach((item: any) => {
+        const variants = (item.variants || []).filter((variant: any) => {
+          if (isCombinedExport || exportSearch) return true;
+          return effectiveCatalogStatus(variant, item.stage) === activeTab;
+        });
+
+        variants.forEach((variant: any) => {
+          const stage = effectiveCatalogStatus(variant, item.stage);
+          const sizeMap = variant.sizeMap || {};
+          const livePairs: number = Object.values(sizeMap).reduce<number>(
+            (sum: number, cell: any) => sum + (Number(cell?.qty) || 0),
+            0
+          );
+          const poPlannedQty = variant.poPlannedQty || {};
+          const plannedPairs: number =
+            Number(variant.plannedPairs) ||
+            Object.values(poPlannedQty).reduce<number>(
+              (sum: number, qty: any) => sum + (Number(qty) || 0),
+              0
+            );
+          const quantityPairs = stage === "AVAILABLE" ? livePairs : plannedPairs;
+          const bookedPairs =
+            stage === "AVAILABLE"
+              ? Number(bookedPairsByVariant[String(variant._id)] || 0)
+              : Number(variant.preBookedPairs || 0);
+          const poPendingPairs = Number(variant.poPendingPairs || 0);
+          const sizeQuantities =
+            variant.sizeQuantities &&
+            Object.keys(variant.sizeQuantities).length > 0
+              ? variant.sizeQuantities
+              : Object.fromEntries(
+                  Object.entries(sizeMap).map(([size, cell]: [string, any]) => [
+                    size,
+                    Number(cell?.qty) || 0,
+                  ])
+                );
+          const expectedDate =
+            variant.expectedAvailableDate || item.expectedAvailableDate;
+
+          serialNumber += 1;
+          exportRows.push({
+            sno: serialNumber,
+            article: item.articleName || "",
+            gender: item.gender || "",
+            productCategory: item.categoryId?.name || "",
+            brand: item.brandId?.name || "",
+            manufacturer: item.manufacturerCompanyId?.name || "",
+            unit: item.unitId?.name || "",
+            variant: variant.itemName || `${item.articleName || ""} - ${variant.color || ""}`,
+            variantSku: variant.sku || "",
+            color: variant.color || "",
+            sizeRange: variant.sizeRange || "",
+            assortment: formatAssortment(sizeQuantities),
+            status: stage === "PREORDER" ? "PRE-ORDER" : "AVAILABLE",
+            expectedAvailableDate: expectedDate
+              ? new Date(expectedDate).toLocaleDateString("en-IN")
+              : "",
+            onlineMrp: Number(variant.onlineMrp ?? item.onlineMrp ?? 0),
+            offlineMrp: Number(variant.offlineMrp ?? item.offlineMrp ?? 0),
+            costPerPair: Number(variant.costPrice || 0),
+            mrpPerPair: Number(variant.mrp || item.mrp || 0),
+            quantityBasis: stage === "AVAILABLE" ? "Available Stock" : "PO Planned",
+            quantityPairs,
+            quantityCartons: Math.floor(quantityPairs / 24),
+            bookedPairs,
+            bookedCartons: Math.floor(bookedPairs / 24),
+            poPendingPairs,
+            poPendingCartons: Math.floor(poPendingPairs / 24),
+            active: variant.isActive !== false ? "YES" : "NO",
+          });
+        });
+      });
+
+      if (exportRows.length === 0) {
+        toast.error("No catalogue items to export");
+        return;
+      }
+
+      const availableCount = exportRows.filter(
+        (row) => row.status === "AVAILABLE"
+      ).length;
+      const preOrderCount = exportRows.filter(
+        (row) => row.status === "PRE-ORDER"
+      ).length;
+
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("Catalogue");
+      const columns = [
+        ["S.No", "sno", 8],
+        ["Article", "article", 28],
+        ["Gender", "gender", 12],
+        ["Product Category", "productCategory", 20],
+        ["Brand", "brand", 20],
+        ["Manufacturer", "manufacturer", 24],
+        ["Unit", "unit", 16],
+        ["Variant", "variant", 32],
+        ["Variant SKU", "variantSku", 20],
+        ["Color", "color", 16],
+        ["Size Range", "sizeRange", 14],
+        ["Size Assortment", "assortment", 28],
+        ["Status", "status", 16],
+        ["Expected Available Date", "expectedAvailableDate", 24],
+        ["Online MRP / Pair", "onlineMrp", 16],
+        ["Offline MRP / Pair", "offlineMrp", 16],
+        ["Cost / Pair", "costPerPair", 14],
+        ["MRP / Pair", "mrpPerPair", 14],
+        ["Quantity Basis", "quantityBasis", 18],
+        ["Quantity / Planned Pairs", "quantityPairs", 22],
+        ["Quantity / Planned Cartons", "quantityCartons", 24],
+        ["Booked Pairs", "bookedPairs", 14],
+        ["Booked Cartons", "bookedCartons", 16],
+        ["PO Pending Pairs", "poPendingPairs", 18],
+        ["PO Pending Cartons", "poPendingCartons", 20],
+        ["Active", "active", 10],
+      ] as const;
+      const headers = columns.map((column) => column[0]);
+
+      worksheet.columns = columns.map(([, key, width]) => ({ key, width }));
+      const reportScope = isCombinedExport
+        ? "Available + Pre-Order"
+        : exportSearch
+        ? "Global Search"
+        : activeTab === "AVAILABLE"
+        ? "Available"
+        : "Pre-Order";
+      worksheet.insertRow(1, [COMPANY_CONFIG.name.toUpperCase()]);
+      worksheet.insertRow(2, [
+        `${COMPANY_CONFIG.brand} | MASTER CATALOGUE REPORT`,
+      ]);
+      worksheet.insertRow(3, [
+        COMPANY_CONFIG.invoiceTo,
+      ]);
+      worksheet.insertRow(4, [
+        `GSTIN: ${COMPANY_CONFIG.gst || "-"} | PAN: ${COMPANY_CONFIG.pan || "-"} | Phone: ${COMPANY_CONFIG.phone || "-"} | Email: ${COMPANY_CONFIG.email || "-"}`,
+      ]);
+      worksheet.insertRow(5, [
+        `Generated On: ${new Date().toLocaleString("en-IN")} | Report Scope: ${reportScope}`,
+      ]);
+      worksheet.insertRow(6, [
+        `Search: ${exportSearch || "All items"} | Gender: ${exportGender || "All"} | Total Variants: ${exportRows.length} | Available: ${availableCount} | Pre-Order: ${preOrderCount}`,
+      ]);
+      worksheet.insertRow(7, []);
+      worksheet.getRow(8).values = headers;
+
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      worksheet.mergeCells(2, 1, 2, columns.length);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      worksheet.mergeCells(5, 1, 5, columns.length);
+      worksheet.mergeCells(6, 1, 6, columns.length);
+
+      const titleRow = worksheet.getRow(1);
+      titleRow.font = { bold: true, size: 18, color: { argb: "FFFFFFFF" } };
+      titleRow.alignment = { horizontal: "center", vertical: "middle" };
+      titleRow.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF1E293B" },
+      };
+      titleRow.height = 36;
+
+      const reportTitleRow = worksheet.getRow(2);
+      reportTitleRow.font = { bold: true, size: 14, color: { argb: "FF1E3A8A" } };
+      reportTitleRow.alignment = { horizontal: "center", vertical: "middle" };
+      reportTitleRow.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFEFF6FF" },
+      };
+      reportTitleRow.height = 28;
+
+      [3, 4, 5, 6].forEach((rowNumber) => {
+        const row = worksheet.getRow(rowNumber);
+        row.font = {
+          bold: rowNumber >= 5,
+          size: 10,
+          color: { argb: rowNumber >= 5 ? "FF334155" : "FF64748B" },
+        };
+        row.alignment = { horizontal: "left", vertical: "middle" };
+        row.height = 22;
+      });
+
+      const headerRow = worksheet.getRow(8);
+      headerRow.font = { bold: true, size: 11, color: { argb: "FFFFFFFF" } };
+      headerRow.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      headerRow.height = 32;
+      headerRow.eachCell((cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF334155" },
+        };
+        cell.border = {
+          top: { style: "thin", color: { argb: "FF000000" } },
+          left: { style: "thin", color: { argb: "FF000000" } },
+          bottom: { style: "medium", color: { argb: "FF000000" } },
+          right: { style: "thin", color: { argb: "FF000000" } },
+        };
+      });
+
+      exportRows.forEach((row) => worksheet.addRow(row));
+      const currencyColumns = new Set([15, 16, 17, 18]);
+      const numericColumns = new Set([1, 20, 21, 22, 23, 24, 25]);
+
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber <= 8) return;
+        row.height = 22;
+        row.eachCell((cell, columnNumber) => {
+          cell.alignment = { vertical: "middle", horizontal: "left", wrapText: false };
+          cell.border = {
+            top: { style: "thin", color: { argb: "FFE2E8F0" } },
+            left: { style: "thin", color: { argb: "FFE2E8F0" } },
+            bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+            right: { style: "thin", color: { argb: "FFE2E8F0" } },
+          };
+          if (rowNumber % 2 === 0) {
+            cell.fill = {
+              type: "pattern",
+              pattern: "solid",
+              fgColor: { argb: "FFF8FAFC" },
+            };
+          }
+          if (numericColumns.has(columnNumber)) {
+            cell.alignment = { horizontal: "right", vertical: "middle" };
+          }
+          if (currencyColumns.has(columnNumber)) {
+            cell.numFmt = '₹#,##0.00';
+          }
+        });
+
+        const statusCell = row.getCell(13);
+        statusCell.font = { bold: true, color: { argb: "FF166534" } };
+        statusCell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFDCFCE7" },
+        };
+        if (statusCell.value === "PRE-ORDER") {
+          statusCell.font = { bold: true, color: { argb: "FFB45309" } };
+          statusCell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FFFFEDD5" },
+          };
+        }
+      });
+
+      worksheet.views = [{ state: "frozen", ySplit: 8 }];
+      worksheet.autoFilter = {
+        from: { row: 8, column: 1 },
+        to: { row: 8, column: columns.length },
+      };
+      worksheet.properties.tabColor = { argb: "FF1E3A8A" };
+      worksheet.pageSetup = {
+        paperSize: 9,
+        orientation: "landscape",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        margins: {
+          left: 0.25,
+          right: 0.25,
+          top: 0.5,
+          bottom: 0.5,
+          header: 0.2,
+          footer: 0.2,
+        },
+      };
+      worksheet.headerFooter.oddFooter = `&L${COMPANY_CONFIG.name}&CPage &P of &N&RGenerated ${new Date().toLocaleDateString("en-IN")}`;
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const scopeName = isCombinedExport
+        ? "combined"
+        : exportSearch
+        ? "global-search"
+        : activeTab === "AVAILABLE"
+        ? "available"
+        : "pre-order";
+      const date = new Date().toISOString().split("T")[0];
+      saveAs(
+        new Blob([buffer], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }),
+        `catalogue_${scopeName}_${date}.xlsx`
+      );
+      toast.success(`Exported ${exportRows.length} catalogue variants`);
+    } catch (err: any) {
+      console.error("Catalogue Excel export failed:", err);
+      toast.error(err?.message || "Failed to export catalogue Excel");
+    } finally {
+      setExportingExcel(false);
+    }
+  };
 
   // ---------- Modal ----------
   const openModal = (article?: Article) => {
@@ -1749,6 +2101,68 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           >
             <FileSpreadsheet size={16} /> Import CSV
           </button>
+          <div className="relative flex">
+            <button
+              onClick={() => {
+                setExportMenuOpen(false);
+                exportCatalogueExcel("CURRENT");
+              }}
+              disabled={exportingExcel || pageLoading || loadingMore}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-l-xl font-semibold text-sm hover:bg-indigo-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {exportingExcel ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Download size={16} />
+              )}
+              {exportingExcel ? "Exporting..." : "Export Excel"}
+            </button>
+            <button
+              type="button"
+              aria-label="More export options"
+              aria-haspopup="menu"
+              aria-expanded={exportMenuOpen}
+              onClick={() => setExportMenuOpen((open) => !open)}
+              disabled={exportingExcel || pageLoading || loadingMore}
+              className="px-2.5 py-2 bg-indigo-50 border border-l-0 border-indigo-200 text-indigo-700 rounded-r-xl hover:bg-indigo-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronDown size={15} />
+            </button>
+            {exportMenuOpen && (
+              <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    exportCatalogueExcel("CURRENT");
+                  }}
+                  className="w-full rounded-lg px-3 py-2 text-left text-xs font-bold text-slate-700 hover:bg-slate-50"
+                >
+                  Export Current View
+                  <span className="mt-0.5 block text-[10px] font-medium text-slate-400">
+                    {isGlobalSearchActive
+                      ? "Current global search results"
+                      : activeTab === "AVAILABLE"
+                      ? "Available catalogue"
+                      : "Pre-Order catalogue"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    exportCatalogueExcel("COMBINED");
+                  }}
+                  className="w-full rounded-lg px-3 py-2 text-left text-xs font-bold text-slate-700 hover:bg-slate-50"
+                >
+                  Export Combined Catalogue
+                  <span className="mt-0.5 block text-[10px] font-medium text-slate-400">
+                    Available + Pre-Order in one file
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
           {onAddNewMaster && (
             <button
               onClick={onAddNewMaster}
@@ -1796,7 +2210,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
       {/* Search + filters bar (same as distributor Shop) */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="relative w-full md:max-w-xs">
+        <div className="relative w-full md:max-w-sm">
           <Search
             className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
             size={18}
@@ -1805,7 +2219,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             type="text"
-            placeholder="Search article or SKU..."
+            placeholder="Search article or SKU across all stages..."
             className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-sm font-medium"
           />
         </div>
@@ -1860,18 +2274,31 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         {!pageLoading && filteredMasters.length === 0 && (
           <div className="bg-white border border-slate-200 rounded-2xl p-2 text-center">
             <Package className="mx-auto text-slate-300 mb-3" size={40} />
-            <p className="text-slate-400 font-medium">No items in this tab.</p>
+            <p className="text-slate-400 font-medium">
+              {isGlobalSearchActive
+                ? "No matching catalogue items found."
+                : "No items in this tab."}
+            </p>
           </div>
         )}
 
         {filteredMasters.map((article) => {
-          // A mixed PREORDER article (some variants GRN-promoted, some not)
-          // now matches BOTH tabs at the query level (see masterCatalogService.list) —
-          // only show the variants relevant to THIS tab, same as Master Stock.
-          const tabVariants = (article.variants || []).filter(
-            (v) => (v.stage || article.status) === activeTab
-          );
+          // Global searches include matching articles from both stages.
+          // The API query omits stage while a search is active.
+          // Empty searches keep the selected tab's stage-specific variant view.
+          const tabVariants = isGlobalSearchActive
+            ? article.variants || []
+            : (article.variants || []).filter(
+                (v) => (v.stage || article.status) === activeTab
+              );
           if (tabVariants.length === 0) return null;
+          const visibleStatuses = Array.from(
+            new Set(
+              tabVariants.map((variant) =>
+                effectiveCatalogStatus(variant, article.status)
+              )
+            )
+          );
 
           const isExpanded = expandedIds.has(article.id);
           const status = (article.status || "AVAILABLE") as CatalogStatus;
@@ -1960,6 +2387,26 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         {article.productCategory}
                       </span>
                     )}
+                    {isGlobalSearchActive &&
+                      visibleStatuses.map((catalogStatus) => (
+                        <span
+                          key={catalogStatus}
+                          className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border ${
+                            catalogStatus === "AVAILABLE"
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-amber-50 text-amber-700 border-amber-200"
+                          }`}
+                        >
+                          {catalogStatus === "AVAILABLE" ? (
+                            <CheckCircle2 size={9} />
+                          ) : (
+                            <Clock size={9} />
+                          )}
+                          {catalogStatus === "AVAILABLE"
+                            ? "AVAILABLE"
+                            : "PRE-ORDER"}
+                        </span>
+                      ))}
                     {status === "PREORDER" && article.expectedDate && (
                       <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 text-[9px] font-bold flex items-center gap-1 border border-rose-100/50">
                         <CalendarDays size={8} />

@@ -201,6 +201,11 @@ exports.bulkScan = async (draftId, cartonsPayload) => {
   for (const carton of cartonsPayload) {
     const { cartonIndex, pairBarcodes, itemName, variantId, cartonSku } = carton;
     if (!pairBarcodes || pairBarcodes.length === 0) continue;
+    if (pairBarcodes.length !== PAIRS_PER_CARTON) {
+      throw new Error(
+        `Carton ${cartonIndex || ""} for "${itemName || variantId || "item"}" must contain exactly ${PAIRS_PER_CARTON} scanned pairs`
+      );
+    }
 
     // Check for duplicates
     if (itemName && doneMap[itemName] && doneMap[itemName].includes((cartonIndex || 1) - 1)) {
@@ -425,7 +430,11 @@ exports.submitDraft = async (draftId, {
     // ─── FALLBACK: If SKU matching found nothing, use PO-based quantity breakup ───
     const totalCounted = Object.values(actualCounts).reduce((s, v) => s + v, 0);
     
-    if (totalCounted === 0 && variantCartons.length > 0) {
+    if (totalCounted !== variantCartons.length * PAIRS_PER_CARTON && variantCartons.length > 0) {
+      // A confirmed GRN carton is a full 24-pair assortment. If barcode-to-
+      // size matching is partial, rebuild from the confirmed carton breakup
+      // so every physical carton contributes to live stock.
+      Object.keys(actualCounts).forEach((size) => delete actualCounts[size]);
       if (poItem && Object.keys(poSizeMap).length > 0) {
         console.log(`[GRN-SUBMIT-DEBUG] ⚡ SKU match failed. Triggering PO-based fallback for ${variantCartons.length} cartons.`);
         Object.entries(poSizeMap).forEach(([size, cell]) => {

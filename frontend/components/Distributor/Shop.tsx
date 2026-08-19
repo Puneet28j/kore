@@ -82,6 +82,12 @@ const colorToHex = (color: string): string => {
 };
 
 const isVariantInStock = (v: Variant): boolean => {
+  // GRN/order allocation maintains this carton pool as the authoritative
+  // stock source. Some legacy/imported variants can have zeroed sizeMap
+  // quantities while still having cartons available (e.g. Matrix Grey).
+  if (Array.isArray(v.availableCartons) && v.availableCartons.length > 0) {
+    return true;
+  }
   const sizeMap = v.sizeMap || {};
   const baseBreakdown = v.sizeQuantities || {};
   const sizes = Object.keys(baseBreakdown);
@@ -114,6 +120,18 @@ const isVariantInStock = (v: Variant): boolean => {
   if (!hasValidAssort) return false;
   const stock = min === Infinity ? 0 : min;
   return stock > 0;
+};
+
+// Catalogue availability is derived from live stock. Distributor Shop must
+// not show an RFD variant once that live quantity is zero; unlike admin stock
+// screens, it is not useful to expose an unorderable out-of-stock card here.
+const hasLiveStock = (v: Variant): boolean => {
+  if (v.livePairs !== undefined) return Number(v.livePairs || 0) > 0;
+  const sizeMap = v.sizeMap || {};
+  if (Object.values(sizeMap).some((cell) => Number(cell?.qty || 0) > 0)) {
+    return true;
+  }
+  return Array.isArray(v.availableCartons) && v.availableCartons.length > 0;
 };
 
 // A still-PREORDER variant has no real stock — its bookable amount is what
@@ -208,7 +226,7 @@ const ArticleCard: React.FC<{
   // Effective stage of the SPECIFIC selected variant — a variant can have
   // arrived (own GRN) while the article as a whole is still PREORDER.
   const isPreOrderVariant =
-    (selectedVariant?.stage || article.status) === "PREORDER";
+    selectedVariant?.availability === "PREORDER";
 
   // ── Cap logic (per variant) ──────────────────────────────────────────────
   // AVAILABLE variant: capped by real per-size stock. Still-PREORDER
@@ -222,6 +240,12 @@ const ArticleCard: React.FC<{
       return Math.floor(
         remainingPlannedPairs(selectedVariant) / totalPairsPerCarton
       );
+    }
+    // An empty legacy pool is not stock. Fall back to the per-size live
+    // quantity in that case; a populated pool remains the preferred source
+    // because it supplies the physical carton codes for dispatch.
+    if (Array.isArray(selectedVariant.availableCartons) && selectedVariant.availableCartons.length > 0) {
+      return selectedVariant.availableCartons.length;
     }
     const sizeMap = selectedVariant.sizeMap || {};
     const sizes = Object.keys(baseBreakdown);
@@ -734,8 +758,6 @@ const mapDocToArticle = (doc: any): Article => ({
   soleColor: doc.soleColor,
   productCategory: doc.categoryId?.name,
   brand: doc.brandId?.name,
-  status: doc.stage || "AVAILABLE",
-  expectedDate: doc.expectedAvailableDate,
   selectedColors: doc.productColors || [],
   selectedSizes: doc.sizeRanges || [],
   variants: (doc.variants || []).map((v: any) => ({
@@ -762,14 +784,16 @@ const mapDocToArticle = (doc: any): Article => ({
     offlineMrp: v.offlineMrp,
     // Per-variant override — falls back to the article's own stage below
     // when a variant hasn't had its own GRN promotion yet.
-    stage: v.stage,
-    expectedAvailableDate: v.expectedAvailableDate,
+    availability: v.availability,
+    livePairs: v.livePairs,
+    isOutOfStock: v.isOutOfStock,
     // PO-derived planned + already pre-booked pairs (backend-injected) —
     // caps pre-booking for still-PREORDER variants.
     poPlannedQty: v.poPlannedQty || {},
     plannedPairs: v.plannedPairs || 0,
     preBookedPairs: v.preBookedPairs || 0,
     poPendingPairs: v.poPendingPairs || 0,
+    availableCartons: Array.isArray(v.availableCartons) ? v.availableCartons : [],
   })),
 });
 
@@ -808,6 +832,8 @@ const Shop: React.FC<ShopProps> = ({
     Record<string, { cartons: number; pairs: number }>
   >({});
   const observerRef = useRef<HTMLDivElement | null>(null);
+  // Keep late responses for an older query/filter from replacing current cards.
+  const catalogRequestIdRef = useRef(0);
 
   const fetchPendingDispatch = useCallback(async () => {
     if (!user?.id) {
@@ -852,43 +878,20 @@ const Shop: React.FC<ShopProps> = ({
 
   // Fetch Page 1 whenever search, gender, sort, or status changes
   const fetchInitialPage = useCallback(async () => {
+    const requestId = ++catalogRequestIdRef.current;
     setLoading(true);
     setPage(1);
     try {
       let docs: any[] = [];
       let totalCount = 0;
+      let totalPages = 1;
 
-      if (statusFilter === "ALL") {
-        // Fetch both AVAILABLE and PREORDER (pre-book) items
-        const [resAvailable, resPreBook] = await Promise.all([
-          masterCatalogService.listMasterItems({
-            page: 1,
-            limit: 1000,
-            stage: "AVAILABLE",
-            q: search || undefined,
-            gender: genderFilter !== "ALL" ? genderFilter : undefined,
-            sort: sortOption,
-          }),
-          masterCatalogService.listMasterItems({
-            page: 1,
-            limit: 1000,
-            stage: "PREORDER",
-            q: search || undefined,
-            gender: genderFilter !== "ALL" ? genderFilter : undefined,
-            sort: sortOption,
-          }),
-        ]);
-
-        const docsAvailable = resAvailable.data || resAvailable.items || [];
-        const docsPreBook = resPreBook.data || resPreBook.items || [];
-        docs = [...docsAvailable, ...docsPreBook];
-        totalCount = docs.length;
-      } else {
-        // Fetch single stage
+      {
+        // Always fetch one backend page. Stage is filtered at card level so a
+        // mixed article retains the correct variants without duplicate calls.
         const res = await masterCatalogService.listMasterItems({
           page: 1,
           limit: BATCH_SIZE,
-          stage: statusFilter,
           q: search || undefined,
           gender: genderFilter !== "ALL" ? genderFilter : undefined,
           sort: sortOption,
@@ -897,34 +900,37 @@ const Shop: React.FC<ShopProps> = ({
         docs = res.data || res.items || [];
         const meta = res.meta || {};
         totalCount = meta.total || docs.length;
+        totalPages = meta.totalPages || 1;
       }
 
+      if (requestId !== catalogRequestIdRef.current) return;
       const fetchedArticles = docs.map(mapDocToArticle);
       setBackendArticles(fetchedArticles);
       setTotalServerItems(totalCount);
-      setHasMorePages(false); // Disable pagination for now with full fetch
+      setHasMorePages(totalPages > 1);
     } catch {
-      toast.error("Failed to load catalog");
+      if (requestId === catalogRequestIdRef.current) toast.error("Failed to load catalog");
     } finally {
-      setLoading(false);
+      if (requestId === catalogRequestIdRef.current) setLoading(false);
     }
   }, [search, genderFilter, sortOption, statusFilter]);
 
   // Load Next Page for Infinite Scroll
   const loadNextPage = useCallback(async () => {
-    if (loadingMore || !hasMorePages || statusFilter === "ALL") return;
+    if (loadingMore || !hasMorePages) return;
+    const requestId = ++catalogRequestIdRef.current;
     setLoadingMore(true);
     const nextPage = page + 1;
     try {
       const res = await masterCatalogService.listMasterItems({
         page: nextPage,
         limit: BATCH_SIZE,
-        stage: statusFilter,
         q: search || undefined,
         gender: genderFilter !== "ALL" ? genderFilter : undefined,
         sort: sortOption,
       });
 
+      if (requestId !== catalogRequestIdRef.current) return;
       const docs = res.data || res.items || [];
       const fetchedArticles = docs.map(mapDocToArticle);
       setBackendArticles((prev) => [...prev, ...fetchedArticles]);
@@ -934,9 +940,9 @@ const Shop: React.FC<ShopProps> = ({
       const totalPages = meta.totalPages || 1;
       setHasMorePages(nextPage < totalPages);
     } catch {
-      toast.error("Failed to load more items");
+      if (requestId === catalogRequestIdRef.current) toast.error("Failed to load more items");
     } finally {
-      setLoadingMore(false);
+      if (requestId === catalogRequestIdRef.current) setLoadingMore(false);
     }
   }, [
     page,
@@ -949,7 +955,8 @@ const Shop: React.FC<ShopProps> = ({
   ]);
 
   useEffect(() => {
-    fetchInitialPage();
+    const timer = window.setTimeout(fetchInitialPage, 300);
+    return () => window.clearTimeout(timer);
   }, [fetchInitialPage]);
 
   // IntersectionObserver for Backend Infinite Scroll
@@ -982,31 +989,37 @@ const Shop: React.FC<ShopProps> = ({
         // but distributors must not see or order them.
         if (v.isActive === false) return;
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
-        const effStage = v.stage || article.status;
+        const effStage = v.availability || "RFD";
+        if (statusFilter === "AVAILABLE" && effStage !== "RFD") return;
+        if (statusFilter === "PREORDER" && effStage !== "PREORDER") return;
         if (effStage === "PREORDER") {
           // Still-PREORDER variant — sold against its PO planned quantity,
           // no real stock exists yet. Hide it only once fully pre-booked
           // (or when no PO has been raised for it at all).
           if (remainingPlannedPairs(v) <= 0) return;
-        } else if (inStockOnly && !isVariantInStock(v)) {
+        // Do not render disabled/out-of-stock RFD cards to distributors.
+        // `isOutOfStock` is the canonical backend flag; the carton-capacity
+        // fallback also protects old records that do not yet return it.
+        } else if (v.isOutOfStock === true || !isVariantInStock(v)) {
           return;
         }
-        if (!groups[v.color]) groups[v.color] = [];
-        groups[v.color].push(v);
+        // A colour can have multiple size-range variants with different
+        // availability. Keep RFD and Pre-Order variants in separate cards.
+        const groupKey = `${v.color}|||${effStage}`;
+        if (!groups[groupKey]) groups[groupKey] = [];
+        groups[groupKey].push(v);
       });
       return Object.entries(groups)
         .filter(([, colorVariants]) => colorVariants.length > 0)
-        .map(([color, colorVariants]) => ({
+        .map(([groupKey, colorVariants]) => ({
           article,
-          color,
+          color: groupKey.split("|||")[0],
           variants: colorVariants,
           // "Available in 30 Days" only if EVERY variant of this color is
           // still pending its own GRN — the moment even one has arrived,
           // the card should reflect that (falls back to the article's own
           // stage per variant until each has its own explicit value).
-          cardStage: colorVariants.every((v) => (v.stage || article.status) === "AVAILABLE")
-            ? "AVAILABLE"
-            : "PREORDER",
+          cardStage: groupKey.split("|||")[1] as "RFD" | "PREORDER",
         }));
     });
 
@@ -1015,11 +1028,11 @@ const Shop: React.FC<ShopProps> = ({
       const nameCompare = a.article.name.localeCompare(b.article.name);
       if (nameCompare !== 0) return nameCompare;
       if (a.cardStage === b.cardStage) return 0;
-      return a.cardStage === "AVAILABLE" ? -1 : 1;
+      return a.cardStage === "RFD" ? -1 : 1;
     });
 
     return groups;
-  }, [backendArticles, distributorTag, inStockOnly]);
+  }, [backendArticles, distributorTag, inStockOnly, statusFilter]);
 
   return (
     <div className="space-y-8 pb-20">

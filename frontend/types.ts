@@ -66,6 +66,8 @@ export interface Variant {
   hsnCode?: string;
   sizeQuantities: Record<string, number>;
   sizeMap?: Record<string, { qty: number; sku: string }>;
+  // Carton-level stock pool maintained by GRN/order allocation.
+  availableCartons?: string[];
   bookingMap?: Record<string, number>;
   poMap?: Record<string, number>;
   images?: string[];
@@ -75,8 +77,9 @@ export interface Variant {
   offlineMrp?: number;
   // Per-variant override of the article's stage — falls back to the
   // article's own `status`/`expectedDate` when unset (see Article below).
-  stage?: "AVAILABLE" | "PREORDER";
-  expectedAvailableDate?: string;
+  availability?: "RFD" | "PREORDER";
+  livePairs?: number;
+  isOutOfStock?: boolean;
   // PO-derived planned pairs for a still-PREORDER variant — computed by the
   // backend from Purchase Orders (per-size + total), never stored/entered
   // manually. preBookedPairs is what distributors have already pre-booked
@@ -112,9 +115,6 @@ export interface Article {
   soleColor?: string;
   productCategory?: string; // e.g. Footwear
   brand?: string;
-  status?: "AVAILABLE" | "PREORDER";
-  expectedDate?: string;
-  expectedAvailableDate?: string;
   manufacturer?: string;
   unit?: string;
   selectedSizes?: string[];
@@ -143,6 +143,8 @@ export enum OrderStatus {
   // Regular order flow
   PENDING   = "PENDING",       // Placed by distributor, awaiting admin booking
   BOOKED    = "BOOKED",        // Admin booked / confirmed
+  DISPATCHED = "DISPATCHED",
+  IN_TRANSIT = "IN_TRANSIT",
   PFD       = "PFD",           // Processing for Delivery
   RFD       = "RFD",           // Ready for Delivery
   OFD       = "OFD",           // Out for Delivery

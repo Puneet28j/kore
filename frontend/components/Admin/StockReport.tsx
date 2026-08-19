@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Search, Download, Package, RefreshCw, ChevronDown, ChevronRight,
   AlertCircle, Filter, TrendingDown, AlertTriangle, CheckCircle2,
@@ -111,37 +111,44 @@ const StockReport: React.FC = () => {
   // table paginated on the server while filtering client-side on just that
   // page, which broke the filter+search+pagination combination).
   const [allRows, setAllRows] = useState<StockRow[]>([]);
+  const [meta, setMeta] = useState({ total: 0, totalPages: 1 });
+  const [summary, setSummary] = useState({ totalArticles: 0, totalVariants: 0, totalPairs: 0, totalValue: 0, totalBookedPairs: 0, outCount: 0, lowCount: 0 });
   const [loading, setLoading] = useState(false);
 
   // KPI summary bar always reflects the WHOLE catalogue, never the search
   // box — fetched separately (no `q` param) so typing a search doesn't
   // change the numbers above it.
-  const [globalRows, setGlobalRows] = useState<StockRow[]>([]);
+  // Socket refreshes and a manual search can overlap; only retain the newest.
+  const stockRequestIdRef = useRef(0);
 
   const fetchAllData = useCallback(async () => {
+    const requestId = ++stockRequestIdRef.current;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ page: "1", limit: "10000" });
+      const params = new URLSearchParams({ page: String(page), limit: String(pageSize), stage: stageFilter, stockFilter });
       if (search) params.set("q", search);
       const d = await apiFetch(`/reports/stock?${params.toString()}`);
+      if (requestId !== stockRequestIdRef.current) return;
       setAllRows(d.data || []);
+      setMeta(d.meta || { total: 0, totalPages: 1 });
     } catch (err: any) {
+      if (requestId !== stockRequestIdRef.current) return;
       setError(err?.message || "Failed to load stock report");
-      setAllRows([]);
+      setAllRows([]); setMeta({ total: 0, totalPages: 1 });
     } finally {
-      setLoading(false);
+      if (requestId === stockRequestIdRef.current) setLoading(false);
     }
-  }, [search]);
+  }, [search, page, pageSize, stageFilter, stockFilter]);
 
   const fetchGlobalData = useCallback(async () => {
     try {
-      const d = await apiFetch(`/reports/stock?page=1&limit=10000`);
-      setGlobalRows(d.data || []);
+      const d = await apiFetch(`/reports/stock?summary=true&stage=${stageFilter}`);
+      setSummary(d.summary || { totalArticles: 0, totalVariants: 0, totalPairs: 0, totalValue: 0, totalBookedPairs: 0, outCount: 0, lowCount: 0 });
     } catch {
-      setGlobalRows([]);
+      setSummary({ totalArticles: 0, totalVariants: 0, totalPairs: 0, totalValue: 0, totalBookedPairs: 0, outCount: 0, lowCount: 0 });
     }
-  }, []);
+  }, [stageFilter]);
 
   useEffect(() => { fetchAllData(); }, [fetchAllData]);
   useEffect(() => { fetchGlobalData(); }, [fetchGlobalData]);
@@ -163,7 +170,12 @@ const StockReport: React.FC = () => {
   // otherwise you can land on a now-nonexistent page (e.g. filtered to 0 rows).
   useEffect(() => { setPage(1); }, [search, stockFilter, stageFilter, pageSize]);
 
-  const handleSearch = () => { setSearch(searchInput); };
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 350);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  const handleSearch = () => { setSearch(searchInput.trim()); };
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => {
@@ -177,21 +189,14 @@ const StockReport: React.FC = () => {
   // the source for the on-screen table's client-side pagination. Stage
   // filter narrows variants first (recomputing each row's totals), then
   // stock-health filters on those recomputed totals.
-  const allFilteredRows = useMemo(() => {
-    const staged = applyStageFilter(allRows, stageFilter);
-    if (stockFilter === "ALL") return staged;
-    return staged.filter(r => getStockHealth(r.totalStock) === stockFilter);
-  }, [allRows, stageFilter, stockFilter]);
+  const allFilteredRows = allRows;
 
-  const totalPages = Math.max(1, Math.ceil(allFilteredRows.length / pageSize));
+  const totalPages = Math.max(1, meta.totalPages || 1);
   // Clamp in render (not just via the reset effect) so shrinking the result
   // set below the current page number never leaves the table blank.
   const safePage = Math.min(page, totalPages);
 
-  const filteredRows = useMemo(() => {
-    const start = (safePage - 1) * pageSize;
-    return allFilteredRows.slice(start, start + pageSize);
-  }, [allFilteredRows, safePage, pageSize]);
+  const filteredRows = allRows;
 
   const expandAll = () => setExpanded(new Set(filteredRows.map(r => r.articleId)));
   const collapseAll = () => setExpanded(new Set());
@@ -203,7 +208,7 @@ const StockReport: React.FC = () => {
   // cards changing per RFD/Pre-Order tab, so the KPIs stay meaningful for
   // whichever slice is selected.
   const stats = useMemo(() => {
-    const staged = applyStageFilter(globalRows, stageFilter);
+    const staged = [] as StockRow[];
     const totalArticles = staged.length;
     let totalPairs = 0;
     let totalBookedPairs = 0;
@@ -224,13 +229,30 @@ const StockReport: React.FC = () => {
       });
     });
 
-    return { totalArticles, totalCartons: toCtn(totalPairs), totalBookedCartons: toCtn(totalBookedPairs), totalVariants, outCount, lowCount, totalValue };
-  }, [globalRows, stageFilter]);
+    // Summary comes from the full, unsearched backend dataset.
+    return {
+      totalArticles: summary.totalArticles,
+      totalCartons: toCtn(summary.totalPairs),
+      totalBookedCartons: toCtn(summary.totalBookedPairs),
+      totalVariants: summary.totalVariants,
+      outCount: summary.outCount,
+      lowCount: summary.lowCount,
+      totalValue: summary.totalValue,
+    };
+  }, [summary]);
 
-  const exportCsv = () => {
+  const fetchExportRows = async (): Promise<StockRow[]> => {
+    const params = new URLSearchParams({ all: "true", stage: stageFilter, stockFilter });
+    if (search) params.set("q", search);
+    const result = await apiFetch(`/reports/stock?${params.toString()}`);
+    return result.data || [];
+  };
+
+  const exportCsv = async () => {
+    const exportRows = await fetchExportRows();
     // Exports the FULL dataset (allFilteredRows), not just the current page.
     const lines = ["Article,SKU,Category,Brand,Company,Variant,Color,Size Range,Stage,MRP,Cost,Stock Health,Total Stock (CTN),Booked (CTN),Stock by Size (pairs)"];
-    allFilteredRows.forEach(r => {
+    exportRows.forEach(r => {
       r.variants.forEach(v => {
         const sizes = Object.entries(v.sizeStock || {})
           .sort((a, b) => Number(a[0]) - Number(b[0]))
@@ -249,6 +271,7 @@ const StockReport: React.FC = () => {
   };
 
   const exportPdf = async () => {
+    const exportRows = await fetchExportRows();
     const { default: jsPDF } = await import("jspdf");
     const { default: autoTable } = await import("jspdf-autotable");
 
@@ -261,14 +284,14 @@ const StockReport: React.FC = () => {
     doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
     doc.text(
-      `Generated ${new Date().toLocaleString("en-IN")} — ${allFilteredRows.length} article(s), all in CTN`,
+      `Generated ${new Date().toLocaleString("en-IN")} — ${exportRows.length} article(s), all in CTN`,
       margin,
       46
     );
 
     // One row per variant — exports the FULL dataset, not just the page on screen.
     const body: (string | number)[][] = [];
-    allFilteredRows.forEach((r) => {
+    exportRows.forEach((r) => {
       r.variants.forEach((v) => {
         const health = getStockHealth(v.totalStock);
         body.push([
@@ -319,7 +342,7 @@ const StockReport: React.FC = () => {
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <BarChart3 size={20} className="text-indigo-500" /> Stock Report
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">{globalRows.length} articles · live inventory snapshot</p>
+          <p className="text-sm text-slate-500 mt-0.5">{stats.totalArticles} articles · live inventory snapshot</p>
         </div>
         <div className="flex gap-2">
           <button onClick={fetchAllData} className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-200 transition-all">
@@ -411,8 +434,8 @@ const StockReport: React.FC = () => {
         <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50/70 flex items-center justify-between">
           <span className="text-xs text-slate-500 font-medium">
             {stockFilter !== "ALL"
-              ? `Showing ${allFilteredRows.length} filtered (page ${safePage}/${totalPages}) / ${allRows.length} total`
-              : `${allFilteredRows.length} articles (page ${safePage}/${totalPages})`}
+              ? `Showing ${allRows.length} rows on page ${safePage}/${totalPages} / ${meta.total} filtered`
+              : `${meta.total} articles (page ${safePage}/${totalPages})`}
           </span>
           <div className="flex gap-2">
             <button onClick={expandAll} className="text-[11px] font-semibold text-indigo-600 hover:underline">Expand All</button>
@@ -421,7 +444,7 @@ const StockReport: React.FC = () => {
           </div>
         </div>
 
-        {loading ? (
+        {loading && allRows.length === 0 ? (
           <div className="flex items-center justify-center py-20 text-slate-400">
             <RefreshCw size={20} className="animate-spin mr-2" /> Loading...
           </div>
@@ -576,7 +599,7 @@ const StockReport: React.FC = () => {
             </tbody>
           </table>
         )}
-        <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setPage} totalItems={allFilteredRows.length} itemsPerPage={pageSize} onPageSizeChange={setPageSize} />
+        <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setPage} totalItems={meta.total} itemsPerPage={pageSize} onPageSizeChange={setPageSize} />
       </div>
     </div>
   );

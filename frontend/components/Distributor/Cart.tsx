@@ -33,7 +33,7 @@ const parseSizeRange = (range: string): string[] => {
 // variants. Returns 0 if no stock/PO data exists.
 const getMaxCartonsForVariant = (variant: any): number => {
   if (!variant) return 0;
-  const isPreOrder = variant.stage === "PREORDER";
+  const isPreOrder = variant.availability === "PREORDER";
   const breakdown = variant.sizeQuantities || {};
   const totalPairsPerCarton = Object.values(breakdown).reduce(
     (a: number, b: any) => a + (Number(b) || 0), 0
@@ -123,11 +123,11 @@ const Cart: React.FC<CartProps> = ({
     const variant = art?.variants?.find(
       v => v.id === item.variantId || (v as any)._id === item.variantId
     );
-    return variant?.stage || art?.status;
+    return variant?.availability || "RFD";
   };
 
-  const availableItems = cart.filter(i => getItemStage(i) === "AVAILABLE");
-  const wishlistItems = cart.filter(i => getItemStage(i) !== "AVAILABLE");
+  const availableItems = cart.filter(i => getItemStage(i) === "RFD");
+  const wishlistItems = cart.filter(i => getItemStage(i) === "PREORDER");
 
   // Credit limit only applies to REGULAR (available-stock) items — pre-orders
   // aren't a stock commitment yet, backend skips the credit check for them
@@ -156,7 +156,7 @@ const Cart: React.FC<CartProps> = ({
     // Stock cap — mirrors Shop.tsx logic
     const maxCartons = getMaxCartonsForVariant(variant);
     const atStockMax = isFinite(maxCartons) && item.cartonCount >= maxCartons;
-    const isPreOrder = (variant?.stage || article.status) === "PREORDER";
+    const isPreOrder = variant?.availability === "PREORDER";
 
     // Show discounted price per item (discount applied once in summary, so show it here too for clarity)
     const itemDiscountedPrice = item.price * (1 - discountPercentage / 100);

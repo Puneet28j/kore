@@ -41,10 +41,10 @@ import { usePageSize } from "../../utils/usePageSize";
 type CatalogStatus = "AVAILABLE" | "PREORDER";
 
 function effectiveCatalogStatus(
-  variant: { stage?: CatalogStatus },
+  variant: { availability?: "RFD" | "PREORDER" },
   articleStatus?: CatalogStatus
 ): CatalogStatus {
-  return variant.stage || articleStatus || "AVAILABLE";
+  return variant.availability === "PREORDER" ? "PREORDER" : "AVAILABLE";
 }
 
 type CatalogueForm = {
@@ -498,6 +498,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [searchTerm, setSearchTerm] = useState("");
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
   const [sortOption, setSortOption] = useState<string>("name_asc");
+  const [availabilityFilter, setAvailabilityFilter] = useState<"ALL" | "RFD" | "PREORDER">("ALL");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingArticle, setEditingArticle] = useState<Article | null>(null);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
@@ -517,6 +518,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const observerRef = useRef<HTMLDivElement | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useRef("");
+  // A slow earlier search must never replace the results of a newer one.
+  const catalogRequestIdRef = useRef(0);
   const didScrollRef = useRef(false);
 
   useEffect(() => {
@@ -1420,10 +1423,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       soleColor: item.soleColor,
       manufacturer: item.manufacturerCompanyId?.name,
       unit: item.unitId?.name,
-      status: item.stage,
-      expectedDate: item.expectedAvailableDate
-        ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
-        : "",
       imageUrl: item.primaryImage?.url,
       secondaryImages: item.secondaryImages || [],
       selectedSizes: item.sizeRanges || [],
@@ -1444,6 +1443,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       gender = genderFilter,
       sort = sortOption
     ) => {
+      const requestId = ++catalogRequestIdRef.current;
       if (page === 1) setPageLoading(true);
       else setLoadingMore(true);
       try {
@@ -1451,12 +1451,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           page,
           limit: BATCH_SIZE,
           q: q || undefined,
-          // An active search is global across Available and Pre-Order.
-          // Without a search, preserve the selected tab as a stage filter.
-          stage: q.trim() ? undefined : tab,
+          // Catalogue is always loaded as one list. Availability is a derived
+          // variant property and is filtered client-side only when requested.
           gender: gender !== "ALL" ? gender : undefined,
           sort,
         });
+
+        if (requestId !== catalogRequestIdRef.current) return;
 
         const mapped: Article[] = (res.data || []).map(mapItem);
         if (append) {
@@ -1468,10 +1469,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         setTotalItems(meta.total ?? mapped.length);
         setHasMorePages(page < (meta.totalPages ?? 1));
       } catch (err) {
-        console.error("Failed to fetch catalogue page", err);
+        if (requestId === catalogRequestIdRef.current) {
+          console.error("Failed to fetch catalogue page", err);
+        }
       } finally {
-        setPageLoading(false);
-        setLoadingMore(false);
+        if (requestId === catalogRequestIdRef.current) {
+          setPageLoading(false);
+          setLoadingMore(false);
+        }
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
@@ -2174,40 +2179,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
-        <button
-          onClick={() => {
-            setActiveTab("AVAILABLE");
-            setCurrentPage(1);
-            onActiveTabChange?.("AVAILABLE");
-          }}
-          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "AVAILABLE"
-              ? "bg-emerald-600 text-white shadow"
-              : "text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          <CheckCircle2 size={16} />
-          Available Catalogue
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab("PREORDER");
-            setCurrentPage(1);
-            onActiveTabChange?.("PREORDER");
-          }}
-          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "PREORDER"
-              ? "bg-amber-500 text-white shadow"
-              : "text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          <Clock size={16} />
-          Pre-Order
-        </button>
-      </div>
-
       {/* Search + filters bar (same as distributor Shop) */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
         <div className="relative w-full md:max-w-sm">
@@ -2258,6 +2229,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         </div>
       </div>
 
+      <div className="flex justify-end">
+        <select value={availabilityFilter} onChange={(e) => setAvailabilityFilter(e.target.value as any)} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700">
+          <option value="ALL">All availability</option>
+          <option value="RFD">Available / RFD</option>
+          <option value="PREORDER">Pre-Order</option>
+        </select>
+      </div>
+
       {/* Master Articles List */}
       <div className="space-y-3">
         {pageLoading && (
@@ -2286,11 +2265,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           // Global searches include matching articles from both stages.
           // The API query omits stage while a search is active.
           // Empty searches keep the selected tab's stage-specific variant view.
-          const tabVariants = isGlobalSearchActive
-            ? article.variants || []
-            : (article.variants || []).filter(
-                (v) => (v.stage || article.status) === activeTab
-              );
+          const tabVariants = (article.variants || []).filter((v) =>
+            availabilityFilter === "ALL" || (v as any).availability === availabilityFilter
+          );
           if (tabVariants.length === 0) return null;
           const visibleStatuses = Array.from(
             new Set(
@@ -2387,8 +2364,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         {article.productCategory}
                       </span>
                     )}
-                    {isGlobalSearchActive &&
-                      visibleStatuses.map((catalogStatus) => (
+                    {visibleStatuses.map((catalogStatus) => (
                         <span
                           key={catalogStatus}
                           className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border ${
@@ -2403,7 +2379,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                             <Clock size={9} />
                           )}
                           {catalogStatus === "AVAILABLE"
-                            ? "AVAILABLE"
+                            ? "RFD / AVAILABLE"
                             : "PRE-ORDER"}
                         </span>
                       ))}

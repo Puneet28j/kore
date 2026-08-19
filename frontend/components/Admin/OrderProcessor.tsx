@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Package,
   Truck,
@@ -46,6 +46,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
   lastUpdated,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [statusFilter, setStatusFilter] = useState<OrderStatus | "ALL">("ALL");
   const [lifecycleFilter, setLifecycleFilter] = useState<"DISPATCHED" | "IN_TRANSIT" | "RECEIVED" | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -58,11 +59,17 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize("orderProcessor", 20);
   const [loading, setLoading] = useState(false);
+  const requestIdRef = useRef(0);
 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [sortBy, setSortBy] = useState("createdAt");
   const [sortDesc, setSortDesc] = useState(true);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { setSearchQuery(searchInput.trim()); setCurrentPage(1); }, 350);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
 
   useEffect(() => {
     distributorOrderService
@@ -73,6 +80,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
 
   const fetchOrders = useCallback(
     async (silent = false) => {
+      const requestId = ++requestIdRef.current;
       try {
         if (!silent) setLoading(true);
         const res = await distributorOrderService.getAllOrders({
@@ -86,13 +94,15 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           sortBy,
           sortDesc,
         });
+        if (requestId !== requestIdRef.current) return;
         setOrders(res.items);
         setMeta(res.meta);
       } catch (err) {
+        if (requestId !== requestIdRef.current) return;
         console.error("Failed to fetch orders", err);
         toast.error("Failed to load orders");
       } finally {
-        if (!silent) setLoading(false);
+        if (!silent && requestId === requestIdRef.current) setLoading(false);
       }
     },
     [
@@ -285,10 +295,9 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             <input
               type="text"
               placeholder="Search order / distributor..."
-              value={searchQuery}
+              value={searchInput}
               onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setCurrentPage(1);
+                setSearchInput(e.target.value);
               }}
               className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-slate-50 border-none focus:ring-1 focus:ring-indigo-500 text-xs font-medium text-slate-900 outline-none"
             />
@@ -569,6 +578,8 @@ const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.CONFIRMED]: "Confirmed",
   [OrderStatus.PENDING]: "Pending Confirmation",
   [OrderStatus.BOOKED]: "Pending",
+  [OrderStatus.DISPATCHED]: "Dispatched",
+  [OrderStatus.IN_TRANSIT]: "In Transit",
   [OrderStatus.PFD]: "Dispatched",
   [OrderStatus.RFD]: "In Transit",
   [OrderStatus.RECEIVED]: "Delivered",
@@ -590,6 +601,8 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
     [OrderStatus.BOOKED]: {
       color: "bg-indigo-50 text-indigo-500 border-indigo-100",
     },
+    [OrderStatus.DISPATCHED]: { color: "bg-amber-50 text-amber-500 border-amber-100" },
+    [OrderStatus.IN_TRANSIT]: { color: "bg-blue-50 text-blue-500 border-blue-100" },
     [OrderStatus.PFD]: { color: "bg-amber-50 text-amber-500 border-amber-100" },
     [OrderStatus.RFD]: { color: "bg-blue-50 text-blue-500 border-blue-100" },
     [OrderStatus.RECEIVED]: {

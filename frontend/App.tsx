@@ -382,15 +382,18 @@ const App: React.FC = () => {
 
     const onGrnSubmitted = (data: any) => {
       const u = userRef.current;
-      if (!u || u.role === UserRole.DISTRIBUTOR) return;
+      if (!u) return;
+      // Every role needs fresh live stock after GRN receipt. Distributors do
+      // not receive the admin toast, but their order scan view must refresh.
+      if (fetchArticlesRef.current) fetchArticlesRef.current();
+      window.dispatchEvent(new CustomEvent("grnRefetch"));
+      if (u.role === UserRole.DISTRIBUTOR) return;
       toast.info(`GRN #${data.grnNumber} submitted`, {
         description: `Vendor: ${data.vendorName || ""} · ${
           data.totalPairs || ""
         } pairs`,
         duration: 4000,
       });
-      if (fetchArticlesRef.current) fetchArticlesRef.current();
-      window.dispatchEvent(new CustomEvent("grnRefetch"));
     };
 
     const onPoCreated = (data: any) => {

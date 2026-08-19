@@ -5,6 +5,7 @@ const MasterCatalog = require("../models/MasterCatalog");
 const Return = require("../models/Return");
 const activityLog = require("./activityLog.service");
 const notification = require("./notification.service");
+const { emitCatalogUpdated } = require("../socket");
 
 const toSnapshotAssortment = (variant) => {
   const quantities = variant?.sizeQuantities?.toObject
@@ -251,6 +252,11 @@ const createOrder = async (distributorId, orderData) => {
     const catalogById = new Map(
       catalogsForStage.map((cat) => [String(cat._id), cat])
     );
+    const masterCatalogService = require("./masterCatalogService");
+    const [poPlannedMap, grnReceivedMap] = await Promise.all([
+      masterCatalogService.getPoPlannedQtyMap(articleIdsForStage),
+      masterCatalogService.getGrnReceivedQtyMap(),
+    ]);
     sanitizedItems.forEach((item) => {
       const catalog = catalogById.get(String(item.articleId));
       const variant = catalog?.variants?.find(
@@ -268,10 +274,19 @@ const createOrder = async (distributorId, orderData) => {
       }
 
       item.productSnapshot = buildProductSnapshot(catalog, variant);
-      item.bookingType =
-        (variant.stage || catalog.stage) === "PREORDER"
-          ? "PREORDER"
-          : "REGULAR";
+      const livePairs = Object.values(variant.sizeMap || {}).reduce(
+        (sum, cell) => sum + Math.max(0, Number(cell?.qty || 0)), 0
+      );
+      const variantId = String(variant._id);
+      const incomingPairs = Math.max(0,
+        Number(poPlannedMap.totals[variantId] || 0) - Number(grnReceivedMap.totals[variantId] || 0)
+      );
+      if (livePairs <= 0 && incomingPairs <= 0) {
+        const err = new Error("This RFD item is currently out of stock and has no approved incoming PO.");
+        err.statusCode = 409;
+        throw err;
+      }
+      item.bookingType = livePairs > 0 ? "REGULAR" : "PREORDER";
     });
 
     const regularItems = sanitizedItems.filter((i) => i.bookingType === "REGULAR");
@@ -879,13 +894,16 @@ const updateOrderStatus = async (
   } = {}
 ) => {
   try {
+    // Accept old clients during rollout, but never persist legacy lifecycle names.
+    if (status === "PFD") status = "DISPATCHED";
+    if (status === "RFD" || status === "OFD") status = "IN_TRANSIT";
     const validStatuses = [
       "PRE_BOOKED",
       "CONFIRMED",
       "PENDING",
       "BOOKED",
-      "PFD",
-      "RFD",
+      "DISPATCHED",
+      "IN_TRANSIT",
       "RECEIVED",
       "PARTIAL",
       "CANCELLED",
@@ -920,7 +938,7 @@ const updateOrderStatus = async (
     // collected here anymore — those are captured one step later, when the
     // order moves PFD/PARTIAL → RFD (see block below), so scanning alone is
     // enough to flip the order to "Dispatched".
-    if (status === "PFD" || (status === "PARTIAL" && ["BOOKED", "PARTIAL"].includes(order.status))) {
+    if (status === "DISPATCHED" || (status === "PARTIAL" && ["BOOKED", "PARTIAL"].includes(order.status))) {
       if (outScannedCartons) updateData.outScannedCartons = outScannedCartons;
       updateData.dispatchedAt = new Date();
 
@@ -968,7 +986,7 @@ const updateOrderStatus = async (
     // leaves the dispatch area (PFD/PARTIAL → RFD / "In Transit"). Split out
     // from the scan step above so warehouse scanning alone can flip the
     // order to "Dispatched" without needing vehicle info up front.
-    if (status === "RFD" && ["PFD", "PARTIAL"].includes(order.status)) {
+    if (status === "IN_TRANSIT" && ["DISPATCHED", "PARTIAL"].includes(order.status)) {
       if (vehicleNo) updateData.vehicleNo = vehicleNo;
       if (lrNo) updateData.lrNo = lrNo;
       if (transporterName) updateData.transporterName = transporterName;
@@ -1188,14 +1206,13 @@ const updateOrderStatus = async (
 
     const statusEventMap = {
       BOOKED: "ORDER_BOOKED",
-      PFD: "ORDER_DISPATCHED",
-      RFD: "ORDER_IN_TRANSIT",
-      OFD: "ORDER_OUT_FOR_DELIVERY",
+      DISPATCHED: "ORDER_DISPATCHED",
+      IN_TRANSIT: "ORDER_IN_TRANSIT",
       RECEIVED: "ORDER_DELIVERED",
     };
     const notifEvent = statusEventMap[status];
     if (notifEvent) {
-      if (status === "OFD" && deliveryAgentName) {
+      if (status === "IN_TRANSIT" && deliveryAgentName) {
         notifData["Delivery Agent"] = deliveryAgentName;
         if (deliveryAgentMobile)
           notifData["Agent Mobile"] = deliveryAgentMobile;
@@ -1256,8 +1273,66 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
     // reservations have already backed with real stock — no need to wait
     // for the rest of the order's quantity to arrive (matches how a
     // REGULAR order dispatches PARTIAL — see computeReservedCartons).
-    const reservedCartons = computeReservedCartons(item);
-    const remaining = reservedCartons - (item.fulfilledCartonCount || 0);
+    const orderedSizes = item.sizeQuantities instanceof Map
+      ? Object.fromEntries(item.sizeQuantities)
+      : (item.sizeQuantities || {});
+    const fulfilledCartons = item.fulfilledCartonCount || 0;
+    const ratioBefore = fulfilledCartons / (item.cartonCount || 1);
+    const ratioAfter = (fulfilledCartons + 1) / (item.cartonCount || 1);
+    const scanDelta = {};
+    Object.entries(orderedSizes).forEach(([size, qty]) => {
+      const delta = Math.round(Number(qty) * ratioAfter) - Math.round(Number(qty) * ratioBefore);
+      if (delta > 0) scanDelta[size] = delta;
+    });
+
+    // Pre-order items use free live stock only at scan time. GRN receipt does
+    // not reserve it beforehand.
+    const usesLiveStockAtScan = item.bookingType === "PREORDER";
+    let liveCatalog = null;
+    let liveVariant = null;
+    if (usesLiveStockAtScan) {
+      liveCatalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
+      liveVariant = liveCatalog?.variants.id(item.variantId);
+      if (!liveVariant) {
+        throw new Error("This order variant no longer exists in the catalogue");
+      }
+
+      // A live pool can contain stock for several orders. Only expose and
+      // accept the first codes needed by this line, never any arbitrary code
+      // from the rest of the variant pool.
+      let stockBackedCartons = Infinity;
+      Object.entries(orderedSizes).forEach(([size, total]) => {
+        const perCarton = Number(total || 0) / (item.cartonCount || 1);
+        if (perCarton > 0) {
+          stockBackedCartons = Math.min(
+            stockBackedCartons,
+            Math.floor(Number(liveVariant.sizeMap.get(size)?.qty || 0) / perCarton)
+          );
+        }
+      });
+      const orderRemaining = Math.max(0, (item.cartonCount || 0) - fulfilledCartons);
+      const eligibleCount = Math.max(
+        0,
+        Math.min(orderRemaining, stockBackedCartons === Infinity ? 0 : stockBackedCartons)
+      );
+      const eligibleCodes = (liveVariant.availableCartons || []).slice(0, eligibleCount);
+      if (!eligibleCodes.includes(cartonCode)) {
+        const expected = eligibleCodes[0];
+        throw new Error(
+          expected
+            ? `Scan ${expected} for this order — ${cartonCode} is not assigned to its current scan slot`
+            : "No live carton is currently available for this order item"
+        );
+      }
+      for (const [size, required] of Object.entries(scanDelta)) {
+        if (Number(liveVariant.sizeMap.get(size)?.qty || 0) < required) {
+          throw new Error(`Insufficient live stock for size ${size}`);
+        }
+      }
+    }
+
+    const reservedCartons = usesLiveStockAtScan ? item.cartonCount : computeReservedCartons(item);
+    const remaining = reservedCartons - fulfilledCartons;
     if (remaining <= 0) {
       throw new Error(
         item.bookingType === "PREORDER"
@@ -1270,17 +1345,8 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
     // ratio-based math the old batch dispatch used, just recomputed fresh
     // per carton (before/after deltas telescope to the exact right total
     // regardless of how many separate calls this happens across).
-    const orderedSizes = item.sizeQuantities instanceof Map
-      ? Object.fromEntries(item.sizeQuantities)
-      : (item.sizeQuantities || {});
-    const ratioBefore = (item.fulfilledCartonCount || 0) / (item.cartonCount || 1);
     item.fulfilledCartonCount = (item.fulfilledCartonCount || 0) + 1;
-    const ratioAfter = item.fulfilledCartonCount / (item.cartonCount || 1);
-    Object.entries(orderedSizes).forEach(([size, qty]) => {
-      const before = Math.round(Number(qty) * ratioBefore);
-      const after = Math.round(Number(qty) * ratioAfter);
-      const delta = after - before;
-      if (delta <= 0) return;
+    Object.entries(scanDelta).forEach(([size, delta]) => {
       if (!item.fulfilledSizeQuantities) item.fulfilledSizeQuantities = new Map();
       const prev = item.fulfilledSizeQuantities instanceof Map
         ? (item.fulfilledSizeQuantities.get(size) || 0)
@@ -1297,6 +1363,18 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
 
     if (order.status === "BOOKED") order.status = "PARTIAL";
     if (!order.dispatchedAt) order.dispatchedAt = new Date();
+
+    if (usesLiveStockAtScan) {
+      Object.entries(scanDelta).forEach(([size, delta]) => {
+        const cell = liveVariant.sizeMap.get(size);
+        cell.qty = Number(cell.qty || 0) - Number(delta || 0);
+        liveVariant.sizeMap.set(size, cell);
+      });
+      liveVariant.availableCartons = liveVariant.availableCartons.filter((code) => code !== cartonCode);
+      liveCatalog.markModified("variants");
+      await liveCatalog.save();
+      emitCatalogUpdated("updated", liveCatalog._id);
+    }
 
     await order.save();
     const updatedOrder = await Order.findById(orderId).populate({
@@ -1779,9 +1857,6 @@ const promotePreOrderItems = async (variantIds) => {
       const catalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
       const variant = catalog?.variants?.id(item.variantId);
       if (!variant) continue;
-      const effectiveStage = variant.stage || catalog.stage;
-      if (effectiveStage !== "AVAILABLE") continue;
-
       const sizeQuantities =
         item.sizeQuantities instanceof Map
           ? Object.fromEntries(item.sizeQuantities)

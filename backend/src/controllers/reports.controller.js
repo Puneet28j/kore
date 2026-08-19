@@ -5,12 +5,11 @@ const masterCatalogService = require("../services/masterCatalogService");
 
 const getStockReport = async (req, res) => {
   try {
-    const { page = 1, limit = 50, q } = req.query;
+    const { page = 1, limit = 50, q, stage = "ALL", stockFilter = "ALL", summary = "false", all = "false" } = req.query;
     const query = { isDeleted: false };
     if (q) query.articleName = { $regex: q, $options: "i" };
 
-    const total = await MasterCatalog.countDocuments(query);
-    const [catalogs, bookedMap] = await Promise.all([
+    const [catalogs, bookedMap, plannedMap, grnReceivedMap] = await Promise.all([
       MasterCatalog.find(query)
         // category/brand/company aren't stored directly on MasterCatalog —
         // only their _id references (categoryId/brandId/manufacturerCompanyId)
@@ -19,10 +18,10 @@ const getStockReport = async (req, res) => {
         .populate("brandId", "name")
         .populate("manufacturerCompanyId", "name")
         .sort({ articleName: 1 })
-        .skip((Number(page) - 1) * Number(limit))
-        .limit(Number(limit))
         .lean(),
       masterCatalogService.getBookedQuantityMap(),
+      masterCatalogService.getPoPlannedQtyMap(),
+      masterCatalogService.getGrnReceivedQtyMap(),
     ]);
 
     const data = catalogs.map((c) => {
@@ -60,7 +59,10 @@ const getStockReport = async (req, res) => {
           // back to the parent article's stage. Same rule Master Stock uses,
           // so a mixed article (some variants arrived, some still pending)
           // reports each variant under the correct RFD/Pre-Order filter.
-          stage: v.stage || c.stage || "AVAILABLE",
+          stage: variantTotalStock > 0 ? "AVAILABLE" :
+            Math.max(0, (plannedMap.totals[String(v._id)] || 0) - (grnReceivedMap.totals[String(v._id)] || 0)) > 0 ? "PREORDER" : "AVAILABLE",
+          isOutOfStock: variantTotalStock <= 0 &&
+            Math.max(0, (plannedMap.totals[String(v._id)] || 0) - (grnReceivedMap.totals[String(v._id)] || 0)) <= 0,
           sizeQuantities: rawSizeQuantities,
           sizeStock,
           totalStock: variantTotalStock,
@@ -82,14 +84,53 @@ const getStockReport = async (req, res) => {
       };
     });
 
+    const stageRows = stage === "ALL" ? data : data
+      .map((row) => {
+        const variants = row.variants.filter((variant) => variant.stage === stage);
+        return variants.length ? {
+          ...row,
+          variants,
+          totalVariants: variants.length,
+          totalStock: variants.reduce((sum, variant) => sum + variant.totalStock, 0),
+        } : null;
+      })
+      .filter(Boolean);
+    const filteredRows = stockFilter === "ALL" ? stageRows : stageRows.filter((row) => {
+      if (stockFilter === "OUT") return row.totalStock === 0;
+      if (stockFilter === "LOW") return row.totalStock > 0 && row.totalStock <= 20;
+      return row.totalStock > 20;
+    });
+    const totals = stageRows.reduce((acc, row) => {
+      acc.totalArticles += 1;
+      acc.totalVariants += row.totalVariants;
+      acc.totalPairs += row.totalStock;
+      if (row.totalStock === 0) acc.outCount += 1;
+      if (row.totalStock > 0 && row.totalStock <= 20) acc.lowCount += 1;
+      row.variants.forEach((variant) => {
+        acc.totalValue += (variant.totalStock || 0) * (variant.mrp || 0);
+        acc.totalBookedPairs += variant.booked || 0;
+      });
+      return acc;
+    }, { totalArticles: 0, totalVariants: 0, totalPairs: 0, totalValue: 0, totalBookedPairs: 0, outCount: 0, lowCount: 0 });
+
+    if (summary === "true") {
+      return res.json({ success: true, summary: totals });
+    }
+
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+    const total = filteredRows.length;
+    const pagedRows = all === "true"
+      ? filteredRows
+      : filteredRows.slice((safePage - 1) * safeLimit, safePage * safeLimit);
     res.json({
       success: true,
-      data,
+      data: pagedRows,
       meta: {
         total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit)),
+        page: safePage,
+        limit: safeLimit,
+        totalPages: Math.max(1, Math.ceil(total / safeLimit)),
       },
     });
   } catch (err) {

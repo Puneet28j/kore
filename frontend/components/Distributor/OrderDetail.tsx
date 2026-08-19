@@ -158,22 +158,81 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
     },
     { ordered: 0, dispatched: 0, returned: 0, remaining: 0 }
   );
-  // Scannable remaining = cartons backed by real stock right now, minus
-  // what's already been scanned. For a still-PREORDER item that's only
-  // whatever a partial GRN reservation covers (computeReservedCartons) —
-  // it dispatches what's arrived without waiting for the rest.
+  // Historical orders can point to an older article document after catalogue
+  // imports/merges. The variant ID is the canonical identity for stock, so do
+  // not require the article ID to match when finding its live stock.
+  const getLiveVariant = (item: OrderItem) => {
+    const variantId = String(item.variantId || "");
+    if (!variantId) return undefined;
+    return articles
+      .flatMap((article) => article.variants || [])
+      .find((variant) =>
+        String(variant.id || variant._id || "") === variantId
+      );
+  };
+  // Old pre-order order lines do not reserve GRN stock anymore. Their scan
+  // capacity is derived from the variant's live per-size stock right now.
+  const getLiveScannableCartons = (item: OrderItem) => {
+    if (item.bookingType !== "PREORDER") return item.cartonCount || 0;
+    const variant = getLiveVariant(item);
+    if (!variant || !item.cartonCount) return 0;
+    const sizeMap = variant.sizeMap || {};
+    let cartons = Infinity;
+    Object.entries(item.sizeQuantities || {}).forEach(([size, total]) => {
+      const perCarton = Number(total || 0) / item.cartonCount;
+      if (perCarton > 0) cartons = Math.min(cartons, Math.floor(Number(sizeMap[size]?.qty || 0) / perCarton));
+    });
+    return cartons === Infinity ? 0 : Math.max(0, Math.floor(cartons));
+  };
+  const getOrderItemAvailability = (item: OrderItem) => {
+    if (item.bookingType !== "PREORDER") return "RFD";
+    // Once any carton has been fulfilled from live stock, keep this
+    // historical line identified as RFD in the order breakdown. The saved
+    // bookingType remains PREORDER for history and for any unfulfilled
+    // balance, but it must not make a dispatched carton look pre-order again
+    // after its scan correctly reduces current live stock to zero.
+    if ((item.fulfilledCartonCount || 0) > 0) return "RFD";
+    const variant = getLiveVariant(item);
+    const livePairs = variant?.livePairs !== undefined
+      ? Number(variant.livePairs || 0)
+      : Object.values(variant?.sizeMap || {}).reduce(
+          (total, cell) => total + Number(cell?.qty || 0),
+          0
+        );
+    return livePairs > 0 ? "RFD" : "PREORDER";
+  };
+  const getScannableCartonCodes = (item: OrderItem) => {
+    if (item.bookingType !== "PREORDER") return item.allocatedCartons || [];
+    const orderRemaining = Math.max(
+      0,
+      (item.cartonCount || 0) - (item.fulfilledCartonCount || 0)
+    );
+    const readyCount = Math.max(
+      0,
+      Math.min(
+        orderRemaining,
+        getLiveScannableCartons(item) - (item.fulfilledCartonCount || 0)
+      )
+    );
+    // These are deliberately still in the variant's free pool. They are
+    // displayed here for scanning but are not booked/removed until the scan
+    // succeeds on the server.
+    return (getLiveVariant(item)?.availableCartons || []).slice(0, readyCount);
+  };
+  // Scannable remaining is backed by live stock right now, minus cartons
+  // already scanned. A partial GRN therefore makes only that variant ready.
   const totalRemainingToScan = currentOrder.items.reduce(
     (s, i) =>
       s +
-      Math.max(0, computeReservedCartons(i) - (i.fulfilledCartonCount || 0)),
+      Math.max(0, getLiveScannableCartons(i) - (i.fulfilledCartonCount || 0)),
     0
   );
-  // Still owes MORE than what's currently reserved — shown in the Awaiting
-  // Stock panel below with its progress, separate from what's scannable now.
+  // Still owes more than current live stock can fulfill; keep it visible in
+  // the Awaiting Live Stock panel while other variants remain scannable.
   const awaitingStockItems = currentOrder.items.filter(
     (i) =>
       i.bookingType === "PREORDER" &&
-      computeReservedCartons(i) < (i.cartonCount || 0)
+      getLiveScannableCartons(i) + (i.fulfilledCartonCount || 0) < (i.cartonCount || 0)
   );
 
   // All three tabs are usable independently and simultaneously (no locked
@@ -506,12 +565,11 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
       const remaining: Record<string, number> = {};
       const itemCodes: Record<string, string> = {};
       currentOrder.items.forEach((item) => {
-        // Scannable = whatever's currently backed by real stock (full
-        // cartonCount for REGULAR, only the GRN-reserved portion for a
-        // still-PREORDER item) minus what's already been scanned.
+        // Scannable means cartons backed by current live stock, minus those
+        // already scanned.
         const rem = Math.max(
           0,
-          computeReservedCartons(item) - (item.fulfilledCartonCount || 0)
+          getLiveScannableCartons(item) - (item.fulfilledCartonCount || 0)
         );
         if (rem <= 0) return;
         const key = item.variantId || item.articleId;
@@ -539,6 +597,17 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
       if ((item.allocatedCartons || []).includes(barcode)) {
         matchedItemKey = item.variantId || item.articleId || null;
         break;
+      }
+    }
+    // Historical pre-order lines use cartons still in the variant's live
+    // pool. They are not allocated or booked until this scan succeeds.
+    if (!matchedItemKey) {
+      for (const item of currentOrder.items) {
+        if (item.bookingType !== "PREORDER") continue;
+        if (getScannableCartonCodes(item).includes(barcode)) {
+          matchedItemKey = item.variantId || item.articleId || null;
+          break;
+        }
       }
     }
     // Fallback: old sequential CT0001..N logic (GRN cartons / legacy orders with empty allocatedCartons)
@@ -2529,12 +2598,12 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                         </span>
                                         <span
                                           className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border ${
-                                            item.bookingType === "PREORDER"
+                                            getOrderItemAvailability(item) === "PREORDER"
                                               ? "bg-amber-50 text-amber-600 border-amber-200"
                                               : "bg-emerald-50 text-emerald-600 border-emerald-200"
                                           }`}
                                         >
-                                          {item.bookingType === "PREORDER"
+                                          {getOrderItemAvailability(item) === "PREORDER"
                                             ? "Pre-Order"
                                             : "RFD"}
                                         </span>
@@ -2717,12 +2786,12 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                       </span>
                                       <span
                                         className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border ${
-                                          item.bookingType === "PREORDER"
+                                          getOrderItemAvailability(item) === "PREORDER"
                                             ? "bg-amber-50 text-amber-600 border-amber-200"
                                             : "bg-emerald-50 text-emerald-600 border-emerald-200"
                                         }`}
                                       >
-                                        {item.bookingType === "PREORDER"
+                                        {getOrderItemAvailability(item) === "PREORDER"
                                           ? "Pre-Order"
                                           : "RFD"}
                                       </span>
@@ -3013,10 +3082,12 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                   </div>
                                 </div>
 
-                                {/* Pre-allocated carton codes for this order */}
+                                {/* Carton codes that can be scanned now. Regular order
+                                    lines are pre-allocated; historical pre-orders use
+                                    their current live variant pool. */}
                                 {currentOrder.items.some(
                                   (item) =>
-                                    (item.allocatedCartons || []).length > 0
+                                    getScannableCartonCodes(item).length > 0
                                 ) && (
                                   <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4">
                                     <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">
@@ -3029,8 +3100,8 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                             currentOrder.cartonTracking || []
                                           ).map((c: any) => c.code)
                                         );
-                                        const codes = (
-                                          item.allocatedCartons || []
+                                        const codes = getScannableCartonCodes(
+                                          item
                                         ).filter(
                                           (c: string) => !scanned.has(c)
                                         );
@@ -3100,33 +3171,26 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                               </div>
                             )}
 
-                            {/* Pre-order items on this same order that still owe MORE than
-                                what's currently reserved — fully-arrived cartons for these
-                                items are already scannable above; this shows what's still
-                                pending on a future GRN. RFD items above are unaffected. */}
+                            {/* Pre-order items that still need live stock. Any received
+                                cartons are independently scannable above. */}
                             {awaitingStockItems.length > 0 && (
                               <div className="bg-amber-50/60 rounded-2xl border border-amber-200 border-dashed p-4">
                                 <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                                  <Clock size={12} /> Awaiting Stock — Pre-Order
+                                  <Clock size={12} /> Awaiting Live Stock
                                   ({awaitingStockItems.length})
                                 </p>
                                 <div className="space-y-1.5">
                                   {awaitingStockItems.map((item, idx) => {
                                     const key =
                                       item.variantId || item.articleId;
-                                    // Reservation progress: pairs already claimed out of
-                                    // arrived GRN stock vs. total pairs this item needs —
-                                    // a partial GRN shows partial progress here instead of
-                                    // silently disappearing until fully covered.
-                                    const needed = Object.values(
-                                      item.sizeQuantities || {}
-                                    ).reduce((s, q) => s + (Number(q) || 0), 0);
-                                    const reserved = Object.values(
-                                      item.preorderReservedSizeQuantities || {}
-                                    ).reduce((s, q) => s + (Number(q) || 0), 0);
+                                    const awaiting = Math.max(
+                                      0,
+                                      (item.cartonCount || 0) -
+                                        (item.fulfilledCartonCount || 0)
+                                    );
                                     const scannableNow = Math.max(
                                       0,
-                                      computeReservedCartons(item) -
+                                      getLiveScannableCartons(item) -
                                         (item.fulfilledCartonCount || 0)
                                     );
                                     return (
@@ -3138,9 +3202,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                           {getItemLabel(key)}
                                         </span>
                                         <span className="text-amber-600 font-mono">
-                                          {reserved > 0
-                                            ? `${reserved}/${needed} prs`
-                                            : `${item.cartonCount} ctn owed`}
+                                          {`${awaiting} ctn awaiting`}
                                           {scannableNow > 0 && (
                                             <span className="text-emerald-600">
                                               {" "}
@@ -3153,9 +3215,8 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                   })}
                                 </div>
                                 <p className="text-[10px] text-amber-600/80 mt-2 italic">
-                                  Whatever's arrived is scannable now (above) —
-                                  the rest becomes scannable as its next GRN
-                                  lands.
+                                  Cartons become scannable as live stock is
+                                  received by GRN.
                                 </p>
                               </div>
                             )}

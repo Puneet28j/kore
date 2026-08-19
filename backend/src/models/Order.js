@@ -190,7 +190,7 @@ const OrderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["PRE_BOOKED", "CONFIRMED", "PENDING", "BOOKED", "PFD", "RFD", "OFD", "RECEIVED", "PARTIAL", "CANCELLED"],
+      enum: ["BOOKED", "DISPATCHED", "IN_TRANSIT", "RECEIVED", "PARTIAL", "CANCELLED", "PRE_BOOKED", "CONFIRMED", "PENDING", "PFD", "RFD", "OFD"],
       default: "PENDING",
     },
     billUrl: {

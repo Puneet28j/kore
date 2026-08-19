@@ -96,7 +96,7 @@ const buildFlatImagesFromColorMedia = (colorMedia = []) => {
   };
 };
 
-const normalizeVariants = (variantsRaw, articleStage, articleExpectedDate) => {
+const normalizeVariants = (variantsRaw) => {
   const variants = Array.isArray(variantsRaw) ? variantsRaw : [];
 
   return variants.map((v) => {
@@ -174,8 +174,6 @@ const normalizeVariants = (variantsRaw, articleStage, articleExpectedDate) => {
       // Seed from the article's own stage/date at creation time so it's
       // explicit from the start — GRN promotes each variant independently
       // from here on (see grn.service.js).
-      stage: v.stage || articleStage || undefined,
-      expectedAvailableDate: v.expectedAvailableDate || articleExpectedDate || undefined,
     };
   });
 };
@@ -254,11 +252,7 @@ exports.create = async (req) => {
 
   const productColors = parseMaybeJson(body.productColors, []);
   const sizeRanges = parseMaybeJson(body.sizeRanges, []);
-  const variants = normalizeVariants(
-    parseMaybeJson(body.variants, []),
-    body.stage || "AVAILABLE",
-    body.expectedAvailableDate || null
-  );
+  const variants = normalizeVariants(parseMaybeJson(body.variants, []));
 
   const colorImageUrls = body.colorImageUrls;
   const colorMedia = colorImageUrls
@@ -285,8 +279,6 @@ exports.create = async (req) => {
     unitId: body.unitId,
     productColors: Array.isArray(productColors) ? productColors : [],
     sizeRanges: Array.isArray(sizeRanges) ? sizeRanges : [],
-    stage: body.stage || "AVAILABLE",
-    expectedAvailableDate: body.expectedAvailableDate || null,
     isActive: parseBoolean(body.isActive, true),
     primaryImage,
     secondaryImages,
@@ -300,7 +292,7 @@ exports.create = async (req) => {
 exports.list = async (query) => {
   const {
     q,
-    stage,
+    availability,
     categoryId,
     brandId,
     manufacturerCompanyId,
@@ -318,7 +310,9 @@ exports.list = async (query) => {
   const filter = { isDeleted: false };
   const andConditions = [];
 
-  if (stage === "PREORDER") {
+  /* Legacy stored-stage filtering intentionally removed: availability is
+     calculated from live stock and approved incoming POs below. */
+  /* if (stage === "PREORDER") {
     // An article stays PREORDER at the article level as long as ANY variant
     // is still pending — so this alone correctly captures "has at least one
     // variant not yet available", mixed articles included.
@@ -336,7 +330,7 @@ exports.list = async (query) => {
     });
   } else if (stage) {
     filter.stage = stage;
-  }
+  } */
   if (gender) filter.gender = gender;
 
   if (categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
@@ -384,17 +378,22 @@ exports.list = async (query) => {
   else if (sort === "oldest") sortObj = { createdAt: 1 };
   else if (sort === "newest") sortObj = { createdAt: -1 };
 
-  const items = await MasterCatalog.find(filter)
+  const requestedAvailability = availability || (query.stage === "AVAILABLE" ? "RFD" : query.stage);
+
+  // The normal catalogue path does not need derived availability filtering.
+  // Paginate in Mongo first so a 20-row screen does not enrich every article.
+  const baseQuery = MasterCatalog.find(filter)
     .populate("categoryId", "name")
     .populate("brandId", "name")
     .populate("manufacturerCompanyId", "name")
     .populate("unitId", "name")
-    .sort(sortObj)
-    .skip(skip)
-    .limit(normalizedLimit)
-    .lean();
-
-  const total = await MasterCatalog.countDocuments(filter);
+    .sort(sortObj);
+  const [items, directTotal] = await Promise.all([
+    requestedAvailability
+      ? baseQuery.lean()
+      : baseQuery.skip(skip).limit(normalizedLimit).lean(),
+    requestedAvailability ? Promise.resolve(null) : MasterCatalog.countDocuments(filter),
+  ]);
 
   // Attach PO-derived planned + active pre-booked pairs to every variant.
   // Planned is no longer stored on the catalog — a still-PREORDER variant's
@@ -420,12 +419,28 @@ exports.list = async (query) => {
           0,
           (plannedMap.totals[key] || 0) - (grnReceivedMap.totals[key] || 0)
         );
+        v.livePairs = Object.values(v.sizeMap || {}).reduce(
+          (sum, cell) => sum + Math.max(0, Number(cell?.qty || 0)), 0
+        );
+        v.availability = v.livePairs > 0 ? "RFD" : v.poPendingPairs > 0 ? "PREORDER" : "RFD";
+        v.isOutOfStock = v.livePairs <= 0 && v.availability === "RFD";
       });
     });
   }
 
+  let filteredItems = items;
+  if (["RFD", "PREORDER"].includes(requestedAvailability)) {
+    filteredItems = items.map((doc) => ({
+      ...doc,
+      variants: (doc.variants || []).filter((v) => v.availability === requestedAvailability),
+    })).filter((doc) => doc.variants.length);
+  }
+  const total = requestedAvailability ? filteredItems.length : directTotal;
+  const pagedItems = requestedAvailability
+    ? filteredItems.slice(skip, skip + normalizedLimit)
+    : filteredItems;
   return {
-    items,
+    items: pagedItems,
     total,
     page: normalizedPage,
     limit: normalizedLimit,
@@ -566,6 +581,31 @@ exports.getPreBookedQtyMap = async (articleIds) => {
 
 /** Company-wide live + blocked pair totals across all non-deleted catalog items */
 exports.getStockTotals = async (stage) => {
+  if (stage === "AVAILABLE") stage = "RFD";
+  // The old stage aggregate remains below for source compatibility, but the
+  // active path is derived per variant from stock and incoming approved POs.
+  const docs = await MasterCatalog.find({ isDeleted: false }).lean();
+  const articleIds = docs.map((d) => d._id);
+  const [planned, received, booked] = await Promise.all([
+    exports.getPoPlannedQtyMap(articleIds),
+    exports.getGrnReceivedQtyMap(),
+    exports.getBookedQuantityMap(),
+  ]);
+  let totalLivePairs = 0, totalPlannedPairs = 0, totalPoPendingPairs = 0, totalBookedPairs = 0;
+  docs.forEach((doc) => (doc.variants || []).forEach((v) => {
+    const id = String(v._id);
+    const live = Object.values(v.sizeMap || {}).reduce((sum, cell) => sum + Math.max(0, Number(cell?.qty || 0)), 0);
+    const incoming = Math.max(0, Number(planned.totals[id] || 0) - Number(received.totals[id] || 0));
+    const availability = live > 0 ? "RFD" : incoming > 0 ? "PREORDER" : "RFD";
+    if (stage && stage !== availability) return;
+    totalLivePairs += live;
+    totalPoPendingPairs += incoming;
+    totalBookedPairs += Number(booked.totals[id] || 0);
+    if (availability === "PREORDER") totalPlannedPairs += Number(planned.totals[id] || 0);
+  }));
+  return { totalLivePairs, totalPlannedPairs, totalPoPendingPairs, totalBookedPairs, totalPreOrderedPairs: 0 };
+
+  if (false) { // Legacy stage-based implementation; unreachable compatibility code.
   const baseStages = [
     { $match: { isDeleted: false } },
     { $unwind: { path: "$variants", preserveNullAndEmptyArrays: false } },
@@ -719,6 +759,7 @@ exports.getStockTotals = async (stage) => {
 // BOOKED/PARTIAL orders have ALREADY been deducted from sizeMap at booking
 // time, while PENDING ones have not — callers computing "free stock from
 // sizeMap" must subtract only the PENDING portion (pass ["PENDING"]).
+}
 exports.getBookedQuantityMap = async (statuses = ["BOOKED", "PENDING", "PARTIAL"]) => {
   const Order = require("../models/Order");
   const orders = await Order.find({
@@ -807,8 +848,6 @@ exports.update = async (req, id) => {
     brandId: body.brandId,
     manufacturerCompanyId: body.manufacturerCompanyId,
     unitId: body.unitId,
-    stage: body.stage,
-    expectedAvailableDate: body.expectedAvailableDate || null,
     isActive: parseBoolean(body.isActive, undefined),
   };
 
@@ -849,7 +888,7 @@ exports.update = async (req, id) => {
 
   if (body.variants !== undefined) {
     const variantsRaw = parseMaybeJson(body.variants, []);
-    const normalized = normalizeVariants(variantsRaw, doc.stage, doc.expectedAvailableDate);
+    const normalized = normalizeVariants(variantsRaw);
 
     const existingById = new Map(
       doc.variants.map((v) => [v._id.toString(), v])

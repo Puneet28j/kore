@@ -34,6 +34,8 @@ interface MyOrdersProps {
 const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.PENDING]:   'Pending',
   [OrderStatus.BOOKED]:    'Pending',
+  [OrderStatus.DISPATCHED]: 'Dispatched',
+  [OrderStatus.IN_TRANSIT]: 'In Transit',
   [OrderStatus.PFD]:       'Dispatched',
   [OrderStatus.RFD]:       'In Transit',
   [OrderStatus.RECEIVED]:  'Delivered',
@@ -45,6 +47,8 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   const config: Record<string, string> = {
     [OrderStatus.PENDING]:   'bg-slate-100 text-slate-600 border-slate-200',
     [OrderStatus.BOOKED]:    'bg-indigo-50 text-indigo-500 border-indigo-100',
+    [OrderStatus.DISPATCHED]: 'bg-amber-50 text-amber-500 border-amber-100',
+    [OrderStatus.IN_TRANSIT]: 'bg-blue-50 text-blue-500 border-blue-100',
     [OrderStatus.PFD]:       'bg-amber-50 text-amber-500 border-amber-100',
     [OrderStatus.RFD]:       'bg-blue-50 text-blue-500 border-blue-100',
     [OrderStatus.RECEIVED]:  'bg-green-100 text-green-700 border-green-200',
@@ -70,6 +74,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize('myOrders', 10);
   const [loading, setLoading] = useState(false);
+  const requestIdRef = useRef(0);
 
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -83,6 +88,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
   }, [searchInput]);
 
   const fetchOrders = useCallback(async (silent = false) => {
+    const requestId = ++requestIdRef.current;
     try {
       if (!silent) setLoading(true);
       const res = await distributorOrderService.getOrdersByDistributor(userId, {
@@ -95,13 +101,15 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
         sortBy,
         sortDesc,
       });
+      if (requestId !== requestIdRef.current) return;
       setOrders(res.items);
       setMeta(res.meta);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       console.error('Failed to fetch orders', err);
       toast.error('Failed to load orders');
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && requestId === requestIdRef.current) setLoading(false);
     }
   }, [userId, currentPage, pageSize, searchQuery, statusFilter, startDate, endDate, sortBy, sortDesc]);
 

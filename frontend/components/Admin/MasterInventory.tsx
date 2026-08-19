@@ -93,6 +93,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   >({});
 
   const [stockTab, setStockTab] = useState<"RFD" | "PREORDER">("RFD");
+  const [availabilityFilter, setAvailabilityFilter] = useState<"ALL" | "RFD" | "PREORDER">("ALL");
 
   // ── Backend pagination state ─────────────────────────────────────────────
   const [localArticles, setLocalArticles] = useState<ArticleType[]>([]);
@@ -280,19 +281,19 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     }
   };
 
-  const stageForTab = stockTab === "RFD" ? "AVAILABLE" : "PREORDER";
+  const stageForTab = stockTab === "RFD" ? "RFD" : "PREORDER";
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchBookedMap();
-    fetchStockTotals(stageForTab);
-  }, [fetchStockTotals, stageForTab]);
+    fetchStockTotals(availabilityFilter === "ALL" ? undefined : availabilityFilter);
+  }, [fetchStockTotals, availabilityFilter]);
 
   // Real-time: re-fetch when PO/GRN/catalog/order changes affect pending or booked stock
   useEffect(() => {
     const handler = () => {
       fetchBookedMap();
-      fetchStockTotals(stageForTab);
+      fetchStockTotals(availabilityFilter === "ALL" ? undefined : availabilityFilter);
     };
     window.addEventListener("billRefetch", handler);
     window.addEventListener("grnRefetch", handler);
@@ -307,7 +308,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       window.removeEventListener("orderUpdatedSocket", handler);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchStockTotals, stageForTab]);
+  }, [fetchStockTotals, availabilityFilter]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -327,7 +328,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           page,
           limit,
           q: q || undefined,
-          stage: stage || undefined,
+          availability: stage || undefined,
         });
         const mapped: ArticleType[] = (res.data || []).map((item: any) => {
           const normalizedVariants = (item.variants || []).map((v: any) => {
@@ -358,7 +359,6 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
             mrp: item.mrp,
             soleColor: item.soleColor,
-            status: item.stage,
             imageUrl: item.primaryImage?.url,
             colorMedia: item.colorMedia || [],
             variants: normalizedVariants,
@@ -383,10 +383,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       currentPage,
       pageSize,
       debouncedSearch.current,
-      stageForTab
+      availabilityFilter === "ALL" ? undefined : availabilityFilter
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize, stockTab]);
+  }, [currentPage, pageSize, availabilityFilter]);
 
   // Debounced search resets to page 1
   useEffect(() => {
@@ -394,13 +394,13 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     searchDebounceRef.current = setTimeout(() => {
       debouncedSearch.current = searchTerm.trim();
       setCurrentPage(1);
-      fetchLocalInventory(1, pageSize, searchTerm.trim(), stageForTab);
+      fetchLocalInventory(1, pageSize, searchTerm.trim(), availabilityFilter === "ALL" ? undefined : availabilityFilter);
     }, 400);
     return () => {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchTerm, stockTab]);
+  }, [searchTerm, availabilityFilter]);
 
   // Real-time refresh inventory on catalog / grn changes
   useEffect(() => {
@@ -409,7 +409,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
         currentPage,
         pageSize,
         debouncedSearch.current,
-        stageForTab
+        availabilityFilter === "ALL" ? undefined : availabilityFilter
       );
     window.addEventListener("catalogRefetch", handler);
     window.addEventListener("grnRefetch", handler);
@@ -418,7 +418,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       window.removeEventListener("grnRefetch", handler);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize, stockTab]);
+  }, [currentPage, pageSize, availabilityFilter]);
 
   const filteredInventory = localArticles.map((a) => ({
     articleId: a.id,
@@ -537,38 +537,6 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Tab Switcher */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
-        <button
-          onClick={() => {
-            setStockTab("RFD");
-            setCurrentPage(1);
-          }}
-          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            stockTab === "RFD"
-              ? "bg-emerald-600 text-white shadow"
-              : "text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          <CheckCircle2 size={16} />
-          RFD
-        </button>
-        <button
-          onClick={() => {
-            setStockTab("PREORDER");
-            setCurrentPage(1);
-          }}
-          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            stockTab === "PREORDER"
-              ? "bg-amber-500 text-white shadow"
-              : "text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          <Clock size={16} />
-          Pre-Order
-        </button>
-      </div>
-
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-indigo-50 rounded-xl">
@@ -738,6 +706,19 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
         )}
       </div>
 
+      <div className="flex justify-end">
+        <select value={availabilityFilter} onChange={(e) => {
+          const next = e.target.value as "ALL" | "RFD" | "PREORDER";
+          setAvailabilityFilter(next);
+          setStockTab(next === "PREORDER" ? "PREORDER" : "RFD");
+          setCurrentPage(1);
+        }} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700">
+          <option value="ALL">All availability</option>
+          <option value="RFD">Available / RFD</option>
+          <option value="PREORDER">Pre-Order</option>
+        </select>
+      </div>
+
       <div className="space-y-3">
         {pageLoading && (
           <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center">
@@ -769,8 +750,8 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             // a partially-received PREORDER article (some variants promoted
             // via GRN, some not) shows up in BOTH tabs, each showing only
             // the relevant subset of its variants.
-            const tabVariants = (article.variants || []).filter(
-              (v) => (v.stage || article.status) === stageForTab
+            const tabVariants = (article.variants || []).filter((v: any) =>
+              availabilityFilter === "ALL" || v.availability === availabilityFilter
             );
             if (tabVariants.length === 0) return null;
 
@@ -1095,6 +1076,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                           {variant.itemName ||
                                             `${article.name} - ${variant.color} - ${variant.sizeRange}`}
                                         </p>
+                                        <span className={`inline-flex mt-1 px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${(variant as any).availability === "PREORDER" ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}>
+                                          {(variant as any).availability === "PREORDER" ? "Pre-Order" : ((variant as any).isOutOfStock ? "RFD · Out of stock" : "RFD · Available")}
+                                        </span>
                                         <p className="text-[9px] font-mono text-slate-400 tracking-wider">
                                           SKU: {variant.sku || article.sku} ·{" "}
                                           {formatAssortment(

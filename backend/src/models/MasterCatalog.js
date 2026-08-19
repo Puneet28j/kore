@@ -82,8 +82,6 @@ const VariantSchema = new mongoose.Schema(
     // to "AVAILABLE") on purpose: every reader falls back to the parent
     // article's stage when a variant hasn't set its own yet, so existing
     // data needs no migration.
-    stage: { type: String, enum: ["AVAILABLE", "PREORDER"], default: undefined },
-    expectedAvailableDate: { type: Date, default: undefined },
   },
   { _id: true }
 );
@@ -124,12 +122,6 @@ const MasterCatalogSchema = new mongoose.Schema(
     productColors: [{ type: String, trim: true }],
     sizeRanges: [{ type: String, trim: true }],
 
-    stage: {
-      type: String,
-      enum: ["AVAILABLE", "PREORDER"],
-      default: "AVAILABLE",
-    },
-    expectedAvailableDate: { type: Date },
 
     primaryImage: {
       url: { type: String, default: "" },
@@ -158,13 +150,8 @@ const MasterCatalogSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-MasterCatalogSchema.pre("validate", function () {
-  if (this.stage === "PREORDER" && !this.expectedAvailableDate) {
-    this.invalidate(
-      "expectedAvailableDate",
-      "expectedAvailableDate is required when stage is PREORDER"
-    );
-  }
-});
+// Supports the common catalogue list filters and A–Z ordering without a scan.
+MasterCatalogSchema.index({ isDeleted: 1, gender: 1, articleName: 1 });
+MasterCatalogSchema.index({ isDeleted: 1, isActive: 1, createdAt: -1 });
 
 module.exports = mongoose.model("MasterCatalog", MasterCatalogSchema);

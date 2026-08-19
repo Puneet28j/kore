@@ -230,6 +230,23 @@ const makeLegacyFallbackKey = (v) => {
     .toLowerCase()}|${(v.sizeRange || "").trim().toLowerCase()}`;
 };
 
+const getVariantReferenceCounts = async (variantIds) => {
+  const Order = require("../models/Order");
+  const PurchaseOrder = require("../models/PurchaseOrder");
+  const Return = require("../models/Return");
+  const GRNDraft = require("../models/grn.model");
+
+  return Promise.all(variantIds.map(async (variantId) => {
+    const [orders, purchaseOrders, returns, grns] = await Promise.all([
+      Order.countDocuments({ $or: [{ "items.variantId": variantId }, { "fulfillmentHistory.items.variantId": variantId }] }),
+      PurchaseOrder.countDocuments({ isDeleted: false, "items.variantId": String(variantId) }),
+      Return.countDocuments({ "items.variantId": variantId }),
+      GRNDraft.countDocuments({ "cartons.variantId": String(variantId) }),
+    ]);
+    return { orders, purchaseOrders, returns, grns };
+  }));
+};
+
 exports.create = async (req) => {
   const body = req.body || {};
 
@@ -770,6 +787,9 @@ exports.getById = async (id) => {
 
 exports.update = async (req, id) => {
   const body = req.body || {};
+  const variantChanges = {
+    created: [], retained: [], updated: [], removed: [], removedLabels: {}, autoDeactivated: [],
+  };
 
   const doc = await MasterCatalog.findOne({ _id: id, isDeleted: false });
   if (!doc) {
@@ -848,6 +868,12 @@ exports.update = async (req, id) => {
     normalized.forEach((v) => {
       let matched = null;
 
+      if (v._id && mongoose.Types.ObjectId.isValid(v._id) && !existingById.has(v._id.toString())) {
+        const err = new Error("A submitted variant does not belong to this catalog article.");
+        err.statusCode = 400;
+        throw err;
+      }
+
       // 1. Primary match by DB _id
       if (v._id && existingById.has(v._id.toString())) {
         matched = existingById.get(v._id.toString());
@@ -870,6 +896,9 @@ exports.update = async (req, id) => {
       }
 
       if (matched) {
+        const variantId = matched._id.toString();
+        variantChanges.retained.push(variantId);
+        variantChanges.updated.push(variantId);
         matched.itemName = v.itemName;
         matched.color = v.color;
         matched.sizeRange = v.sizeRange;
@@ -901,6 +930,51 @@ exports.update = async (req, id) => {
         newVariants.push(vCopy);
       }
     });
+
+    const retainedIds = new Set(
+      newVariants.filter((v) => v._id).map((v) => v._id.toString())
+    );
+    const removedVariants = doc.variants.filter(
+      (v) => !retainedIds.has(v._id.toString())
+    );
+    if (removedVariants.length > 0) {
+      const referenceCounts = await getVariantReferenceCounts(removedVariants.map((v) => v._id));
+      const blockedVariants = removedVariants.map((variant, index) => ({
+        variantId: variant._id.toString(),
+        label: `${variant.color || "Variant"} (${variant.sizeRange || "no size range"})`,
+        references: referenceCounts[index],
+      })).filter((entry) => Object.values(entry.references).some((count) => count > 0));
+
+      const blockedIds = new Set(blockedVariants.map((entry) => entry.variantId));
+      // A referenced variant is historical/operational data. Treat the admin's
+      // remove action as a deactivation instead, so existing order workflows
+      // remain valid while distributors can no longer place new orders for it.
+      removedVariants
+        .filter((variant) => blockedIds.has(variant._id.toString()))
+        .forEach((variant) => {
+          variant.isActive = false;
+          if (!(doc.productColors || []).includes(variant.color)) {
+            doc.productColors = [...(doc.productColors || []), variant.color];
+          }
+          if (!(doc.sizeRanges || []).includes(variant.sizeRange)) {
+            doc.sizeRanges = [...(doc.sizeRanges || []), variant.sizeRange];
+          }
+          newVariants.push(variant);
+          variantChanges.retained.push(variant._id.toString());
+        });
+      variantChanges.autoDeactivated = blockedVariants;
+
+      const removableVariants = removedVariants.filter(
+        (variant) => !blockedIds.has(variant._id.toString())
+      );
+      variantChanges.removed = removableVariants.map((v) => v._id.toString());
+      variantChanges.removedLabels = Object.fromEntries(
+        removableVariants.map((v) => [
+          v._id.toString(),
+          `${v.color || "Variant"} (${v.sizeRange || "no size range"})`,
+        ])
+      );
+    }
 
     doc.variants = newVariants;
   }
@@ -945,6 +1019,15 @@ exports.update = async (req, id) => {
 
   await doc.save();
 
+  // New variant subdocuments receive their Mongo IDs on save. Keep the audit
+  // summary useful by recording those real IDs rather than client labels.
+  if (body.variants !== undefined) {
+    const retainedIds = new Set(variantChanges.retained);
+    variantChanges.created = (doc.variants || [])
+      .map((variant) => variant._id.toString())
+      .filter((variantId) => !retainedIds.has(variantId));
+  }
+
   // ── Price propagation to PENDING + PRE_BOOKED orders ─────────────────────
   // Priority: article-level MRP (if changed) → variant sellingPrice (if changed)
   try {
@@ -969,7 +1052,7 @@ exports.update = async (req, id) => {
     console.error("Price propagation failed:", e.message);
   }
 
-  return doc;
+  return { doc, variantChanges };
 };
 
 exports.toggleActive = async (id) => {

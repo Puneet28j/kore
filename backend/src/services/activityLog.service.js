@@ -46,7 +46,7 @@ const ACTION_TO_NOTIF = {
  * @param {Object} [params.metadata]
  * @param {Object} [params.user] - { _id, name, role } from req.user (optional)
  */
-const createLog = async ({ action, entityType, entityId = null, description, metadata = {}, user = null }) => {
+const createLog = async ({ action, entityType, entityId = null, description, metadata = {}, user = null, emitRealtime = true }) => {
   try {
     const log = await ActivityLog.create({
       userId: user?._id || user?.id || null,
@@ -59,7 +59,7 @@ const createLog = async ({ action, entityType, entityId = null, description, met
       metadata,
     });
 
-    try {
+    if (emitRealtime) try {
       emitActivityLog({
         _id: log._id,
         action: log.action,

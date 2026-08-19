@@ -7,6 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "snapshots:legacy": "node src/scripts/backfillLegacyOrderSnapshots.js",
     "seed:superadmin": "node src/seed/seed.js"
   },
   "keywords": [],

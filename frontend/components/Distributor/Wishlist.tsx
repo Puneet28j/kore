@@ -607,7 +607,7 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlaceP
       // it belongs in Shop as a regular purchase, not here as a preorder.
       // Only variants still effectively PREORDER stay on this page.
       const variants = (article.variants || []).filter(
-        (v) => (v.stage || article.status) !== "AVAILABLE"
+        (v) => v.isActive !== false && (v.stage || article.status) !== "AVAILABLE"
       );
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {

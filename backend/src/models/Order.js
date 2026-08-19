@@ -7,6 +7,20 @@ const SizeQuantitySchema = new mongoose.Schema(
   { _id: false, strict: false }
 );
 
+// Immutable catalog details captured when an order is placed.  Catalog
+// variants can later be renamed, deactivated, or removed, but an order must
+// always retain the product details that were actually purchased.
+const ProductSnapshotSchema = new mongoose.Schema(
+  {
+    articleName: { type: String, default: "" },
+    color: { type: String, default: "" },
+    sizeRange: { type: String, default: "" },
+    assortment: { type: Map, of: Number, default: {} },
+    imageUrl: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
 const OrderItemSchema = new mongoose.Schema(
   {
     articleId: {
@@ -31,6 +45,10 @@ const OrderItemSchema = new mongoose.Schema(
       type: Map,
       of: Number,
       default: {},
+    },
+    productSnapshot: {
+      type: ProductSnapshotSchema,
+      default: undefined,
     },
     // Pairs, per size, already claimed out of arrived GRN stock while this
     // item is still PREORDER — separate from fulfilledSizeQuantities, which

@@ -30,7 +30,7 @@ const createOrder = async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating order:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || "Failed to create order",
     });
@@ -74,6 +74,38 @@ const getAllOrders = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || "Failed to fetch orders",
+    });
+  }
+};
+
+// Dry-run by default. Applying requires an explicit JSON body: { "apply": true }.
+const backfillLegacyProductSnapshots = async (req, res) => {
+  try {
+    const apply = req.body?.apply === true;
+    const report = await OrderService.backfillLegacyProductSnapshots({ apply });
+
+    if (apply) {
+      activityLog.createLog({
+        action: "ORDER_STATUS_UPDATED",
+        entityType: "ORDER",
+        description: `Legacy order snapshots backfilled: ${report.eligibleItems} item(s) across ${report.savedOrders} order(s); ${report.unresolvedItems} item(s) left unchanged`,
+        metadata: report,
+        user: req.user,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: apply
+        ? "Legacy snapshot backfill completed"
+        : "Legacy snapshot backfill dry-run completed; send { apply: true } to apply eligible snapshots",
+      data: report,
+    });
+  } catch (error) {
+    console.error("Error backfilling legacy product snapshots:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to backfill legacy product snapshots",
     });
   }
 };
@@ -457,6 +489,7 @@ module.exports = {
   createOrder,
   getDistributorOrders,
   getAllOrders,
+  backfillLegacyProductSnapshots,
   getOrderByIdCtrl,
   updateOrderStatus,
   scanCarton,

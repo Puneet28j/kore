@@ -366,8 +366,16 @@ const App: React.FC = () => {
       const u = userRef.current;
       if (!u || u.role === UserRole.DISTRIBUTOR) return;
 
-      const label = (data.action as string).replace(/_/g, " ");
-      toast.info(label, { description: data.description, duration: 4000 });
+      // A blocked variant deletion already shows the initiating admin a clear
+      // request-error toast. Keep its audit record, but don't add a second
+      // generic activity notification on top of it.
+      const isBlockedVariantRemoval =
+        String(data.description || "").startsWith("Variant removal blocked:") ||
+        String(data.description || "").startsWith("Catalog update blocked because referenced variants cannot be removed");
+      if (!isBlockedVariantRemoval) {
+        const label = (data.action as string).replace(/_/g, " ");
+        toast.info(label, { description: data.description, duration: 4000 });
+      }
       // Refresh activity log page if open
       window.dispatchEvent(new CustomEvent("activityLogRefetch"));
     };
@@ -1344,7 +1352,13 @@ const App: React.FC = () => {
           <IntegrationsPage />
         )}
       </main>
-      <Toaster position="top-right" richColors />
+      <Toaster
+        position="top-right"
+        richColors
+        expand
+        visibleToasts={6}
+        closeButton
+      />
       <SocketStatusBadge />
     </div>
   );

@@ -4,7 +4,36 @@ const { emitCatalogUpdated } = require("../socket");
 
 const sendError = (res, err) => {
   const code = err.statusCode || 500;
-  return res.status(code).json({ message: err.message || "Server error" });
+  return res.status(code).json({
+    message: err.message || "Server error",
+    ...(err.details ? { details: err.details } : {}),
+  });
+};
+
+const shortVariantList = (labels) => {
+  const unique = [...new Set(labels.filter(Boolean))];
+  if (!unique.length) return "catalog details";
+  const visible = unique.slice(0, 3).join(", ");
+  return unique.length > 3 ? `${visible} +${unique.length - 3} more` : visible;
+};
+
+const describeVariantChanges = (doc, changes) => {
+  const labelsById = new Map(
+    (doc.variants || []).map((variant) => [
+      String(variant._id),
+      `${variant.color || "Variant"} (${variant.sizeRange || "no size range"})`,
+    ])
+  );
+  const labels = [
+    ...(changes.updated || []).map((id) => labelsById.get(String(id))),
+    ...(changes.created || []).map((id) => labelsById.get(String(id))),
+    ...(changes.removed || []).map((id) => changes.removedLabels?.[String(id)]),
+  ];
+  const parts = [];
+  if (labels.length) parts.push(`Variants: ${shortVariantList(labels)}`);
+  const deactivated = (changes.autoDeactivated || []).map((variant) => variant.label);
+  if (deactivated.length) parts.push(`Deactivated: ${shortVariantList(deactivated)}`);
+  return parts.length ? parts.join(" · ") : "Catalog details updated";
 };
 
 exports.createMasterCatalog = async (req, res) => {
@@ -80,13 +109,14 @@ exports.getBookedMap = async (req, res) => {
 
 exports.updateMasterCatalog = async (req, res) => {
   try {
-    const doc = await masterCatalogService.update(req, req.params.id);
+    const { doc, variantChanges } = await masterCatalogService.update(req, req.params.id);
 
     activityLog.createLog({
       action: "CATALOG_UPDATED",
       entityType: "CATALOG",
       entityId: String(req.params.id),
-      description: `Article "${doc.articleName}" updated by ${req.user?.name || "admin"}`,
+      description: `Article "${doc.articleName}" updated — ${describeVariantChanges(doc, variantChanges)}`,
+      metadata: { variantChanges },
       user: req.user,
     });
 
@@ -94,8 +124,20 @@ exports.updateMasterCatalog = async (req, res) => {
     return res.json({
       message: "Updated",
       data: doc,
+      variantChanges,
     });
   } catch (err) {
+    if (err.statusCode === 409 && err.details?.blockedVariants) {
+      activityLog.createLog({
+        action: "CATALOG_UPDATED",
+        entityType: "CATALOG",
+        entityId: String(req.params.id),
+        description: `Article "${err.details.articleName || req.params.id}": variant removal blocked — ${shortVariantList(err.details.blockedVariants.map((variant) => variant.label))}`,
+        metadata: { blockedVariants: err.details.blockedVariants },
+        user: req.user,
+        emitRealtime: false,
+      });
+    }
     return sendError(res, err);
   }
 };

@@ -16,6 +16,13 @@ router.get("/my-orders", role(["distributor"]), OrderController.getDistributorOr
 router.get("/stats", role(["admin", "superadmin", "accountant", "manager", "supervisor"]), OrderController.getOrderStatsCtrl);
 router.get("/dashboard-metrics", role(["admin", "superadmin", "accountant", "manager", "supervisor"]), OrderController.getDashboardMetricsCtrl);
 router.get("/", role(["admin", "superadmin", "accountant", "manager", "supervisor"]), OrderController.getAllOrders);
+// Safe legacy-order repair: dry-run unless the caller explicitly sends { apply: true }.
+// Must stay above the generic "/:id" route.
+router.post(
+  "/maintenance/backfill-product-snapshots",
+  role(["admin", "superadmin"]),
+  OrderController.backfillLegacyProductSnapshots
+);
 
 // Status update — admin can set any status, distributor can mark as RECEIVED with bill
 router.patch(

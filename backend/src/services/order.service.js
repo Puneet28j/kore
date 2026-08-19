@@ -6,6 +6,36 @@ const Return = require("../models/Return");
 const activityLog = require("./activityLog.service");
 const notification = require("./notification.service");
 
+const toSnapshotAssortment = (variant) => {
+  const quantities = variant?.sizeQuantities?.toObject
+    ? variant.sizeQuantities.toObject()
+    : variant?.sizeQuantities || {};
+  if (Object.keys(quantities).length) return quantities;
+
+  const sizeMap = variant?.sizeMap?.toObject
+    ? variant.sizeMap.toObject()
+    : variant?.sizeMap || {};
+  return Object.fromEntries(
+    Object.entries(sizeMap).map(([size, cell]) => [size, Number(cell?.qty || 0)])
+  );
+};
+
+const buildProductSnapshot = (catalog, variant) => {
+  const colorMedia = (catalog?.colorMedia || []).find(
+    (media) => String(media.color || "").trim().toLowerCase() === String(variant?.color || "").trim().toLowerCase()
+  );
+  const colorImage = colorMedia?.images?.[0];
+  const primaryImage = catalog?.primaryImage;
+
+  return {
+    articleName: catalog?.articleName || "",
+    color: variant?.color || "",
+    sizeRange: variant?.sizeRange || "",
+    assortment: toSnapshotAssortment(variant),
+    imageUrl: colorImage?.url || colorImage || primaryImage?.url || primaryImage || "",
+  };
+};
+
 // Pull cartonCount codes from the front of variant.availableCartons and store on item.
 // No-op if the pool is empty (legacy/GRN orders — backward compat).
 const allocateCartonsToItem = async (item) => {
@@ -185,15 +215,18 @@ const createOrder = async (distributorId, orderData) => {
     // Use provided date or fallback to today
     const orderDate = date || new Date().toISOString().split("T")[0];
 
-    // Sanitize items: ensure articleId/variantId are valid ObjectId strings
+    // Validate cart references before they become permanent order data.
     const sanitizedItems = (items || []).map((item) => {
       const sanitized = { ...item };
-      // If variantId is not a valid 24-char hex ObjectId, strip it
-      if (
-        sanitized.variantId &&
-        !mongoose.Types.ObjectId.isValid(sanitized.variantId)
-      ) {
-        delete sanitized.variantId;
+      if (!mongoose.Types.ObjectId.isValid(sanitized.articleId)) {
+        const err = new Error("One or more cart items no longer exist in the catalog. Please refresh your cart and try again.");
+        err.statusCode = 409;
+        throw err;
+      }
+      if (!mongoose.Types.ObjectId.isValid(sanitized.variantId)) {
+        const err = new Error("One or more selected variants are no longer available. Please refresh your cart and try again.");
+        err.statusCode = 409;
+        throw err;
       }
       // Ensure numeric fields are valid numbers
       sanitized.cartonCount = Number(sanitized.cartonCount) || 0;
@@ -211,19 +244,32 @@ const createOrder = async (distributorId, orderData) => {
       ...new Set(sanitizedItems.map((i) => String(i.articleId)).filter(Boolean)),
     ];
     const catalogsForStage = articleIdsForStage.length
-      ? await MasterCatalog.find({ _id: { $in: articleIdsForStage } })
-          .select("stage variants._id variants.stage")
+      ? await MasterCatalog.find({ _id: { $in: articleIdsForStage }, isDeleted: false })
+          .select("articleName primaryImage colorMedia stage variants")
           .lean()
       : [];
-    const stageByVariant = {};
-    catalogsForStage.forEach((cat) => {
-      (cat.variants || []).forEach((v) => {
-        stageByVariant[String(v._id)] = v.stage || cat.stage;
-      });
-    });
+    const catalogById = new Map(
+      catalogsForStage.map((cat) => [String(cat._id), cat])
+    );
     sanitizedItems.forEach((item) => {
+      const catalog = catalogById.get(String(item.articleId));
+      const variant = catalog?.variants?.find(
+        (v) => String(v._id) === String(item.variantId)
+      );
+      if (!catalog || !variant) {
+        const err = new Error("One or more selected variants were changed or removed. Please refresh your cart and try again.");
+        err.statusCode = 409;
+        throw err;
+      }
+      if (variant.isActive === false) {
+        const err = new Error("One or more selected variants are no longer available. Please refresh your cart and try again.");
+        err.statusCode = 409;
+        throw err;
+      }
+
+      item.productSnapshot = buildProductSnapshot(catalog, variant);
       item.bookingType =
-        item.variantId && stageByVariant[String(item.variantId)] === "PREORDER"
+        (variant.stage || catalog.stage) === "PREORDER"
           ? "PREORDER"
           : "REGULAR";
     });
@@ -2004,6 +2050,78 @@ const getDashboardMetrics = async ({ startDate, endDate } = {}) => {
   };
 };
 
+// One-time safe backfill for orders created before productSnapshot existed.
+// It only uses an exact articleId + variantId match; missing historical
+// variants are reported, never guessed or remapped.
+const backfillLegacyProductSnapshots = async ({ apply = false } = {}) => {
+  const orders = await Order.find({ "items.productSnapshot": { $exists: false } })
+    .select("orderNumber items")
+    .sort({ createdAt: 1 });
+
+  const articleIds = [
+    ...new Set(
+      orders.flatMap((order) => (order.items || [])
+        .filter((item) => !item.productSnapshot && item.articleId)
+        .map((item) => String(item.articleId)))
+    ),
+  ];
+  const catalogs = articleIds.length
+    ? await MasterCatalog.find({ _id: { $in: articleIds } })
+        .select("articleName primaryImage colorMedia variants")
+        .lean()
+    : [];
+  const catalogById = new Map(catalogs.map((catalog) => [String(catalog._id), catalog]));
+
+  let legacyItems = 0;
+  let eligibleItems = 0;
+  let savedOrders = 0;
+  const unresolvedItems = [];
+
+  for (const order of orders) {
+    let changed = false;
+    (order.items || []).forEach((item, itemIndex) => {
+      if (item.productSnapshot) return;
+      legacyItems += 1;
+
+      const catalog = item.articleId && catalogById.get(String(item.articleId));
+      const variant = catalog?.variants?.find((value) => String(value._id) === String(item.variantId));
+      if (!catalog || !variant) {
+        if (unresolvedItems.length < 100) {
+          unresolvedItems.push({
+            orderNumber: order.orderNumber || String(order._id),
+            itemIndex,
+            articleId: item.articleId ? String(item.articleId) : null,
+            variantId: item.variantId ? String(item.variantId) : null,
+            reason: !catalog ? "Article no longer exists" : "Variant no longer belongs to this article",
+          });
+        }
+        return;
+      }
+
+      eligibleItems += 1;
+      if (apply) {
+        item.productSnapshot = buildProductSnapshot(catalog, variant);
+        changed = true;
+      }
+    });
+
+    if (apply && changed) {
+      await order.save();
+      savedOrders += 1;
+    }
+  }
+
+  return {
+    mode: apply ? "applied" : "dry-run",
+    ordersScanned: orders.length,
+    legacyItems,
+    eligibleItems,
+    unresolvedItems: legacyItems - eligibleItems,
+    savedOrders,
+    unresolvedItemSamples: unresolvedItems,
+  };
+};
+
 module.exports = {
   createOrder,
   getOrdersByDistributor,
@@ -2020,4 +2138,5 @@ module.exports = {
   propagatePriceUpdate,
   getOrderStats,
   getDashboardMetrics,
+  backfillLegacyProductSnapshots,
 };

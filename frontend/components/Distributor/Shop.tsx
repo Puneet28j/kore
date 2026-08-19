@@ -978,6 +978,9 @@ const Shop: React.FC<ShopProps> = ({
       const variants = article.variants || [];
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {
+        // Deactivated variants remain in the catalog for operational history,
+        // but distributors must not see or order them.
+        if (v.isActive === false) return;
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
         const effStage = v.stage || article.status;
         if (effStage === "PREORDER") {

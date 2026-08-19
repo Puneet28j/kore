@@ -898,6 +898,18 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         if (updateArticle) updateArticle(mappedArticle);
         if (onSuccess) onSuccess();
         if (onCancelEdit) onCancelEdit();
+
+        const autoDeactivated = res.variantChanges?.autoDeactivated || [];
+        if (autoDeactivated.length) {
+          const labels = autoDeactivated
+            .slice(0, 2)
+            .map((variant: { label?: string }) => variant.label || "Variant")
+            .join(", ");
+          const remaining = autoDeactivated.length - 2;
+          return `Product updated. Deactivated: ${labels}${remaining > 0 ? ` +${remaining} more` : ""}`;
+        }
+
+        return "Product Updated Successfully!";
       } else {
         await masterCatalogService.createMasterItem(data);
         if (onSuccess) onSuccess();
@@ -923,6 +935,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         setVariants([]);
         setColorMedia({});
         setExcludedCombinations(new Set());
+        return "Product Created Successfully!";
       }
     };
 
@@ -931,9 +944,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
     toast.promise(promise, {
       loading: editingId ? "Updating product..." : "Creating product...",
-      success: editingId
-        ? "Product Updated Successfully!"
-        : "Product Created Successfully!",
+      success: (message) => message,
       error: (err: any) => err.message || "Failed to save product",
     });
 

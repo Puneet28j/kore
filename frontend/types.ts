@@ -153,6 +153,15 @@ export enum OrderStatus {
 
 export type OrderType = "REGULAR" | "PREORDER";
 
+export interface OrderItemProductSnapshot {
+  articleName: string;
+  color: string;
+  sizeRange: string;
+  /** Fixed per-carton size breakup at the time the order was placed. */
+  assortment: Record<string, number>;
+  imageUrl?: string;
+}
+
 export interface OrderItem {
   articleId: string;
   /** optional variant selected by the user (color + size range) */
@@ -163,6 +172,8 @@ export interface OrderItem {
   bookingType?: "REGULAR" | "PREORDER";
   /** detailed breakdown: pairs per size (e.g. {"5":12, "6":12}) */
   sizeQuantities?: Record<string, number>;
+  /** Immutable catalog details captured server-side at checkout. */
+  productSnapshot?: OrderItemProductSnapshot;
   // Pairs, per size, already claimed out of arrived GRN stock while still
   // PREORDER — a partial GRN claims what it can and leaves the item
   // PREORDER holding the remainder (see backend promotePreOrderItems).

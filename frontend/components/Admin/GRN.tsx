@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useRef } from "react";
+import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import {
   ClipboardList,
@@ -105,6 +105,44 @@ const formatDateTime = (value?: string) => {
 };
 
 /* ═══════════════════ Component ═══════════════════ */
+
+// USB barcode scanners act like very fast keyboards. Human typing is normally
+// slower than this, so we use the interval to distinguish a scanner burst from
+// normal form entry when the scanner field does not own focus.
+const SCANNER_KEY_INTERVAL_MS = 80;
+const SCANNER_MIN_LENGTH = 3;
+
+type EditableTargetSnapshot = {
+  element: HTMLInputElement | HTMLTextAreaElement;
+  value: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+};
+
+const getEditableTargetSnapshot = (target: EventTarget | null): EditableTargetSnapshot | null => {
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return null;
+  if (target.readOnly || target.disabled) return null;
+  return {
+    element: target,
+    value: target.value,
+    selectionStart: target.selectionStart,
+    selectionEnd: target.selectionEnd,
+  };
+};
+
+// Set through the native prototype setter so React's controlled input state is
+// updated by the bubbled input event as well as the visible DOM value.
+const restoreEditableTarget = (snapshot: EditableTargetSnapshot | null) => {
+  if (!snapshot || !snapshot.element.isConnected) return;
+
+  const prototype = snapshot.element instanceof HTMLInputElement
+    ? HTMLInputElement.prototype
+    : HTMLTextAreaElement.prototype;
+  const valueSetter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+  valueSetter?.call(snapshot.element, snapshot.value);
+  snapshot.element.dispatchEvent(new Event("input", { bubbles: true }));
+  snapshot.element.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+};
 
 const GRN: React.FC = () => {
   /* ── Step 1: PO Selection ── */
@@ -726,8 +764,8 @@ const GRN: React.FC = () => {
   }, [itemsWithProgress, itemSearch]);
 
   /* ── Scan handler ── */
-  const handleScan = () => {
-    const code = scanInput.trim();
+  const handleScan = useCallback((scannedCode?: string) => {
+    const code = (scannedCode ?? scanInput).trim();
     if (!code) return;
 
     if (!selectedItem) {
@@ -805,7 +843,74 @@ const GRN: React.FC = () => {
         error: "",
       });
     }
-  };
+  }, [
+    currentCartonIdx,
+    currentCartonScan,
+    doneCartons,
+    scanInput,
+    selectedItem,
+    selectedItemName,
+    variantCounterBases,
+  ]);
+
+  const scannerCaptureReady = activeTab === "scan" && !!selectedItem && !cartonConfirmPopup;
+
+  /* USB scanner capture when another GRN field has focus. */
+  useEffect(() => {
+    if (!scannerCaptureReady) return;
+
+    let buffer = "";
+    let lastKeyAt = 0;
+    let editableTarget: EditableTargetSnapshot | null = null;
+
+    const reset = () => {
+      buffer = "";
+      lastKeyAt = 0;
+      editableTarget = null;
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      // These two fields own their normal Enter behavior themselves.
+      if (event.target === scanInputRef.current || event.target === confirmInputRef.current) {
+        reset();
+        return;
+      }
+
+      const now = performance.now();
+
+      if (event.key === "Enter") {
+        const isScannerBurst = buffer.length >= SCANNER_MIN_LENGTH
+          && now - lastKeyAt <= SCANNER_KEY_INTERVAL_MS;
+        if (isScannerBurst) {
+          event.preventDefault();
+          event.stopPropagation();
+          restoreEditableTarget(editableTarget);
+          handleScan(buffer);
+        }
+        reset();
+        return;
+      }
+
+      // A correctly configured keyboard-wedge scanner supplies printable
+      // characters plus Enter. Keep browser shortcuts and normal navigation
+      // outside this capture path.
+      if (event.ctrlKey || event.altKey || event.metaKey || event.key.length !== 1) {
+        reset();
+        return;
+      }
+
+      if (!buffer || now - lastKeyAt > SCANNER_KEY_INTERVAL_MS) {
+        buffer = event.key;
+        editableTarget = getEditableTargetSnapshot(event.target);
+      } else {
+        buffer += event.key;
+      }
+      lastKeyAt = now;
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [handleScan, scannerCaptureReady]);
 
   /* ── Confirm a completed carton's printed label ── */
   const confirmCartonLabel = () => {
@@ -1612,13 +1717,21 @@ const GRN: React.FC = () => {
                             <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                               Scan — Carton {currentCartonIdx + 1}
                             </p>
-                            <button
-                              type="button"
-                              onClick={resetCartonScans}
-                              className="flex items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-rose-500 transition"
-                            >
-                              <RotateCcw size={10} /> Reset carton
-                            </button>
+                            <div className="flex items-center gap-3">
+                              {scannerCaptureReady && (
+                                <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                  Scanner ready
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={resetCartonScans}
+                                className="flex items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-rose-500 transition"
+                              >
+                                <RotateCcw size={10} /> Reset carton
+                              </button>
+                            </div>
                           </div>
                           <div className="relative">
                             <ScanLine className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-500" size={20} />

@@ -10,19 +10,26 @@ const getStockReport = async (req, res) => {
     if (q) query.articleName = { $regex: q, $options: "i" };
 
     const total = await MasterCatalog.countDocuments(query);
-    const [catalogs, bookedMap] = await Promise.all([
-      MasterCatalog.find(query)
-        // category/brand/company aren't stored directly on MasterCatalog —
-        // only their _id references (categoryId/brandId/manufacturerCompanyId)
-        // are. Populate so the report can show names instead of raw ObjectIds.
-        .populate("categoryId", "name")
-        .populate("brandId", "name")
-        .populate("manufacturerCompanyId", "name")
-        .sort({ articleName: 1 })
-        .skip((Number(page) - 1) * Number(limit))
-        .limit(Number(limit))
-        .lean(),
+    const catalogs = await MasterCatalog.find(query)
+      // category/brand/company aren't stored directly on MasterCatalog —
+      // only their _id references (categoryId/brandId/manufacturerCompanyId)
+      // are. Populate so the report can show names instead of raw ObjectIds.
+      .populate("categoryId", "name")
+      .populate("brandId", "name")
+      .populate("manufacturerCompanyId", "name")
+      .sort({ articleName: 1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean();
+
+    const articleIds = catalogs.map((c) => c._id);
+    const [bookedMap, preBookedMap, plannedMap, grnReceivedMap] = await Promise.all([
       masterCatalogService.getBookedQuantityMap(),
+      masterCatalogService.getPreBookedQtyMap(),
+      articleIds.length
+        ? masterCatalogService.getPoPlannedQtyMap(articleIds)
+        : { bySize: {}, totals: {} },
+      masterCatalogService.getGrnReceivedQtyMap(),
     ]);
 
     const data = catalogs.map((c) => {
@@ -55,16 +62,26 @@ const getStockReport = async (req, res) => {
           sizeRange: v.sizeRange,
           mrp: v.mrp,
           costPrice: v.costPrice || 0,
-          listingStatus: v.listingStatus,
-          // Effective stage — the variant's own GRN-driven override, falling
-          // back to the parent article's stage. Same rule Master Stock uses,
-          // so a mixed article (some variants arrived, some still pending)
-          // reports each variant under the correct RFD/Pre-Order filter.
-          stage: v.stage || c.stage || "AVAILABLE",
+          // Still-incoming pairs (PO planned − GRN received) — the frontend
+          // classifies RFD/Pre-Order from this + totalStock, never a stored
+          // field.
+          poPendingPairs: Math.max(
+            0,
+            (plannedMap.totals[String(v._id)] || 0) -
+              (grnReceivedMap.totals[String(v._id)] || 0)
+          ),
           sizeQuantities: rawSizeQuantities,
           sizeStock,
           totalStock: variantTotalStock,
-          booked: bookedMap.totals[String(v._id)] || 0,
+          // RFD (live stock > 0): booked/undispatched pairs from the regular
+          // booked-map. PreOrder (0 live stock): still-owed pre-booked pairs
+          // — same getPreBookedQtyMap formula Master Stock's per-variant
+          // Booked column uses, so this report always tallies with it
+          // instead of drifting from a differently-scoped map.
+          booked:
+            variantTotalStock > 0
+              ? bookedMap.totals[String(v._id)] || 0
+              : preBookedMap.totals[String(v._id)] || 0,
         };
       });
 

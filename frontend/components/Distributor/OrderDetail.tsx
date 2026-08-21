@@ -62,36 +62,23 @@ import { COMPANY_CONFIG } from "../../constants";
 
 // How many whole cartons of an order item are backed by REAL stock right
 // now. A REGULAR item is always fully backed — this is just its cartonCount.
-// A still-PREORDER item may have received PARTIAL stock via one or more
-// GRNs (preorderReservedSizeQuantities holds what's been claimed so far,
-// per size) — cartons are a fixed assortment, so the number of WHOLE
-// cartons the reservation can cover is the floor of reserved÷per-carton-need,
-// taken as the minimum across sizes. Mirrors the backend's
-// computeReservedCartons (order.service.js) so the scan baseline here always
-// agrees with what the server will actually accept.
+// A still-PREORDER item's backing is a SHARED, live pool: every order
+// waiting on the same variant sees the same available cartons
+// (item.liveAvailableCartonCodes, attached fresh by the backend on every
+// order fetch — no per-order exclusive reservation anymore). So this is
+// simply already-scanned-by-me + however many are currently sitting free in
+// the shared pool, capped at what this item still needs. Mirrors the
+// backend's computeReservedCartons (order.service.js) so the scan baseline
+// here always agrees with what the server will actually accept.
 const computeReservedCartons = (item: OrderItem): number => {
   if (item.bookingType !== "PREORDER") return item.cartonCount || 0;
 
   const cartonCount = item.cartonCount || 0;
   if (cartonCount <= 0) return 0;
 
-  const sizeQuantities = item.sizeQuantities || {};
-  const reserved = item.preorderReservedSizeQuantities || {};
-
-  let minCartons = Infinity;
-  let hasSize = false;
-  for (const [size, totalQty] of Object.entries(sizeQuantities)) {
-    const perCartonNeed = (Number(totalQty) || 0) / cartonCount;
-    if (perCartonNeed <= 0) continue;
-    hasSize = true;
-    const reservedQty = Number(reserved[size] || 0);
-    minCartons = Math.min(
-      minCartons,
-      Math.floor(reservedQty / perCartonNeed + 1e-9)
-    );
-  }
-  if (!hasSize) return 0;
-  return minCartons === Infinity ? 0 : Math.max(0, minCartons);
+  const fulfilled = item.fulfilledCartonCount || 0;
+  const liveAvailable = (item.liveAvailableCartonCodes || []).length;
+  return Math.min(cartonCount, fulfilled + Math.max(0, liveAvailable));
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -113,6 +100,14 @@ interface OrderDetailProps {
   breakdownOnly?: boolean;
   hideBackButton?: boolean;
 }
+
+// Persists across prints/re-renders — avoids re-fetching + re-encoding the
+// same product image (shared across order items/orders) every time a PDF is
+// generated, which was the main source of PDF-prep slowness.
+const printImageB64Cache: Record<string, string> = {};
+// De-dupes concurrent fetches of the same image within one print run (e.g.
+// several sizes/variants of the same article sharing one color image).
+const printImageInFlight: Record<string, Promise<string | null>> = {};
 
 const OrderDetail: React.FC<OrderDetailProps> = ({
   order,
@@ -479,6 +474,12 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
     const item = currentOrder.items.find(
       (i) => (i.variantId || i.articleId) === itemKey
     );
+    // productSnapshot is captured on the item itself at booking time — it's
+    // always there and never depends on the live `articles` catalog list
+    // being fully loaded/current, so prefer it over cross-referencing
+    // `articles`. Only very old pre-snapshot orders fall through to that.
+    const snap = item?.productSnapshot;
+    if (snap) return `${snap.articleName} — ${snap.color} (${snap.sizeRange})`;
     const article = item
       ? articles.find((a) => a.id === item.articleId)
       : undefined;
@@ -533,10 +534,17 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
       setCtnScanInput("");
       return;
     }
-    // Primary: check this order's pre-allocated carton codes
+    // Primary: check this order's pre-allocated carton codes (REGULAR items)
+    // or the shared live pool this order can currently see (PREORDER items —
+    // the backend re-validates atomically at scan time; whichever order
+    // scans a given code first wins it, so this is just a fast client-side
+    // pre-check for a friendlier error before the round trip).
     let matchedItemKey: string | null = null;
     for (const item of currentOrder.items) {
-      if ((item.allocatedCartons || []).includes(barcode)) {
+      if (
+        (item.allocatedCartons || []).includes(barcode) ||
+        (item.liveAvailableCartonCodes || []).includes(barcode)
+      ) {
         matchedItemKey = item.variantId || item.articleId || null;
         break;
       }
@@ -575,7 +583,10 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
       }
     } catch (err: any) {
       const msg: string = err?.response?.data?.message || err?.message || "";
-      if (msg.includes("is not allocated to this order")) {
+      if (
+        msg.includes("is not allocated to this order") ||
+        msg.includes("no longer available")
+      ) {
         toast.info(msg);
       } else {
         toast.error(msg || "Failed to scan carton");
@@ -873,6 +884,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
     const imageMap: Record<string, string> = {};
     await Promise.all(
       currentOrder.items.map(async (item) => {
+        const snap = item.productSnapshot;
         const article = articles.find((a) => a.id === item.articleId);
         const variant = article?.variants?.find((v) => v.id === item.variantId);
         const colorMedia = article?.colorMedia || [];
@@ -880,25 +892,38 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
           (cm: any) => cm.color.toLowerCase() === variant?.color?.toLowerCase()
         );
         const rawUrl =
-          matched?.images?.length > 0
+          snap?.imageUrl ||
+          (matched?.images?.length > 0
             ? matched.images[0].url
             : variant?.images?.length > 0
             ? variant.images[0]
-            : article?.imageUrl;
+            : article?.imageUrl);
         if (!rawUrl) return;
-        try {
-          const fullUrl = getImageUrl(rawUrl);
-          const resp = await fetch(fullUrl);
-          const blob = await resp.blob();
-          const b64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.readAsDataURL(blob);
-          });
-          imageMap[item.variantId || item.articleId] = b64;
-        } catch {
-          // skip if image load fails
+        const key = item.variantId || item.articleId;
+        if (printImageB64Cache[rawUrl]) {
+          imageMap[key] = printImageB64Cache[rawUrl];
+          return;
         }
+        if (!printImageInFlight[rawUrl]) {
+          printImageInFlight[rawUrl] = (async () => {
+            try {
+              const fullUrl = getImageUrl(rawUrl);
+              const resp = await fetch(fullUrl);
+              const blob = await resp.blob();
+              const b64 = await new Promise<string>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.readAsDataURL(blob);
+              });
+              printImageB64Cache[rawUrl] = b64;
+              return b64;
+            } catch {
+              return null;
+            }
+          })();
+        }
+        const b64 = await printImageInFlight[rawUrl];
+        if (b64) imageMap[key] = b64;
       })
     );
 
@@ -1016,11 +1041,19 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
     });
 
     // ── Items table (col 0 = image placeholder, drawn via didDrawCell) ─────
+    // productSnapshot is captured on the item at booking time — always
+    // present, never depends on the live `articles` catalog list being
+    // fully loaded/current. Prefer it; only fall back to cross-referencing
+    // `articles` for very old pre-snapshot orders.
     const itemRows = currentOrder.items.map((item, idx) => {
+      const snap = item.productSnapshot;
       const article = articles.find((a) => a.id === item.articleId);
       const variant = article?.variants?.find((v) => v.id === item.variantId);
+      const articleName = snap?.articleName || article?.name || "-";
+      const color = snap?.color || variant?.color || "N/A";
+      const sizeRange = snap?.sizeRange || variant?.sizeRange || "-";
       const assortment = (() => {
-        const sq = variant?.sizeQuantities;
+        const sq = snap?.assortment || variant?.sizeQuantities;
         if (!sq || Object.keys(sq).length === 0) return "N/A";
         return Object.keys(sq)
           .sort((a, b) => parseInt(a) - parseInt(b))
@@ -1034,16 +1067,34 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
       return [
         "", // col 0: image (drawn below)
         idx + 1,
-        article?.name || "-",
-        variant?.color || "N/A",
-        variant?.sizeRange || "-",
+        articleName,
+        color,
+        sizeRange,
         assortment,
+        item.bookingType === "PREORDER" ? "Pre-Order" : "RFD",
         item.cartonCount,
         item.fulfilledCartonCount || 0,
         item.returnedCartonCount || 0,
         remaining,
       ];
     });
+
+    const totalOrdered = currentOrder.items.reduce(
+      (s, i) => s + (i.cartonCount || 0),
+      0
+    );
+    const totalDispatched = currentOrder.items.reduce(
+      (s, i) => s + (i.fulfilledCartonCount || 0),
+      0
+    );
+    const totalReturned = currentOrder.items.reduce(
+      (s, i) => s + (i.returnedCartonCount || 0),
+      0
+    );
+    const totalRemaining = currentOrder.items.reduce(
+      (s, i) => s + Math.max(0, (i.cartonCount || 0) - (i.fulfilledCartonCount || 0)),
+      0
+    );
 
     autoTable(doc, {
       startY: (doc as any).lastAutoTable.finalY + 12,
@@ -1078,6 +1129,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
           "Color",
           "Size Range",
           "Size Assortment",
+          "Stage",
           "Ordered\n(Ctn)",
           "Dispatched\n(Ctn)",
           "Returned\n(Ctn)",
@@ -1085,6 +1137,29 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
         ],
       ],
       body: itemRows,
+      foot: [
+        [
+          {
+            content: "TOTAL",
+            colSpan: 7,
+            styles: { halign: "right", fontStyle: "bold" },
+          },
+          totalOrdered,
+          totalDispatched,
+          totalReturned,
+          totalRemaining,
+        ],
+      ],
+      showFoot: "lastPage",
+      footStyles: {
+        fillColor: [240, 245, 255],
+        textColor: [0, 0, 0],
+        fontStyle: "bold",
+        fontSize: 7,
+        halign: "center",
+        lineColor: [0, 0, 0],
+        lineWidth: 0.5,
+      },
       didDrawCell: (data: any) => {
         if (data.section === "body" && data.column.index === 0) {
           const item = currentOrder.items[data.row.index];
@@ -3013,10 +3088,15 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                   </div>
                                 </div>
 
-                                {/* Pre-allocated carton codes for this order */}
+                                {/* Pre-allocated carton codes for this order (REGULAR items)
+                                    plus the shared live pool for still-PREORDER items — the
+                                    same codes shown here may also be visible on another order
+                                    waiting on this same variant; whichever scans first wins. */}
                                 {currentOrder.items.some(
                                   (item) =>
-                                    (item.allocatedCartons || []).length > 0
+                                    (item.allocatedCartons || []).length > 0 ||
+                                    (item.liveAvailableCartonCodes || [])
+                                      .length > 0
                                 ) && (
                                   <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4">
                                     <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">
@@ -3030,7 +3110,10 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                           ).map((c: any) => c.code)
                                         );
                                         const codes = (
-                                          item.allocatedCartons || []
+                                          item.bookingType === "PREORDER"
+                                            ? item.liveAvailableCartonCodes ||
+                                              []
+                                            : item.allocatedCartons || []
                                         ).filter(
                                           (c: string) => !scanned.has(c)
                                         );
@@ -3046,6 +3129,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                                 item.variantId ||
                                                   item.articleId ||
                                                   ""
+                                              )}
+                                              {item.bookingType ===
+                                                "PREORDER" && (
+                                                <span className="ml-1.5 text-amber-600 font-normal normal-case">
+                                                  · shared stock, first scan
+                                                  wins
+                                                </span>
                                               )}
                                             </p>
                                             <div className="flex flex-wrap gap-1">
@@ -3114,15 +3204,15 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                   {awaitingStockItems.map((item, idx) => {
                                     const key =
                                       item.variantId || item.articleId;
-                                    // Reservation progress: pairs already claimed out of
-                                    // arrived GRN stock vs. total pairs this item needs —
-                                    // a partial GRN shows partial progress here instead of
-                                    // silently disappearing until fully covered.
+                                    // Dispatch progress: pairs already actually scanned/shipped
+                                    // out of total pairs this item needs — a partial dispatch
+                                    // shows partial progress here instead of silently
+                                    // disappearing until fully covered.
                                     const needed = Object.values(
                                       item.sizeQuantities || {}
                                     ).reduce((s, q) => s + (Number(q) || 0), 0);
-                                    const reserved = Object.values(
-                                      item.preorderReservedSizeQuantities || {}
+                                    const dispatched = Object.values(
+                                      item.fulfilledSizeQuantities || {}
                                     ).reduce((s, q) => s + (Number(q) || 0), 0);
                                     const scannableNow = Math.max(
                                       0,
@@ -3138,8 +3228,8 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                           {getItemLabel(key)}
                                         </span>
                                         <span className="text-amber-600 font-mono">
-                                          {reserved > 0
-                                            ? `${reserved}/${needed} prs`
+                                          {dispatched > 0
+                                            ? `${dispatched}/${needed} prs`
                                             : `${item.cartonCount} ctn owed`}
                                           {scannableNow > 0 && (
                                             <span className="text-emerald-600">

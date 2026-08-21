@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Search, Download, Package, RefreshCw, ChevronDown, ChevronRight,
   AlertCircle, Filter, TrendingDown, AlertTriangle, CheckCircle2,
-  XCircle, BarChart3, IndianRupee,
+  XCircle, BarChart3, IndianRupee, Lock, ShoppingCart,
 } from "lucide-react";
 import { apiFetch } from "../../services/api";
 import Pagination from "../ui/Pagination";
@@ -18,9 +18,9 @@ interface Variant {
   sizeRange: string;
   mrp: number;
   costPrice: number;
-  listingStatus: string;
-  // Effective stage (variant's own override, falling back to its article's).
-  stage: "AVAILABLE" | "PREORDER";
+  // Still-incoming pairs (PO planned − GRN received) — used with totalStock
+  // to classify RFD/Pre-Order below; never a stored field.
+  poPendingPairs: number;
   sizeQuantities: Record<string, number>;
   sizeStock: Record<string, SizeCell>;
   totalStock: number;
@@ -39,7 +39,16 @@ interface StockRow {
 }
 
 type StockFilter = "ALL" | "IN_STOCK" | "LOW" | "OUT";
-type StageFilter = "ALL" | "AVAILABLE" | "PREORDER";
+type StageFilter = "ALL" | "RFD" | "PREORDER";
+
+// Classifies a variant the same way the rest of the app does: live stock
+// (totalStock) > 0 is RFD; 0 stock with a pending PO is PREORDER; otherwise
+// it's not orderable at all.
+function classifyVariant(v: Variant): "RFD" | "PREORDER" | "NONE" {
+  if (v.totalStock > 0) return "RFD";
+  if (v.poPendingPairs > 0) return "PREORDER";
+  return "NONE";
+}
 
 const LOW_STOCK_THRESHOLD = 20;
 
@@ -83,7 +92,7 @@ function applyStageFilter(rows: StockRow[], stage: StageFilter): StockRow[] {
   if (stage === "ALL") return rows;
   return rows
     .map(r => {
-      const variants = r.variants.filter(v => v.stage === stage);
+      const variants = r.variants.filter(v => classifyVariant(v) === stage);
       if (variants.length === 0) return null;
       return {
         ...r,
@@ -207,6 +216,7 @@ const StockReport: React.FC = () => {
     const totalArticles = staged.length;
     let totalPairs = 0;
     let totalBookedPairs = 0;
+    let totalPoPendingPairs = 0;
     let totalVariants = 0;
     let outCount = 0;
     let lowCount = 0;
@@ -221,15 +231,25 @@ const StockReport: React.FC = () => {
       r.variants.forEach(v => {
         totalValue += (v.totalStock || 0) * (v.mrp || 0);
         totalBookedPairs += v.booked || 0;
+        totalPoPendingPairs += v.poPendingPairs || 0;
       });
     });
 
-    return { totalArticles, totalCartons: toCtn(totalPairs), totalBookedCartons: toCtn(totalBookedPairs), totalVariants, outCount, lowCount, totalValue };
+    return {
+      totalArticles,
+      totalCartons: toCtn(totalPairs),
+      totalBookedCartons: toCtn(totalBookedPairs),
+      totalPoPendingCartons: toCtn(totalPoPendingPairs),
+      totalVariants,
+      outCount,
+      lowCount,
+      totalValue,
+    };
   }, [globalRows, stageFilter]);
 
   const exportCsv = () => {
     // Exports the FULL dataset (allFilteredRows), not just the current page.
-    const lines = ["Article,SKU,Category,Brand,Company,Variant,Color,Size Range,Stage,MRP,Cost,Stock Health,Total Stock (CTN),Booked (CTN),Stock by Size (pairs)"];
+    const lines = ["Article,SKU,Category,Brand,Company,Variant,Color,Size Range,Stage,MRP,Cost,Stock Health,Total Stock (CTN),Booked (CTN),PO Pending (CTN),Stock by Size (pairs)"];
     allFilteredRows.forEach(r => {
       r.variants.forEach(v => {
         const sizes = Object.entries(v.sizeStock || {})
@@ -237,10 +257,12 @@ const StockReport: React.FC = () => {
           .map(([s, c]) => `${s}:${c.qty}`)
           .join(" ");
         const health = getStockHealth(v.totalStock);
-        const stageLabel = v.stage === "PREORDER" ? "Pre-Order" : "RFD";
-        lines.push(`"${r.articleName}","${v.sku || ""}","${r.category}","${r.brand}","${r.company}","${v.itemName}","${v.color}","${v.sizeRange}","${stageLabel}",${v.mrp},${v.costPrice || 0},"${health}",${toCtn(v.totalStock)},${toCtn(v.booked)},"${sizes}"`);
+        const cls = classifyVariant(v);
+        const stageLabel = cls === "PREORDER" ? "Pre-Order" : cls === "RFD" ? "RFD" : "Unavailable";
+        lines.push(`"${r.articleName}","${v.sku || ""}","${r.category}","${r.brand}","${r.company}","${v.itemName}","${v.color}","${v.sizeRange}","${stageLabel}",${v.mrp},${v.costPrice || 0},"${health}",${toCtn(v.totalStock)},${toCtn(v.booked)},${toCtn(v.poPendingPairs)},"${sizes}"`);
       });
     });
+    lines.push(`"TOTAL","","","","","","","",,,,,${stats.totalCartons},${stats.totalBookedCartons},${stats.totalPoPendingCartons},`);
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -271,6 +293,7 @@ const StockReport: React.FC = () => {
     allFilteredRows.forEach((r) => {
       r.variants.forEach((v) => {
         const health = getStockHealth(v.totalStock);
+        const cls = classifyVariant(v);
         body.push([
           r.articleName,
           v.sku || "",
@@ -280,7 +303,7 @@ const StockReport: React.FC = () => {
           v.itemName,
           v.color,
           v.sizeRange,
-          v.stage === "PREORDER" ? "Pre-Order" : "RFD",
+          cls === "PREORDER" ? "Pre-Order" : cls === "RFD" ? "RFD" : "Unavailable",
           // jsPDF's built-in "helvetica" font has no ₹ glyph — it renders as
           // a garbled superscript character. "Rs." is plain ASCII and always safe.
           `Rs. ${(v.mrp || 0).toLocaleString()}`,
@@ -288,6 +311,7 @@ const StockReport: React.FC = () => {
           health.replace("_", " "),
           toCtn(v.totalStock),
           toCtn(v.booked),
+          toCtn(v.poPendingPairs),
         ]);
       });
     });
@@ -297,13 +321,14 @@ const StockReport: React.FC = () => {
       margin: { left: margin, right: margin },
       styles: { fontSize: 7.5, cellPadding: 4 },
       headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold" },
-      head: [["Article", "SKU", "Category", "Brand", "Company", "Variant", "Color", "Size Range", "Stage", "MRP", "Cost", "Health", "Stock (CTN)", "Booked (CTN)"]],
+      head: [["Article", "SKU", "Category", "Brand", "Company", "Variant", "Color", "Size Range", "Stage", "MRP", "Cost", "Health", "Stock (CTN)", "Booked (CTN)", "PO Pending (CTN)"]],
       body,
-      columnStyles: { 12: { halign: "right", fontStyle: "bold" }, 13: { halign: "right", fontStyle: "bold" } },
+      columnStyles: { 12: { halign: "right", fontStyle: "bold" }, 13: { halign: "right", fontStyle: "bold" }, 14: { halign: "right", fontStyle: "bold" } },
       foot: [[
         { content: "Total", colSpan: 12, styles: { halign: "right", fontStyle: "bold" } },
         { content: stats.totalCartons.toString(), styles: { halign: "right", fontStyle: "bold" } },
         { content: stats.totalBookedCartons.toString(), styles: { halign: "right", fontStyle: "bold" } },
+        { content: stats.totalPoPendingCartons.toString(), styles: { halign: "right", fontStyle: "bold" } },
       ]],
       showFoot: "lastPage",
     });
@@ -334,12 +359,16 @@ const StockReport: React.FC = () => {
         </div>
       </div>
 
-      {/* KPI Summary Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      {/* KPI Summary Bar — Booked/PO Pending use the exact same per-variant
+          sources (booked-map for RFD, getPreBookedQtyMap for Pre-Order) as
+          the table rows below, so this bar always tallies with them. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
         {[
           { label: "Articles",       value: stats.totalArticles.toLocaleString(),            icon: <Package size={14} />,     color: "text-indigo-600",  bg: "bg-indigo-50" },
           { label: "Variants",       value: stats.totalVariants.toLocaleString(),            icon: <Package size={14} />,     color: "text-blue-600",    bg: "bg-blue-50" },
           { label: "Total CTN",      value: stats.totalCartons.toLocaleString(),             icon: <BarChart3 size={14} />,   color: "text-emerald-600", bg: "bg-emerald-50" },
+          { label: "Booked",         value: stats.totalBookedCartons.toLocaleString(),        icon: <Lock size={14} />,        color: "text-amber-600",  bg: "bg-amber-50" },
+          { label: "PO Pending",     value: stats.totalPoPendingCartons.toLocaleString(),     icon: <ShoppingCart size={14} />, color: "text-violet-600", bg: "bg-violet-50" },
           { label: "Stock Value",    value: `₹${(stats.totalValue/100000).toFixed(1)}L`,    icon: <IndianRupee size={14} />, color: "text-teal-600",    bg: "bg-teal-50" },
           { label: "Out of Stock",   value: stats.outCount.toLocaleString(),                 icon: <TrendingDown size={14} />, color: "text-rose-600",   bg: "bg-rose-50" },
         ].map(s => (
@@ -370,8 +399,8 @@ const StockReport: React.FC = () => {
         <div className="flex items-center gap-2 ml-auto">
           {/* RFD / Pre-Order filter tabs — per-variant, same convention as Master Stock */}
           <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
-            {(["ALL", "AVAILABLE", "PREORDER"] as StageFilter[]).map(f => {
-              const labels: Record<string, string> = { ALL: "All", AVAILABLE: "RFD", PREORDER: "Pre-Order" };
+            {(["ALL", "RFD", "PREORDER"] as StageFilter[]).map(f => {
+              const labels: Record<string, string> = { ALL: "All", RFD: "RFD", PREORDER: "Pre-Order" };
               const active = stageFilter === f;
               return (
                 <button
@@ -433,7 +462,7 @@ const StockReport: React.FC = () => {
         ) : filteredRows.length === 0 ? (
           <div className="text-center py-20 text-slate-400">
             {stageFilter !== "ALL"
-              ? `No ${stageFilter === "AVAILABLE" ? "RFD" : "Pre-Order"} variants match the current filters`
+              ? `No ${stageFilter === "RFD" ? "RFD" : "Pre-Order"} variants match the current filters`
               : stockFilter !== "ALL"
               ? `No articles with "${stockFilter.toLowerCase().replace("_", " ")}" status`
               : "No stock data found"}
@@ -505,6 +534,7 @@ const StockReport: React.FC = () => {
                                   <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Health</th>
                                   <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Stock (ctn)</th>
                                   <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Booked (ctn)</th>
+                                  <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">PO Pending (ctn)</th>
                                   <th className="px-3 py-2.5 text-right font-bold text-slate-400 uppercase tracking-wider text-[10px]">Value</th>
                                   <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Size Breakdown (pairs)</th>
                                 </tr>
@@ -520,11 +550,13 @@ const StockReport: React.FC = () => {
                                         <div className="flex items-center gap-1.5 flex-wrap">
                                           <p className="font-semibold text-slate-700">{v.itemName}</p>
                                           <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border ${
-                                            v.stage === "PREORDER"
+                                            classifyVariant(v) === "PREORDER"
                                               ? "bg-amber-50 text-amber-600 border-amber-200"
-                                              : "bg-emerald-50 text-emerald-600 border-emerald-200"
+                                              : classifyVariant(v) === "RFD"
+                                              ? "bg-emerald-50 text-emerald-600 border-emerald-200"
+                                              : "bg-slate-100 text-slate-500 border-slate-200"
                                           }`}>
-                                            {v.stage === "PREORDER" ? "Pre-Order" : "RFD"}
+                                            {classifyVariant(v) === "PREORDER" ? "Pre-Order" : classifyVariant(v) === "RFD" ? "RFD" : "Unavailable"}
                                           </span>
                                         </div>
                                         <p className="text-slate-400 mt-0.5 flex items-center gap-1">
@@ -547,6 +579,7 @@ const StockReport: React.FC = () => {
                                       </td>
                                       <td className="px-3 py-2.5 text-right font-black text-emerald-700">{toCtn(v.totalStock).toLocaleString()}</td>
                                       <td className="px-3 py-2.5 text-right font-black text-amber-600">{toCtn(v.booked).toLocaleString()}</td>
+                                      <td className="px-3 py-2.5 text-right font-black text-violet-600">{toCtn(v.poPendingPairs).toLocaleString()}</td>
                                       <td className="px-3 py-2.5 text-right font-bold text-teal-600">₹{variantValue.toLocaleString()}</td>
                                       <td className="px-3 py-2.5">
                                         <div className="flex flex-wrap gap-x-3 gap-y-1">

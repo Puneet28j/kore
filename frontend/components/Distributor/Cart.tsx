@@ -16,6 +16,7 @@ import {
 import TermsModal from "./TermsModal";
 import { User, Article, Assortment } from "../../types";
 import { getImageUrl } from "../../utils/imageUtils";
+import { getVariantAvailability } from "../../utils/catalogAvailability";
 
 // utility to expand a range like "5-7" into ["5","6","7"]
 const parseSizeRange = (range: string): string[] => {
@@ -29,11 +30,11 @@ const parseSizeRange = (range: string): string[] => {
 };
 
 // Mirrors Shop.tsx maxCartonsFromStock — computes the hard cap for both
-// AVAILABLE (from live sizeMap stock) and PREORDER (from PO plannedPairs)
+// RFD (from live sizeMap stock) and PREORDER (from PO plannedPairs)
 // variants. Returns 0 if no stock/PO data exists.
 const getMaxCartonsForVariant = (variant: any): number => {
   if (!variant) return 0;
-  const isPreOrder = variant.stage === "PREORDER";
+  const isPreOrder = getVariantAvailability(variant) === "PREORDER";
   const breakdown = variant.sizeQuantities || {};
   const totalPairsPerCarton = Object.values(breakdown).reduce(
     (a: number, b: any) => a + (Number(b) || 0), 0
@@ -113,21 +114,24 @@ const Cart: React.FC<CartProps> = ({
 
   const availableCredit = currentUser?.availableCredit ?? 0;
 
-  // Effective stage for the SPECIFIC variant in the cart item, not just the
-  // parent article — a variant can have arrived (its own GRN) while the
-  // article as a whole is still PREORDER because a sibling variant hasn't.
-  // Must match the same split App.tsx's placeOrder uses, otherwise this UI
-  // can show/gate differently than what actually gets booked.
+  // Computed availability for the SPECIFIC variant in the cart item, not
+  // just the parent article — a variant can have live stock while a sibling
+  // variant on the same article doesn't. Must match the same split App.tsx's
+  // placeOrder uses, otherwise this UI can show/gate differently than what
+  // actually gets booked. A cart item can drift to "NONE" between add-to-cart
+  // and checkout (e.g. its stock got claimed by another order) — the backend
+  // hard-rejects those at createOrder, so surface + block them here too.
   const getItemStage = (item: typeof cart[0]) => {
     const art = articles.find(a => a.id === item.articleId);
     const variant = art?.variants?.find(
       v => v.id === item.variantId || (v as any)._id === item.variantId
     );
-    return variant?.stage || art?.status;
+    return variant ? getVariantAvailability(variant) : "NONE";
   };
 
-  const availableItems = cart.filter(i => getItemStage(i) === "AVAILABLE");
-  const wishlistItems = cart.filter(i => getItemStage(i) !== "AVAILABLE");
+  const availableItems = cart.filter(i => getItemStage(i) === "RFD");
+  const wishlistItems = cart.filter(i => getItemStage(i) === "PREORDER");
+  const unavailableItems = cart.filter(i => getItemStage(i) === "NONE");
 
   // Credit limit only applies to REGULAR (available-stock) items — pre-orders
   // aren't a stock commitment yet, backend skips the credit check for them
@@ -156,7 +160,7 @@ const Cart: React.FC<CartProps> = ({
     // Stock cap — mirrors Shop.tsx logic
     const maxCartons = getMaxCartonsForVariant(variant);
     const atStockMax = isFinite(maxCartons) && item.cartonCount >= maxCartons;
-    const isPreOrder = (variant?.stage || article.status) === "PREORDER";
+    const isPreOrder = variant != null && getVariantAvailability(variant) === "PREORDER";
 
     // Show discounted price per item (discount applied once in summary, so show it here too for clarity)
     const itemDiscountedPrice = item.price * (1 - discountPercentage / 100);
@@ -325,6 +329,27 @@ const Cart: React.FC<CartProps> = ({
               </div>
             )}
 
+            {/* Unavailable items — no stock and no pending PO, must be removed to check out */}
+            {unavailableItems.length > 0 && (
+              <div className="bg-white rounded-2xl border border-rose-200 overflow-hidden shadow-sm">
+                <div className="px-5 py-3 border-b border-rose-100 bg-rose-50/40 flex items-center justify-between">
+                  <h3 className="text-xs font-bold text-rose-700 uppercase tracking-widest flex items-center gap-2">
+                    <AlertCircle size={14} className="text-rose-600" />
+                    Unavailable — Remove Before Checkout
+                  </h3>
+                </div>
+                <div className="divide-y divide-rose-50">
+                  {unavailableItems.map(renderItem)}
+                </div>
+                <div className="px-5 py-2.5 bg-rose-50/50 border-t border-rose-100">
+                  <p className="text-[10px] text-rose-700/70 font-medium italic flex items-center gap-2">
+                    <Info size={12} />
+                    No stock and no pending purchase order for these items — remove them to place the order.
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="bg-indigo-50/50 border border-indigo-100 p-3 rounded-xl flex gap-3">
               <Info size={16} className="text-indigo-500 shrink-0 mt-0.5" />
               <p className="text-[10px] text-indigo-700 leading-relaxed font-medium">
@@ -465,7 +490,7 @@ const Cart: React.FC<CartProps> = ({
 
               <button
                 onClick={() => onCheckout(gstPercent)}
-                disabled={cart.length === 0 || isCreditExceeded || gstError || gstPercent < 0 || !termsAccepted}
+                disabled={cart.length === 0 || unavailableItems.length > 0 || isCreditExceeded || gstError || gstPercent < 0 || !termsAccepted}
                 className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-slate-100 transition-all active:scale-95 group disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Confirm Order

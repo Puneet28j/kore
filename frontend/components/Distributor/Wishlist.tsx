@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { Article, Inventory, Variant } from "../../types";
 import { getImageUrl } from "../../utils/imageUtils";
 import { masterCatalogService } from "../../services/masterCatalogService";
+import { getVariantAvailability } from "../../utils/catalogAvailability";
 
 // Grouping unit for the pre-order
 interface ColorGroup {
@@ -418,22 +419,6 @@ const PreOrderCard: React.FC<{
               )}
             </p>
           )}
-
-          <div className="bg-amber-50/50 rounded-2xl p-4 border border-amber-100 flex items-center gap-3">
-            <Clock size={16} className="text-amber-600 shrink-0" />
-            <div>
-              <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest leading-none mb-1">
-                Available From
-              </p>
-              <p className="text-sm font-black text-slate-900 tracking-tight">
-                {article.expectedDate ? new Date(article.expectedDate).toLocaleDateString('en-IN', {
-                  day: 'numeric',
-                  month: 'long',
-                  year: 'numeric'
-                }) : "Coming Soon"}
-              </p>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -466,8 +451,6 @@ const mapDocToArticle = (doc: any): Article => ({
   soleColor: doc.soleColor,
   productCategory: doc.categoryId?.name,
   brand: doc.brandId?.name,
-  status: doc.stage || "PREORDER",
-  expectedDate: doc.expectedAvailableDate,
   selectedColors: doc.productColors || [],
   selectedSizes: doc.sizeRanges || [],
   variants: (doc.variants || []).map((v: any) => ({
@@ -490,8 +473,6 @@ const mapDocToArticle = (doc: any): Article => ({
     tag: v.tag,
     onlineMrp: v.onlineMrp,
     offlineMrp: v.offlineMrp,
-    stage: v.stage,
-    expectedAvailableDate: v.expectedAvailableDate,
     // PO-derived planned + already pre-booked pairs (backend-injected) —
     // caps how much can still be pre-booked.
     poPlannedQty: v.poPlannedQty || {},
@@ -525,7 +506,7 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlaceP
       const res = await masterCatalogService.listMasterItems({
         page: 1,
         limit: BATCH_SIZE,
-        stage: "PREORDER",
+        filter: "PREORDER",
         q: searchQuery || undefined,
         gender: genderFilter !== "ALL" ? genderFilter : undefined,
         sort: sortOption,
@@ -556,7 +537,7 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlaceP
       const res = await masterCatalogService.listMasterItems({
         page: nextPage,
         limit: BATCH_SIZE,
-        stage: "PREORDER",
+        filter: "PREORDER",
         q: searchQuery || undefined,
         gender: genderFilter !== "ALL" ? genderFilter : undefined,
         sort: sortOption,
@@ -603,11 +584,12 @@ const PreOrder: React.FC<PreOrderProps> = ({ articles: initialArticles, onPlaceP
 
   const colorGroups = useMemo(() => {
     return backendArticles.flatMap((article) => {
-      // A variant that's already had its own GRN is genuinely in stock now —
-      // it belongs in Shop as a regular purchase, not here as a preorder.
-      // Only variants still effectively PREORDER stay on this page.
+      // A variant with live stock now is a regular purchase — it belongs in
+      // Shop, not here. Only variants still classified PREORDER (0 live
+      // stock, a pending PO) stay on this page; NONE (nothing pending
+      // either) has nothing to pre-order against.
       const variants = (article.variants || []).filter(
-        (v) => v.isActive !== false && (v.stage || article.status) !== "AVAILABLE"
+        (v) => v.isActive !== false && getVariantAvailability(v) === "PREORDER"
       );
       const groups: Record<string, Variant[]> = {};
       variants.forEach((v) => {

@@ -35,6 +35,7 @@ import { toast } from "sonner";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
 import { Article as ArticleType } from "../../types";
+import { getVariantAvailability } from "../../utils/catalogAvailability";
 
 interface MasterInventoryProps {
   inventory: Inventory[];
@@ -67,6 +68,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [lowStockThreshold, setLowStockThreshold] = useState(10);
+  const [sortOption, setSortOption] = useState<string>("name_asc");
 
   // Multi-step stock movement
   const [showModal, setShowModal] = useState(false);
@@ -92,7 +94,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     Record<string, number>
   >({});
 
-  const [stockTab, setStockTab] = useState<"RFD" | "PREORDER">("RFD");
+  const [stockTab, setStockTab] = useState<"ALL" | "RFD" | "PREORDER">("ALL");
 
   // ── Backend pagination state ─────────────────────────────────────────────
   const [localArticles, setLocalArticles] = useState<ArticleType[]>([]);
@@ -106,9 +108,6 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
 
   // Company-wide Available (not page-scoped)
   const [totalLivePairs, setTotalLivePairs] = useState(0);
-  // Company-wide expected/planned pairs for still-PREORDER variants — not
-  // real stock, shown only on the Pre-Order tab.
-  const [totalPlannedPairs, setTotalPlannedPairs] = useState(0);
   // Company-wide reserved/undispatched pairs for this tab's variants — same
   // getBookedQuantityMap formula as the per-row Booked column.
   const [totalBookedPairs, setTotalBookedPairs] = useState(0);
@@ -117,10 +116,28 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
 
   const fetchStockTotals = useCallback(async (stage?: string) => {
     try {
+      if (stage === "ALL") {
+        // "All" must tally exactly with the RFD and Pre-Order tabs — not a
+        // separately-computed figure — so every number here is built
+        // directly by summing (or taking) the two tabs' own numbers:
+        // Live Stock = RFD's Available, Booked = RFD's Booked + Pre-Order's
+        // Booked, PO Pending = RFD's PO Pending + Pre-Order's PO Pending.
+        const [rfdRes, preRes] = await Promise.all([
+          masterCatalogService.getStockTotals("RFD"),
+          masterCatalogService.getStockTotals("PREORDER"),
+        ]);
+        const rfd = rfdRes?.data || rfdRes || {};
+        const pre = preRes?.data || preRes || {};
+        setTotalLivePairs(Number(rfd.totalLivePairs) || 0);
+        setTotalPOPairs((Number(rfd.totalPoPendingPairs) || 0) + (Number(pre.totalPoPendingPairs) || 0));
+        const preBooked = Number(pre.totalPreOrderedPairs) || 0;
+        setTotalBookedPairs((Number(rfd.totalBookedPairs) || 0) + preBooked);
+        setTotalPreOrderedPairs(preBooked);
+        return;
+      }
       const res = await masterCatalogService.getStockTotals(stage);
       const data = res?.data || res || {};
       setTotalLivePairs(Number(data.totalLivePairs) || 0);
-      setTotalPlannedPairs(Number(data.totalPlannedPairs) || 0);
       setTotalPOPairs(Number(data.totalPoPendingPairs) || 0);
       setTotalBookedPairs(Number(data.totalBookedPairs) || 0);
       setTotalPreOrderedPairs(Number(data.totalPreOrderedPairs) || 0);
@@ -143,6 +160,15 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   // page on screen — mirrors the pattern used in StockReport.tsx.
   const [exporting, setExporting] = useState(false);
 
+  // Exact same numbers as the header stat cards — used for the export
+  // TOTAL row instead of re-summing exported rows, which draw booked pairs
+  // from a different backend source and would drift from what's on screen.
+  const getScreenTotalsCtn = () => ({
+    availableCtn: Math.floor((stockTab === "PREORDER" ? 0 : totalLivePairs) / 24),
+    bookedCtn: Math.floor((stockTab === "PREORDER" ? totalPreOrderedPairs : totalBookedPairs) / 24),
+    poPendingCtn: Math.floor(totalPOPairs / 24),
+  });
+
   const buildExportRows = async () => {
     const items: any[] = [];
     const exportLimit = 1000;
@@ -152,8 +178,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       const res = await masterCatalogService.listMasterItems({
         page,
         q: searchTerm.trim() || undefined,
-        stage: stageForTab,
+        filter: stockTab,
         limit: exportLimit,
+        sort: sortOption,
       });
       items.push(...(res.data || []));
       totalPages = Math.max(1, Number(res.meta?.totalPages) || 1);
@@ -166,30 +193,32 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     }[] = [];
 
     items.forEach((item) => {
-      // Same per-variant effective-stage filter as the on-screen table —
-      // a mixed article (some variants GRN-promoted, some not) must only
-      // export the variants relevant to the tab being exported.
-      const tabVariants = (item.variants || []).filter(
-        (v: any) => (v.stage || item.stage) === stageForTab
-      );
+      // Same per-variant computed classification as the on-screen table —
+      // a mixed article (some variants with stock, some still pending) must
+      // only export the variants relevant to the tab being exported. "ALL"
+      // exports every RFD/PreOrder variant — NONE (no stock, no pending PO)
+      // has nothing to report and is excluded so exports don't carry
+      // all-zero rows.
+      const tabVariants =
+        stockTab === "ALL"
+          ? (item.variants || []).filter(
+              (v: any) => getVariantAvailability(v) !== "NONE"
+            )
+          : (item.variants || []).filter(
+              (v: any) => getVariantAvailability(v) === stockTab
+            );
       tabVariants.forEach((v: any) => {
         const sizeMap: Record<string, any> = v.sizeMap || {};
         const livePairs: number = Object.values(sizeMap).reduce(
           (s: number, c: any) => s + (Number(c?.qty) || 0), 0
         );
-        // Pre-Order tab — PO-derived planned pairs, not real stock.
-        const poPlanned: Record<string, any> = v.poPlannedQty || {};
-        const plannedPairs: number = Number(v.plannedPairs) ||
-          Object.values(poPlanned).reduce(
-            (s: number, q: any) => s + (Number(q) || 0), 0
-          );
         // PO Pending comes injected per variant from the list API (PO
         // planned − GRN received) — same source as the on-screen table.
         const poPairs = Number(v.poPendingPairs) || 0;
-        const bookedPairs =
-          stockTab === "RFD"
-            ? (bookedPairsPerVariant[v._id] ?? 0)
-            : (Number(v.preBookedPairs) || 0);
+        const isRfdVariant = getVariantAvailability(v) === "RFD";
+        const bookedPairs = isRfdVariant
+          ? (bookedPairsPerVariant[v._id] ?? 0)
+          : (Number(v.preBookedPairs) || 0);
 
         rows.push({
           article: item.articleName,
@@ -200,7 +229,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           color: v.color || "",
           sizeRange: v.sizeRange || "",
           mrp: v.mrp || 0,
-          availableCtn: Math.floor((stageForTab === "AVAILABLE" ? livePairs : plannedPairs) / 24),
+          availableCtn: Math.floor(livePairs / 24),
           bookedCtn: Math.floor(bookedPairs / 24),
           poPendingCtn: Math.floor(poPairs / 24),
         });
@@ -214,11 +243,15 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     setExporting(true);
     try {
       const rows = await buildExportRows();
-      const qtyLabel = stageForTab === "AVAILABLE" ? "Available (CTN)" : "Planned (CTN)";
-      const lines = [`Article,SKU,Category,Brand,Variant,Color,Size Range,MRP,${qtyLabel},Booked (CTN),PO Pending (CTN)`];
+      const lines = ["Article,SKU,Category,Brand,Variant,Color,Size Range,MRP,Live Stock (CTN),Booked (CTN),PO Pending (CTN)"];
       rows.forEach((r) => {
         lines.push(`"${r.article}","${r.sku}","${r.category}","${r.brand}","${r.variant}","${r.color}","${r.sizeRange}",${r.mrp},${r.availableCtn},${r.bookedCtn},${r.poPendingCtn}`);
       });
+      // Same source as the on-screen summary cards — NOT a re-sum of the
+      // rows above, which draw booked pairs from a different backend map
+      // and would drift from what the header cards show.
+      const totals = getScreenTotalsCtn();
+      lines.push(`"TOTAL","","","","","","",,${totals.availableCtn},${totals.bookedCtn},${totals.poPendingCtn}`);
       const blob = new Blob([lines.join("\n")], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -247,7 +280,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       doc.setFontSize(9);
       doc.setFont("helvetica", "normal");
       doc.text(
-        `Generated ${new Date().toLocaleString("en-IN")} — ${stockTab === "RFD" ? "In Stock" : "Pre-Order"} — all in CTN`,
+        `Generated ${new Date().toLocaleString("en-IN")} — ${
+          stockTab === "ALL" ? "All" : stockTab === "RFD" ? "In Stock" : "Pre-Order"
+        } — all in CTN`,
         margin, 46
       );
 
@@ -258,13 +293,20 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
         r.availableCtn, r.bookedCtn, r.poPendingCtn,
       ]);
 
+      // Same source as the on-screen summary cards — NOT a re-sum of the
+      // rows above, which draw booked pairs from a different backend map
+      // and would drift from what the header cards show.
+      const totals = getScreenTotalsCtn();
+
       autoTable(doc, {
         startY: 58,
         margin: { left: margin, right: margin },
         styles: { fontSize: 7.5, cellPadding: 4 },
         headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold" },
-        head: [["Article", "SKU", "Category", "Brand", "Variant", "Color", "Size Range", "MRP", stageForTab === "AVAILABLE" ? "Available (CTN)" : "Planned (CTN)", "Booked (CTN)", "PO Pending (CTN)"]],
+        head: [["Article", "SKU", "Category", "Brand", "Variant", "Color", "Size Range", "MRP", "Live Stock (CTN)", "Booked (CTN)", "PO Pending (CTN)"]],
         body,
+        foot: [["TOTAL", "", "", "", "", "", "", "", totals.availableCtn, totals.bookedCtn, totals.poPendingCtn]],
+        footStyles: { fillColor: [241, 245, 249], textColor: [30, 41, 59], fontStyle: "bold" },
         columnStyles: {
           8: { halign: "right", fontStyle: "bold" },
           9: { halign: "right", fontStyle: "bold" },
@@ -280,7 +322,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     }
   };
 
-  const stageForTab = stockTab === "RFD" ? "AVAILABLE" : "PREORDER";
+  // Sent straight to the backend as `filter` — RFD/PREORDER are now computed
+  // there from live stock + PO-pending, not a stored stage value.
+  const stageForTab = stockTab;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -320,14 +364,15 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
 
   // ── Backend-paginated inventory fetch ──────────────────────────────────
   const fetchLocalInventory = useCallback(
-    async (page: number, limit: number, q: string, stage?: string) => {
+    async (page: number, limit: number, q: string, stage?: string, sort = sortOption) => {
       setPageLoading(true);
       try {
         const res = await masterCatalogService.listMasterItems({
           page,
           limit,
           q: q || undefined,
-          stage: stage || undefined,
+          filter: stage || undefined,
+          sort,
         });
         const mapped: ArticleType[] = (res.data || []).map((item: any) => {
           const normalizedVariants = (item.variants || []).map((v: any) => {
@@ -358,7 +403,6 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
             mrp: item.mrp,
             soleColor: item.soleColor,
-            status: item.stage,
             imageUrl: item.primaryImage?.url,
             colorMedia: item.colorMedia || [],
             variants: normalizedVariants,
@@ -377,16 +421,17 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     []
   );
 
-  // Fetch on page/pageSize/tab change
+  // Fetch on page/pageSize/tab/sort change
   useEffect(() => {
     fetchLocalInventory(
       currentPage,
       pageSize,
       debouncedSearch.current,
-      stageForTab
+      stageForTab,
+      sortOption
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize, stockTab]);
+  }, [currentPage, pageSize, stockTab, sortOption]);
 
   // Debounced search resets to page 1
   useEffect(() => {
@@ -394,7 +439,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     searchDebounceRef.current = setTimeout(() => {
       debouncedSearch.current = searchTerm.trim();
       setCurrentPage(1);
-      fetchLocalInventory(1, pageSize, searchTerm.trim(), stageForTab);
+      fetchLocalInventory(1, pageSize, searchTerm.trim(), stageForTab, sortOption);
     }, 400);
     return () => {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -506,7 +551,8 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   // here; manual Inward is blocked for pre-order variants, stock arrives via
   // GRN only). Shown as the "before" number in this modal's labels.
   const variantIsWishlist =
-    (selectedVariant?.stage || selectedArticle?.status) === "PREORDER";
+    selectedVariant != null &&
+    getVariantAvailability(selectedVariant) === "PREORDER";
   const selectedVariantPoPlanned: Record<string, any> =
     (selectedVariant as any)?.poPlannedQty || {};
   const variantPlanned = selectedVariant
@@ -541,6 +587,20 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
         <button
           onClick={() => {
+            setStockTab("ALL");
+            setCurrentPage(1);
+          }}
+          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
+            stockTab === "ALL"
+              ? "bg-slate-800 text-white shadow"
+              : "text-slate-600 hover:bg-slate-50"
+          }`}
+        >
+          <Database size={16} />
+          All
+        </button>
+        <button
+          onClick={() => {
             setStockTab("RFD");
             setCurrentPage(1);
           }}
@@ -570,20 +630,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       </div>
 
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="p-3 bg-indigo-50 rounded-xl">
-            <Database className="text-indigo-600" size={24} />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold text-slate-900">
-              Company Master Stock
-            </h3>
-            <p className="text-sm text-slate-500">
-              Track total physical warehouse inventory (Cartons)
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 w-full md:w-auto">
+        {/* <div className="flex flex-wrap gap-2 w-full md:w-auto"> */}
           <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg">
             <span className="text-[10px] font-bold text-slate-400 uppercase">
               Alert:
@@ -610,6 +657,15 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
+          <select
+            value={sortOption}
+            onChange={(e) => setSortOption(e.target.value)}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+          >
+            <option value="name_asc">Name: A to Z</option>
+            <option value="newest">Newest First</option>
+            <option value="oldest">Oldest First</option>
+          </select>
           <button
             onClick={exportMasterStockCsv}
             disabled={exporting}
@@ -644,54 +700,30 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           >
             <ArrowUpCircle size={16} /> {stockTab === 'PREORDER' ? 'Stock Inward' : 'Stock Movement'}
           </button> */}
-        </div>
+        {/* </div> */}
       </div>
 
-      {/* Stats Row */}
-      <div
-        className={`grid gap-4 ${
-          stockTab === "RFD" ? "grid-cols-3" : "grid-cols-3 max-w-3xl"
-        }`}
-      >
-        {/* PREORDER only — Total card (Planned + Booked) */}
-        {stockTab !== "RFD" && (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex items-center gap-4">
-            <div className="p-2.5 bg-slate-100 rounded-xl">
-              <Database size={20} className="text-slate-600" />
-            </div>
-            <div>
-              <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest">
-                Total
-              </p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl font-black text-slate-900">
-                  {Math.floor((totalPlannedPairs + totalPreOrderedPairs) / 24).toLocaleString()}
-                </span>
-                <span className="text-xs font-bold text-slate-400">Ctns</span>
-              </div>
-              <p className="text-[10px] text-slate-400 mt-0.5">
-                {(totalPlannedPairs + totalPreOrderedPairs).toLocaleString()} pairs planned + booked
-              </p>
-            </div>
-          </div>
-        )}
+      {/* Stats Row — same 3 cards, same layout, on all three tabs: Live
+          Stock, Booked, PO Pending. A PREORDER-classified variant has 0 live
+          stock by definition, so that card is always 0 on the Pre-Order
+          tab — shown anyway for a consistent, equally-spaced layout. */}
+      <div className="grid gap-4 grid-cols-3">
         <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm p-4 flex items-center gap-4">
           <div className="p-2.5 bg-emerald-50 rounded-xl">
             <TrendingUp size={20} className="text-emerald-600" />
           </div>
           <div>
             <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">
-              {stockTab === "RFD" ? "Available" : "Planned"}
+              Live Stock
             </p>
             <div className="flex items-baseline gap-1.5">
               <span className="text-2xl font-black text-slate-900">
-                {Math.floor((stockTab === "RFD" ? totalLivePairs : totalPlannedPairs) / 24).toLocaleString()}
+                {Math.floor((stockTab === "PREORDER" ? 0 : totalLivePairs) / 24).toLocaleString()}
               </span>
               <span className="text-xs font-bold text-slate-400">Ctns</span>
             </div>
             <p className="text-[10px] text-slate-400 mt-0.5">
-              {(stockTab === "RFD" ? totalLivePairs : totalPlannedPairs).toLocaleString()} pairs
-              {stockTab !== "RFD" && " — PO generated"}
+              {(stockTab === "PREORDER" ? 0 : totalLivePairs).toLocaleString()} pairs
             </p>
           </div>
         </div>
@@ -705,37 +737,35 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             </p>
             <div className="flex items-baseline gap-1.5">
               <span className="text-2xl font-black text-slate-900">
-                {Math.floor((stockTab === "RFD" ? totalBookedPairs : totalPreOrderedPairs) / 24).toLocaleString()}
+                {Math.floor((stockTab === "PREORDER" ? totalPreOrderedPairs : totalBookedPairs) / 24).toLocaleString()}
               </span>
               <span className="text-xs font-bold text-slate-400">Ctns</span>
             </div>
             <p className="text-[10px] text-slate-400 mt-0.5">
-              {(stockTab === "RFD" ? totalBookedPairs : totalPreOrderedPairs).toLocaleString()}{" "}
-              {stockTab === "RFD" ? "pairs reserved" : "pairs reserved by distributors"}
+              {(stockTab === "PREORDER" ? totalPreOrderedPairs : totalBookedPairs).toLocaleString()}{" "}
+              {stockTab === "PREORDER" ? "pairs reserved by distributors" : "pairs reserved"}
             </p>
           </div>
         </div>
-        {stockTab === "RFD" && (
-          <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm p-4 flex items-center gap-4">
-            <div className="p-2.5 bg-indigo-50 rounded-xl">
-              <ShoppingCart size={20} className="text-indigo-600" />
-            </div>
-            <div>
-              <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">
-                PO Pending
-              </p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl font-black text-slate-900">
-                  {Math.floor(totalPOPairs / 24).toLocaleString()}
-                </span>
-                <span className="text-xs font-bold text-slate-400">Ctns</span>
-              </div>
-              <p className="text-[10px] text-slate-400 mt-0.5">
-                {totalPOPairs.toLocaleString()} pairs incoming
-              </p>
-            </div>
+        <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm p-4 flex items-center gap-4">
+          <div className="p-2.5 bg-indigo-50 rounded-xl">
+            <ShoppingCart size={20} className="text-indigo-600" />
           </div>
-        )}
+          <div>
+            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">
+              PO Pending
+            </p>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-2xl font-black text-slate-900">
+                {Math.floor(totalPOPairs / 24).toLocaleString()}
+              </span>
+              <span className="text-xs font-bold text-slate-400">Ctns</span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              {totalPOPairs.toLocaleString()} pairs incoming
+            </p>
+          </div>
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -764,14 +794,21 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             const article = localArticles.find((a) => a.id === inv.articleId);
             if (!article) return null;
 
-            // Only variants whose OWN effective stage (its own GRN-driven
-            // override, falling back to the article's) matches this tab —
-            // a partially-received PREORDER article (some variants promoted
-            // via GRN, some not) shows up in BOTH tabs, each showing only
-            // the relevant subset of its variants.
-            const tabVariants = (article.variants || []).filter(
-              (v) => (v.stage || article.status) === stageForTab
-            );
+            // Only variants whose OWN computed availability (live stock vs.
+            // PO-pending) matches this tab — a partially-received article
+            // (some variants received via GRN, some not) shows up in BOTH
+            // tabs, each showing only the relevant subset of its variants.
+            // "ALL" shows every RFD/PreOrder variant — NONE (no stock, no
+            // pending PO) is excluded so the list doesn't carry dead,
+            // all-zero rows that don't tally with the summary cards above.
+            const tabVariants =
+              stockTab === "ALL"
+                ? (article.variants || []).filter(
+                    (v) => getVariantAvailability(v) !== "NONE"
+                  )
+                : (article.variants || []).filter(
+                    (v) => getVariantAvailability(v) === stockTab
+                  );
             if (tabVariants.length === 0) return null;
 
             const isExpanded = expandedIds.has(article.id);
@@ -788,19 +825,6 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
               0
             );
 
-            // Pre-Order tab only — PO-derived planned pairs, NOT real stock.
-            const articlePlannedPairs = tabVariants.reduce((sum, v) => {
-              const poPlanned: Record<string, any> =
-                (v as any).poPlannedQty || {};
-              const pairs: number =
-                Number((v as any).plannedPairs) ||
-                Object.values(poPlanned).reduce(
-                  (s: number, q: any) => s + (Number(q) || 0),
-                  0
-                );
-              return sum + pairs;
-            }, 0);
-
             // Sum of the same per-variant PO Pending shown in the expanded
             // rows — the summary always tallies with its own table.
             const articlePOPairs = tabVariants.reduce(
@@ -808,19 +832,22 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
               0
             );
 
+            // Per-variant, not per-tab — a mixed article on the "All" tab has
+            // both RFD rows (booked from the booked-map) and PreOrder rows
+            // (booked from preBookedPairs) side by side.
             const articleBookedPairs = tabVariants.reduce(
               (sum, v) =>
                 sum +
-                (stockTab === "RFD"
+                (getVariantAvailability(v) === "RFD"
                   ? (bookedPairsPerVariant[v.id] ?? bookedPairsPerVariant[(v as any)._id] ?? 0)
                   : (Number((v as any).preBookedPairs) || 0)),
               0
             );
 
             // Low-stock alerting only makes sense for real, sellable stock —
-            // a Pre-Order article legitimately has 0 live stock by design,
-            // that's not a "low stock" problem.
-            const isLowStock = stockTab === "RFD" && articleLivePairs < lowStockThreshold * 24;
+            // a Pre-Order-only article legitimately has 0 live stock by
+            // design, that's not a "low stock" problem.
+            const isLowStock = stockTab !== "PREORDER" && articleLivePairs < lowStockThreshold * 24;
 
             return (
               <div
@@ -864,22 +891,23 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                     </div>
                   </div>
 
-                  {/* Stock Summary Columns */}
+                  {/* Stock Summary Columns — same 3 columns on every tab:
+                      Live Stock, Booked, PO Pending. */}
                   <div className="hidden lg:flex items-center gap-6 mr-4">
                     <div className="text-center w-24 border-l border-slate-100 pl-4">
                       <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest mb-0.5">
-                        {stockTab === "RFD" ? "Available" : "Planned"}
+                        Live Stock
                       </p>
                       <div className="flex items-baseline justify-center gap-1">
                         <span className="text-xl font-black text-slate-900">
-                          {Math.floor((stockTab === "RFD" ? articleLivePairs : articlePlannedPairs) / 24)}
+                          {Math.floor(articleLivePairs / 24)}
                         </span>
                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
                           Ctns
                         </span>
                       </div>
                       <p className="text-[9px] text-slate-400 mt-0.5">
-                        {stockTab === "RFD" ? articleLivePairs : articlePlannedPairs} prs
+                        {articleLivePairs} prs
                       </p>
                     </div>
                     <div className="text-center w-24 border-l border-slate-100 pl-4">
@@ -898,24 +926,22 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                         {articleBookedPairs} prs
                       </p>
                     </div>
-                    {stockTab === "RFD" && (
-                      <div className="text-center w-24 border-l border-slate-100 pl-4">
-                        <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">
-                          PO Pending
-                        </p>
-                        <div className="flex items-baseline justify-center gap-1">
-                          <span className="text-xl font-black text-slate-900">
-                            {Math.floor(articlePOPairs / 24)}
-                          </span>
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
-                            Ctns
-                          </span>
-                        </div>
-                        <p className="text-[9px] text-slate-400 mt-0.5">
-                          {articlePOPairs} prs
-                        </p>
+                    <div className="text-center w-24 border-l border-slate-100 pl-4">
+                      <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">
+                        PO Pending
+                      </p>
+                      <div className="flex items-baseline justify-center gap-1">
+                        <span className="text-xl font-black text-slate-900">
+                          {Math.floor(articlePOPairs / 24)}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
+                          Ctns
+                        </span>
                       </div>
-                    )}
+                      <p className="text-[9px] text-slate-400 mt-0.5">
+                        {articlePOPairs} prs
+                      </p>
+                    </div>
                   </div>
 
                   {/* Actions */}
@@ -933,22 +959,18 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                   </div>
                 </div>
 
-                {/* Mobile Stats Row */}
-                <div
-                  className={`lg:hidden grid gap-1.5 px-4 pb-4 ${
-                    stockTab === "RFD" ? "grid-cols-3" : "grid-cols-2"
-                  }`}
-                >
+                {/* Mobile Stats Row — same 3 cards on every tab */}
+                <div className="lg:hidden grid gap-1.5 px-4 pb-4 grid-cols-3">
                   <div className="bg-emerald-50/50 p-2 rounded-xl text-center border border-emerald-100">
                     <p className="text-[8px] font-black text-emerald-600 uppercase tracking-tighter mb-0.5">
-                      {stockTab === "RFD" ? "Avail" : "Planned"}
+                      Live
                     </p>
                     <p className="text-sm font-black text-slate-900">
-                      {Math.floor((stockTab === "RFD" ? articleLivePairs : articlePlannedPairs) / 24)}{" "}
+                      {Math.floor(articleLivePairs / 24)}{" "}
                       <span className="text-[8px] text-slate-400">C</span>
                     </p>
                     <p className="text-[8px] text-slate-400">
-                      {stockTab === "RFD" ? articleLivePairs : articlePlannedPairs} prs
+                      {articleLivePairs} prs
                     </p>
                   </div>
                   <div className="bg-amber-50/50 p-2 rounded-xl text-center border border-amber-100">
@@ -963,20 +985,18 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                       {articleBookedPairs} prs
                     </p>
                   </div>
-                  {stockTab === "RFD" && (
-                    <div className="bg-indigo-50/50 p-2 rounded-xl text-center border border-indigo-100">
-                      <p className="text-[8px] font-black text-indigo-600 uppercase tracking-tighter mb-0.5">
-                        PO
-                      </p>
-                      <p className="text-sm font-black text-slate-900">
-                        {Math.floor(articlePOPairs / 24)}{" "}
-                        <span className="text-[8px] text-slate-400">C</span>
-                      </p>
-                      <p className="text-[8px] text-slate-400">
-                        {articlePOPairs} prs
-                      </p>
-                    </div>
-                  )}
+                  <div className="bg-indigo-50/50 p-2 rounded-xl text-center border border-indigo-100">
+                    <p className="text-[8px] font-black text-indigo-600 uppercase tracking-tighter mb-0.5">
+                      PO
+                    </p>
+                    <p className="text-sm font-black text-slate-900">
+                      {Math.floor(articlePOPairs / 24)}{" "}
+                      <span className="text-[8px] text-slate-400">C</span>
+                    </p>
+                    <p className="text-[8px] text-slate-400">
+                      {articlePOPairs} prs
+                    </p>
+                  </div>
                 </div>
 
                 {/* Variant Dropdown Content */}
@@ -998,16 +1018,14 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                 Color
                               </th>
                               <th className="px-6 py-3 text-[9px] font-black text-emerald-500 uppercase tracking-widest text-center">
-                                {stockTab === "RFD" ? "Available" : "Planned"}
+                                Live Stock
                               </th>
                               <th className="px-6 py-3 text-[9px] font-black text-amber-500 uppercase tracking-widest text-center">
                                 Booked
                               </th>
-                              {stockTab === "RFD" && (
-                                <th className="px-6 py-3 text-[9px] font-black text-indigo-500 uppercase tracking-widest text-center">
-                                  PO Pending
-                                </th>
-                              )}
+                              <th className="px-6 py-3 text-[9px] font-black text-indigo-500 uppercase tracking-widest text-center">
+                                PO Pending
+                              </th>
                               <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">
                                 Actions
                               </th>
@@ -1019,27 +1037,21 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                 variant.sizeMap || {}
                               ).reduce((sum, s) => sum + (s.qty || 0), 0);
                               const liveCtns = Math.floor(livePairs / 24);
-                              // Pre-Order tab only — PO-derived planned pairs, not real stock.
-                              const variantPoPlanned: Record<string, any> =
-                                (variant as any).poPlannedQty || {};
-                              const plannedPairs: number =
-                                Number((variant as any).plannedPairs) ||
-                                Object.values(variantPoPlanned).reduce(
-                                  (sum: number, q: any) => sum + (Number(q) || 0),
-                                  0
-                                );
-                              const plannedCtns = Math.floor(plannedPairs / 24);
                               // PO Pending — injected per variant by the list
                               // API (PO planned − GRN received).
                               const poPairs =
                                 Number((variant as any).poPendingPairs) || 0;
                               const poCtns = Math.floor(poPairs / 24);
-                              const bookedPairs =
-                                stockTab === "RFD"
-                                  ? (bookedPairsPerVariant[variant.id] ??
-                                      bookedPairsPerVariant[(variant as any)._id] ??
-                                      0)
-                                  : (Number((variant as any).preBookedPairs) || 0);
+                              // Per-variant, not per-tab — a mixed "All" view
+                              // needs each row's own classification, not the
+                              // page-level tab, to pick the right source.
+                              const isRfdVariant =
+                                getVariantAvailability(variant) === "RFD";
+                              const bookedPairs = isRfdVariant
+                                ? (bookedPairsPerVariant[variant.id] ??
+                                    bookedPairsPerVariant[(variant as any)._id] ??
+                                    0)
+                                : (Number((variant as any).preBookedPairs) || 0);
                               const bookedCtns = Math.floor(bookedPairs / 24);
 
                               return (
@@ -1113,13 +1125,13 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                   </td>
                                   <td className="px-6 py-3 text-center">
                                     <span className="text-sm font-black text-emerald-600">
-                                      {stockTab === "RFD" ? liveCtns : plannedCtns}
+                                      {liveCtns}
                                     </span>
                                     <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">
                                       Cartons
                                     </p>
                                     <p className="text-[8px] text-slate-300">
-                                      {stockTab === "RFD" ? livePairs : plannedPairs} prs
+                                      {livePairs} prs
                                     </p>
                                   </td>
                                   <td className="px-6 py-3 text-center">
@@ -1133,22 +1145,20 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                       {bookedPairs} prs
                                     </p>
                                   </td>
-                                  {stockTab === "RFD" && (
-                                    <td className="px-6 py-3 text-center">
-                                      <span className="text-sm font-black text-indigo-600">
-                                        {poCtns}
-                                      </span>
-                                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">
-                                        Cartons
-                                      </p>
-                                      <p className="text-[8px] text-slate-300">
-                                        {poPairs} prs
-                                      </p>
-                                    </td>
-                                  )}
+                                  <td className="px-6 py-3 text-center">
+                                    <span className="text-sm font-black text-indigo-600">
+                                      {poCtns}
+                                    </span>
+                                    <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">
+                                      Cartons
+                                    </p>
+                                    <p className="text-[8px] text-slate-300">
+                                      {poPairs} prs
+                                    </p>
+                                  </td>
                                   <td className="px-6 py-3">
                                     <div className="flex justify-end items-center gap-2">
-                                      {stockTab === "RFD" && (
+                                      {isRfdVariant && (
                                         <button
                                           onClick={() =>
                                             openMovementModal(
@@ -1162,7 +1172,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                           <Minus size={12} /> Outward
                                         </button>
                                       )}
-                                      {stockTab === "RFD" ? (
+                                      {isRfdVariant ? (
                                         <button
                                           onClick={() =>
                                             openMovementModal(
@@ -1456,7 +1466,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                           const livePairs = Object.values(
                             v.sizeMap || {}
                           ).reduce((s, c: any) => s + (c?.qty || 0), 0);
-                          const isWishlist = (v.stage || selectedArticle?.status) === "PREORDER";
+                          const isWishlist = getVariantAvailability(v) === "PREORDER";
                           const vPoPlanned: Record<string, any> =
                             (v as any).poPlannedQty || {};
                           const plannedPairs: number =

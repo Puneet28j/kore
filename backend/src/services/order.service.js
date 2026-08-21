@@ -120,44 +120,129 @@ const adjustVariantStock = async (items, sign) => {
 
 // How many whole cartons of an order item are backed by REAL stock right
 // now. A REGULAR item is always fully backed (stock deducted in full at
-// booking) — this simply returns its cartonCount. A still-PREORDER item may
-// have received PARTIAL stock via one or more GRNs (see promotePreOrderItems)
-// — preorderReservedSizeQuantities holds exactly what's been claimed so far,
-// per size. Cartons are a fixed assortment (sizeQuantities[size] / cartonCount
-// pairs of each size per carton), so the number of WHOLE cartons the current
-// reservation can cover is the floor of reserved÷per-carton-need, taken as
-// the minimum across sizes (a carton needs every size filled to be complete).
-// This lets a partially-arrived pre-order dispatch what's physically here
-// without waiting for the rest — same principle as a REGULAR order's
-// existing PARTIAL-status dispatch.
-const computeReservedCartons = (item) => {
+// booking) — this simply returns its cartonCount. A still-PREORDER item's
+// backing is now a SHARED, live pool: every waiting pre-order for the same
+// variant sees the same available cartons (no per-order exclusive claim
+// anymore — see promotePreOrderItems), and it's only at actual scan time
+// that one specific carton gets claimed by whichever order's operator
+// scanned it first (see scanCarton). So "reserved" here = already-scanned-
+// by-me + however many are CURRENTLY sitting free in the shared pool,
+// capped at what this item still needs. `liveAvailableOverride` lets a
+// caller that already has the fresh pool count (e.g. scanCarton, mid
+// atomic-claim) pass it directly instead of relying on the read-time
+// snapshot attached by attachLiveCartonAvailability.
+const computeReservedCartons = (item, liveAvailableOverride) => {
   if (item.bookingType !== "PREORDER") return item.cartonCount || 0;
 
   const cartonCount = item.cartonCount || 0;
   if (cartonCount <= 0) return 0;
 
-  const sizeQuantities =
-    item.sizeQuantities instanceof Map
-      ? Object.fromEntries(item.sizeQuantities)
-      : item.sizeQuantities || {};
-  const reserved =
-    item.preorderReservedSizeQuantities instanceof Map
-      ? Object.fromEntries(item.preorderReservedSizeQuantities)
-      : item.preorderReservedSizeQuantities || {};
+  const fulfilled = item.fulfilledCartonCount || 0;
+  const liveAvailable =
+    liveAvailableOverride !== undefined
+      ? liveAvailableOverride
+      : (item.liveAvailableCartonCodes || []).length;
 
-  let minCartons = Infinity;
-  let hasSize = false;
-  for (const [size, totalQty] of Object.entries(sizeQuantities)) {
-    const perCartonNeed = Number(totalQty || 0) / cartonCount;
-    if (perCartonNeed <= 0) continue;
-    hasSize = true;
-    const reservedQty = Number(reserved[size] || 0);
-    // Small epsilon guards against floating-point division landing just
-    // under a whole number (e.g. 5.999999999 instead of 6).
-    minCartons = Math.min(minCartons, Math.floor(reservedQty / perCartonNeed + 1e-9));
+  return Math.min(cartonCount, fulfilled + Math.max(0, liveAvailable));
+};
+
+// Attaches a live, transient (never persisted) snapshot of each still-
+// PREORDER item's variant's currently-available carton barcodes — capped at
+// however many more that item still needs. This is what lets every waiting
+// pre-order for the same variant see the SAME shared cartons at once on the
+// Scan screen; nothing is "owned" until scanCarton's atomic $pull actually
+// claims one. Mutates `orders` in place (accepts a single lean order object
+// or an array of them) and also returns it for convenience.
+const attachLiveCartonAvailability = async (orders) => {
+  const list = Array.isArray(orders) ? orders : [orders];
+  const variantIds = new Set();
+  list.forEach((o) => {
+    (o?.items || []).forEach((item) => {
+      if (item.bookingType === "PREORDER" && item.variantId) {
+        variantIds.add(String(item.variantId));
+      }
+    });
+  });
+  if (!variantIds.size) return orders;
+
+  const catalogs = await MasterCatalog.find({
+    "variants._id": { $in: [...variantIds] },
+  })
+    .select("variants._id variants.availableCartons")
+    .lean();
+
+  const poolByVariant = {};
+  catalogs.forEach((c) => {
+    (c.variants || []).forEach((v) => {
+      const vid = String(v._id);
+      if (variantIds.has(vid)) poolByVariant[vid] = v.availableCartons || [];
+    });
+  });
+
+  list.forEach((o) => {
+    (o?.items || []).forEach((item) => {
+      if (item.bookingType !== "PREORDER" || !item.variantId) return;
+      const pool = poolByVariant[String(item.variantId)] || [];
+      const stillNeeded = Math.max(
+        0,
+        (item.cartonCount || 0) - (item.fulfilledCartonCount || 0)
+      );
+      item.liveAvailableCartonCodes = pool.slice(0, stillNeeded);
+    });
+  });
+
+  return orders;
+};
+
+// Tops up REGULAR items that are short on allocatedCartons for one of
+// `variantIds` — this happens when an item was booked (deducting sizeMap.qty
+// immediately, as REGULAR items always do) at a moment when the carton-
+// barcode pool (variant.availableCartons) was empty or smaller than needed;
+// allocateCartonsToItem is a no-op in that case and, unlike still-PREORDER
+// items, nothing ever retries it once new cartons land via GRN — so the item
+// stays stuck showing "owed" with no barcode to actually scan. Called
+// alongside promotePreOrderItems after every GRN. Oldest-active-order-first,
+// exclusive (REGULAR stock is committed at booking, not shared).
+const backfillRegularCartonAllocations = async (variantIds) => {
+  const idStrs = [...new Set((variantIds || []).map(String))];
+  if (!idStrs.length) return [];
+
+  const candidates = await Order.find({
+    status: { $nin: ["RECEIVED", "CANCELLED"] },
+    items: { $elemMatch: { variantId: { $in: idStrs }, bookingType: "REGULAR" } },
+  }).sort({ createdAt: 1 });
+  if (!candidates.length) return [];
+
+  const updatedOrders = [];
+  for (const order of candidates) {
+    let orderChanged = false;
+
+    for (const item of order.items) {
+      if (item.bookingType !== "REGULAR") continue;
+      if (!item.variantId || !idStrs.includes(String(item.variantId))) continue;
+      const shortBy = (item.cartonCount || 0) - (item.allocatedCartons || []).length;
+      if (shortBy <= 0) continue;
+
+      const catalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
+      const variant = catalog?.variants?.id(item.variantId);
+      const pool = variant?.availableCartons || [];
+      if (!pool.length) continue;
+
+      const newCodes = pool.slice(0, shortBy);
+      item.allocatedCartons = [...(item.allocatedCartons || []), ...newCodes];
+      variant.availableCartons = pool.slice(newCodes.length);
+      catalog.markModified("variants");
+      await catalog.save();
+      orderChanged = true;
+    }
+
+    if (!orderChanged) continue;
+    order.markModified("items");
+    await order.save();
+    updatedOrders.push(order);
   }
-  if (!hasSize) return 0;
-  return minCartons === Infinity ? 0 : Math.max(0, minCartons);
+
+  return updatedOrders;
 };
 
 const generateNextReturnNumber = async () => {
@@ -235,22 +320,33 @@ const createOrder = async (distributorId, orderData) => {
       return sanitized;
     });
 
-    // Resolve each item's bookingType server-side from the variant's
-    // CURRENT effective stage — never trust a client-supplied flag. A cart
-    // can freely mix RFD and pre-order items; they end up in ONE order here,
-    // distinguished per-item so RFD items are dispatchable immediately while
-    // pre-order items wait (see scanCarton / promotePreOrderItems).
+    // Resolve each item's bookingType server-side from the variant's CURRENT
+    // live stock + PO-pending status — never trust a client-supplied flag. A
+    // cart can freely mix RFD and pre-order items; they end up in ONE order
+    // here, distinguished per-item so RFD items are dispatchable immediately
+    // while pre-order items wait (see scanCarton / promotePreOrderItems).
+    const masterCatalogService = require("./masterCatalogService");
     const articleIdsForStage = [
       ...new Set(sanitizedItems.map((i) => String(i.articleId)).filter(Boolean)),
     ];
     const catalogsForStage = articleIdsForStage.length
       ? await MasterCatalog.find({ _id: { $in: articleIdsForStage }, isDeleted: false })
-          .select("articleName primaryImage colorMedia stage variants")
+          .select("articleName primaryImage colorMedia variants")
           .lean()
       : [];
     const catalogById = new Map(
       catalogsForStage.map((cat) => [String(cat._id), cat])
     );
+
+    // Fetched once here and reused below for the pre-order PO cap check too.
+    const [plannedMap, grnReceivedMap] = articleIdsForStage.length
+      ? await Promise.all([
+          masterCatalogService.getPoPlannedQtyMap(articleIdsForStage),
+          masterCatalogService.getGrnReceivedQtyMap(),
+        ])
+      : [{ bySize: {}, totals: {} }, { totals: {} }];
+
+    const unavailableItemNames = [];
     sanitizedItems.forEach((item) => {
       const catalog = catalogById.get(String(item.articleId));
       const variant = catalog?.variants?.find(
@@ -268,11 +364,26 @@ const createOrder = async (distributorId, orderData) => {
       }
 
       item.productSnapshot = buildProductSnapshot(catalog, variant);
-      item.bookingType =
-        (variant.stage || catalog.stage) === "PREORDER"
-          ? "PREORDER"
-          : "REGULAR";
+      const variantKey = String(item.variantId);
+      const poPending = Math.max(
+        0,
+        (plannedMap.totals[variantKey] || 0) - (grnReceivedMap.totals[variantKey] || 0)
+      );
+      const classification = masterCatalogService.classifyVariantAvailability(variant, poPending);
+      if (classification === "NONE") {
+        unavailableItemNames.push(variant.itemName || catalog.articleName);
+        return;
+      }
+      item.bookingType = classification === "RFD" ? "REGULAR" : "PREORDER";
     });
+
+    if (unavailableItemNames.length) {
+      const err = new Error(
+        `The following item(s) are currently unavailable (no stock and no pending purchase order): ${unavailableItemNames.join(", ")}. Please remove them from your cart and try again.`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
 
     const regularItems = sanitizedItems.filter((i) => i.bookingType === "REGULAR");
     const preorderItems = sanitizedItems.filter((i) => i.bookingType === "PREORDER");
@@ -327,14 +438,10 @@ const createOrder = async (distributorId, orderData) => {
     // never exceed what's planned on POs. No stock check — pre-orders are
     // booked against incoming stock, not sizeMap.qty.
     if (preorderItems.length > 0) {
-      const masterCatalogService = require("./masterCatalogService");
       const capItems = preorderItems.filter((i) => i.variantId);
       const articleIds = [...new Set(capItems.map((i) => String(i.articleId)))];
       if (articleIds.length) {
-        const [plannedMap, preBookedMap] = await Promise.all([
-          masterCatalogService.getPoPlannedQtyMap(articleIds),
-          masterCatalogService.getPreBookedQtyMap(articleIds),
-        ]);
+        const preBookedMap = await masterCatalogService.getPreBookedQtyMap(articleIds);
 
         const requestedByVariant = {};
         capItems.forEach((item) => {
@@ -417,8 +524,9 @@ const createOrder = async (distributorId, orderData) => {
     if (poolChanged) await savedOrder.save();
 
     // Deduct live stock immediately for REGULAR items only — pre-order
-    // items have no real stock yet; their deduction happens later, per
-    // item, the moment promotePreOrderItems() flips them (see grn.service).
+    // items have no real stock yet; their deduction now happens per-carton,
+    // at the moment a scan actually claims one out of the shared pool (see
+    // scanCarton), not eagerly at GRN time.
     if (regularItems.length > 0) {
       await adjustVariantStock(regularItems, -1);
     }
@@ -709,6 +817,8 @@ const getOrdersByDistributor = async (
       statusCounts.total - dispatchedCartons
     );
 
+    await attachLiveCartonAvailability(items);
+
     return {
       items,
       meta: {
@@ -828,6 +938,8 @@ const getAllOrders = async ({
     ]);
 
     const stats = allStats[0] || { totalSpent: 0, activeOrders: 0 };
+
+    await attachLiveCartonAvailability(items);
 
     return {
       items,
@@ -1122,12 +1234,18 @@ const updateOrderStatus = async (
 
     // Restore live stock on cancellation — only the undispatched remainder
     // (ordered minus already-fulfilled), since dispatched pairs already left
-    // the warehouse and aren't affected by cancelling the order.
+    // the warehouse and aren't affected by cancelling the order. A still-
+    // PREORDER item's un-fulfilled remainder was NEVER deducted in the first
+    // place (deduction now only happens per-carton at actual scan time — see
+    // scanCarton's shared-pool claim), so it must be excluded entirely here;
+    // restoring it would double-count stock that's already sitting free.
     if (
       status === "CANCELLED" &&
       !["PRE_BOOKED", "PENDING", "CONFIRMED", "CANCELLED"].includes(previousStatus)
     ) {
-      const restoreItems = (order.items || []).map((item) => {
+      const restoreItems = (order.items || [])
+        .filter((item) => item.bookingType !== "PREORDER")
+        .map((item) => {
         const ordered = item.sizeQuantities instanceof Map
           ? Object.fromEntries(item.sizeQuantities)
           : (item.sizeQuantities || {});
@@ -1238,32 +1356,72 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
     );
     if (!item) throw new Error("Item not found on this order");
 
-    // Validate against this order's pre-allocated carton codes.
-    // If allocatedCartons is empty (legacy/GRN orders), allow any code freely.
-    if ((item.allocatedCartons || []).length > 0) {
-      if (!item.allocatedCartons.includes(cartonCode)) {
-        const alreadyScanned = new Set((order.cartonTracking || []).map(c => c.code));
-        const nextCode = item.allocatedCartons.find(c => !alreadyScanned.has(c));
+    if (item.bookingType === "PREORDER") {
+      // Shared-pool model: every waiting pre-order for this variant sees the
+      // SAME live carton pool (no per-order exclusive reservation anymore —
+      // see promotePreOrderItems) — whichever order's operator scans a
+      // specific carton first is the one who actually gets it. The atomic
+      // findOneAndUpdate below is what enforces that: it only succeeds if
+      // `cartonCode` is still sitting in the shared pool at this instant, so
+      // a losing concurrent scan of the same barcode fails cleanly instead
+      // of double-dispatching the same physical carton.
+      const variantCatalog = await MasterCatalog.findOne({ "variants._id": item.variantId }).select("variants");
+      const variantDoc = variantCatalog?.variants?.id(item.variantId);
+      const livePoolCount = (variantDoc?.availableCartons || []).length;
+      const reservedCartons = computeReservedCartons(item, livePoolCount);
+      const remaining = reservedCartons - (item.fulfilledCartonCount || 0);
+      if (remaining <= 0) {
+        throw new Error("No stock has arrived yet for this pre-order item (pending GRN)");
+      }
+
+      // Mirror a REGULAR item's booking-time deduction — this carton's pairs
+      // genuinely leave the shared/available pool the moment it's claimed.
+      // Clamped at the size's current qty so a pre-existing drift between
+      // sizeMap.qty and availableCartons (e.g. stale/corrupted order data)
+      // can't push live stock negative.
+      const orderedSizesForClaim = item.sizeQuantities instanceof Map
+        ? Object.fromEntries(item.sizeQuantities)
+        : (item.sizeQuantities || {});
+      const incOps = {};
+      Object.entries(orderedSizesForClaim).forEach(([size, qty]) => {
+        const perCarton = Math.round(Number(qty || 0) / (item.cartonCount || 1));
+        const currentQty = Number(variantDoc?.sizeMap?.get(size)?.qty || 0);
+        const deduct = Math.min(perCarton, Math.max(0, currentQty));
+        if (deduct > 0) incOps[`variants.$.sizeMap.${size}.qty`] = -deduct;
+      });
+
+      const claimed = await MasterCatalog.findOneAndUpdate(
+        { variants: { $elemMatch: { _id: item.variantId, availableCartons: cartonCode } } },
+        {
+          $pull: { "variants.$.availableCartons": cartonCode },
+          ...(Object.keys(incOps).length ? { $inc: incOps } : {}),
+        }
+      );
+      if (!claimed) {
         throw new Error(
-          nextCode
-            ? `Scan ${nextCode} next — ${cartonCode} is not allocated to this order`
-            : "No cartons available for this order"
+          `Carton ${cartonCode} is no longer available — it may already be allocated to another order. Please scan a different carton.`
         );
       }
-    }
+    } else {
+      // REGULAR item — validate against this order's pre-allocated carton codes.
+      // If allocatedCartons is empty (legacy/GRN orders), allow any code freely.
+      if ((item.allocatedCartons || []).length > 0) {
+        if (!item.allocatedCartons.includes(cartonCode)) {
+          const alreadyScanned = new Set((order.cartonTracking || []).map(c => c.code));
+          const nextCode = item.allocatedCartons.find(c => !alreadyScanned.has(c));
+          throw new Error(
+            nextCode
+              ? `Scan ${nextCode} next — ${cartonCode} is not allocated to this order`
+              : "No cartons available for this order"
+          );
+        }
+      }
 
-    // A pre-order item can dispatch whatever whole cartons its GRN
-    // reservations have already backed with real stock — no need to wait
-    // for the rest of the order's quantity to arrive (matches how a
-    // REGULAR order dispatches PARTIAL — see computeReservedCartons).
-    const reservedCartons = computeReservedCartons(item);
-    const remaining = reservedCartons - (item.fulfilledCartonCount || 0);
-    if (remaining <= 0) {
-      throw new Error(
-        item.bookingType === "PREORDER"
-          ? "No stock has arrived yet for this pre-order item (pending GRN)"
-          : "All cartons for this item are already scanned"
-      );
+      const reservedCartons = computeReservedCartons(item);
+      const remaining = reservedCartons - (item.fulfilledCartonCount || 0);
+      if (remaining <= 0) {
+        throw new Error("All cartons for this item are already scanned");
+      }
     }
 
     // Distribute this single carton across sizes proportionally — same
@@ -1288,6 +1446,12 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
       if (item.fulfilledSizeQuantities instanceof Map) item.fulfilledSizeQuantities.set(size, prev + delta);
       else item.fulfilledSizeQuantities[size] = prev + delta;
     });
+
+    // Fully scanned — settle the item as REGULAR now that every carton has
+    // genuinely, physically been claimed (not merely "backed on paper").
+    if (item.bookingType === "PREORDER" && item.fulfilledCartonCount >= (item.cartonCount || 0)) {
+      item.bookingType = "REGULAR";
+    }
     order.markModified("items");
 
     if (!order.cartonTracking) order.cartonTracking = [];
@@ -1302,7 +1466,8 @@ const scanCarton = async (orderId, { cartonCode, itemKey }) => {
     const updatedOrder = await Order.findById(orderId).populate({
       path: "distributorId",
       populate: { path: "distributorId" },
-    });
+    }).lean();
+    await attachLiveCartonAvailability(updatedOrder);
 
     if (isFirstScan) {
       const distUser = await User.findById(order.distributorId).select("email phone").lean();
@@ -1735,111 +1900,25 @@ const editOrder = async (orderId, requesterId, requesterRole, { items }) => {
   return order;
 };
 
-// ── Promote pre-order items once their stock arrives via GRN ──────────────
-// Called by grn.service after a GRN lands stock for `variantIds`. Unlike the
-// old whole-order release, this flips individual ITEMS: an order can be
-// mid-dispatch on its RFD items while one PREORDER item inside it is still
-// waiting.
-//
-// Claims are PARTIAL and PER-SIZE, not all-or-nothing: oldest-order-first,
-// each still-PREORDER item claims min(still-owed, currently-free) pairs per
-// size out of sizeMap.qty immediately (deducting as it goes, exactly like a
-// REGULAR item deducts at booking) and records the claim in
-// preorderReservedSizeQuantities. Only once EVERY size is fully claimed does
-// the item flip to REGULAR and become scannable. This means:
-//   - a GRN that fully covers an item promotes it immediately;
-//   - a GRN smaller than what's owed claims everything it can (that stock
-//     is now spoken-for, so it correctly disappears from "available"), and
-//     the item stays PREORDER holding the remainder, ready to top up on the
-//     next GRN;
-//   - any stock beyond what every waiting pre-order needs is never claimed,
-//     so it naturally stays in sizeMap.qty as genuine available stock.
+// ── Notify pre-orders when their variant's stock changes (GRN arrival) ────
+// Called by grn.service after a GRN lands stock for `variantIds`. Under the
+// shared-pool model (see computeReservedCartons / attachLiveCartonAvailability
+// / scanCarton), no order gets an exclusive claim here anymore — every order
+// with a still-PREORDER item for one of these variants sees the SAME live
+// carton pool, computed fresh on every read, and whichever operator scans a
+// specific carton first is the one who actually gets it. So this function no
+// longer mutates anything; its only job is to find who needs their Scan
+// screen refreshed (the caller emits a socket update per returned order).
 const promotePreOrderItems = async (variantIds) => {
   const idStrs = [...new Set((variantIds || []).map(String))];
   if (!idStrs.length) return [];
 
-  const candidates = await Order.find({
+  const orders = await Order.find({
     status: { $nin: ["RECEIVED", "CANCELLED"] },
     items: { $elemMatch: { variantId: { $in: idStrs }, bookingType: "PREORDER" } },
-  }).sort({ createdAt: 1 });
-  if (!candidates.length) return [];
+  }).populate({ path: "distributorId", populate: { path: "distributorId" } });
 
-  const updatedOrders = [];
-  for (const order of candidates) {
-    let orderChanged = false;
-
-    for (const item of order.items) {
-      if (item.bookingType !== "PREORDER") continue;
-      if (!item.variantId || !idStrs.includes(String(item.variantId))) continue;
-
-      // Re-fetch fresh each time — sizeMap.qty always reflects the true free
-      // balance (REGULAR items and prior claims below deduct immediately),
-      // and re-reading per item naturally earmarks stock across this whole
-      // pass without a separate in-memory map.
-      const catalog = await MasterCatalog.findOne({ "variants._id": item.variantId });
-      const variant = catalog?.variants?.id(item.variantId);
-      if (!variant) continue;
-      const effectiveStage = variant.stage || catalog.stage;
-      if (effectiveStage !== "AVAILABLE") continue;
-
-      const sizeQuantities =
-        item.sizeQuantities instanceof Map
-          ? Object.fromEntries(item.sizeQuantities)
-          : item.sizeQuantities || {};
-      const reservedSoFar =
-        item.preorderReservedSizeQuantities instanceof Map
-          ? Object.fromEntries(item.preorderReservedSizeQuantities)
-          : item.preorderReservedSizeQuantities || {};
-
-      let itemChanged = false;
-      let fullyCovered = true;
-      for (const [size, qty] of Object.entries(sizeQuantities)) {
-        const cleanSize = String(size).trim();
-        const needTotal = Number(qty || 0);
-        if (needTotal <= 0) continue;
-        const alreadyReserved = Number(reservedSoFar[cleanSize] || 0);
-        const stillOwed = Math.max(0, needTotal - alreadyReserved);
-        if (stillOwed <= 0) continue;
-
-        const cell = variant.sizeMap.get(cleanSize) || { qty: 0, sku: "" };
-        const claim = Math.min(stillOwed, Math.max(0, cell.qty || 0));
-        if (claim > 0) {
-          cell.qty -= claim;
-          variant.sizeMap.set(cleanSize, cell);
-          if (!item.preorderReservedSizeQuantities) item.preorderReservedSizeQuantities = new Map();
-          item.preorderReservedSizeQuantities.set(cleanSize, alreadyReserved + claim);
-          itemChanged = true;
-        }
-        if (claim < stillOwed) fullyCovered = false;
-      }
-
-      if (itemChanged) {
-        catalog.markModified("variants");
-        await catalog.save();
-        orderChanged = true;
-      }
-      if (fullyCovered) {
-        item.bookingType = "REGULAR";
-        orderChanged = true;
-      }
-    }
-
-    if (!orderChanged) continue;
-
-    order.markModified("items");
-    await order.save();
-    updatedOrders.push(order);
-
-    activityLog.createLog({
-      action: "PREORDER_RELEASED",
-      entityType: "ORDER",
-      entityId: String(order._id),
-      description: `Pre-order item(s) in order #${order.orderNumber || order._id} received stock — GRN arrived`,
-      metadata: { auto: true, distributorName: order.distributorName },
-    });
-  }
-
-  return updatedOrders;
+  return orders;
 };
 
 // ── MRP / price propagation to PENDING + PRE_BOOKED orders ───────────────
@@ -2139,4 +2218,6 @@ module.exports = {
   getOrderStats,
   getDashboardMetrics,
   backfillLegacyProductSnapshots,
+  attachLiveCartonAvailability,
+  backfillRegularCartonAllocations,
 };

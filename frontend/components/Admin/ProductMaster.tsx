@@ -57,8 +57,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     hsnCode: "",
     gender: AssortmentType.MEN,
     assortmentId: ASSORTMENTS[0].id,
-    status: "AVAILABLE" as "AVAILABLE" | "PREORDER",
-    wishlistDate: "",
     manufacturer: "",
     unit: "",
     unitId: "",
@@ -132,8 +130,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         hsnCode: item.variants?.[0]?.hsnCode || "",
         gender: item.category as AssortmentType || AssortmentType.MEN,
         assortmentId: item.assortmentId || ASSORTMENTS[0].id,
-        status: (item.status as any) || "AVAILABLE",
-        wishlistDate: item.expectedDate || "",
         manufacturer: item.manufacturer || "",
         unit: item.unit || "",
         unitId: (item as any).unitId?._id || (item as any).unitId || "",
@@ -193,10 +189,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           hsnCode: item.variants?.[0]?.hsnCode || "",
           gender: item.gender || AssortmentType.MEN,
           assortmentId: ASSORTMENTS[0].id,
-          status: item.stage || "AVAILABLE",
-          wishlistDate: item.expectedAvailableDate
-            ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
-            : "",
           manufacturer:
             item.manufacturerCompanyId?.name || item.manufacturerCompanyId || "",
           unit: item.unitId?.name || item.unitId || "",
@@ -803,11 +795,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     data.append("brandId", brandId);
     data.append("manufacturerCompanyId", manufacturerId);
     data.append("unitId", unitId);
-    data.append("stage", formData.status);
-
-    if (formData.status === "PREORDER") {
-      data.append("expectedAvailableDate", formData.wishlistDate);
-    }
 
     data.append("productColors", JSON.stringify(selectedColors));
     data.append("sizeRanges", JSON.stringify(sizeRanges.map((r) => r.label)));
@@ -825,11 +812,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       sizeQuantities: v.sizeQuantities || {},
       sizeSkus: v.sizeSkus || {},
       sizeMap: v.sizeMap || {},
-      // Round-trip the per-variant GRN-promotion state — omitting these
-      // would make the backend fall back to the article's own stage on
-      // every save, silently undoing an already-promoted variant.
-      stage: v.stage,
-      expectedAvailableDate: v.expectedAvailableDate,
     }));
 
     data.append("variants", JSON.stringify(normalizedVariants));
@@ -882,10 +864,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           soleColor: item.soleColor,
           manufacturer: item.manufacturerCompanyId?.name,
           unit: item.unitId?.name,
-          status: item.stage,
-          expectedDate: item.expectedAvailableDate
-            ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
-            : "",
           imageUrl: item.primaryImage?.url,
           secondaryImages: item.secondaryImages || [],
           selectedSizes: item.sizeRanges || [],
@@ -921,8 +899,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           mrp: 0,
           gender: AssortmentType.MEN,
           assortmentId: ASSORTMENTS[0].id,
-          status: "AVAILABLE",
-          wishlistDate: "",
           manufacturer: "",
           unit: "",
           unitId: "",
@@ -1284,78 +1260,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
               </div>
             </div>
 
-            <div className="lg:col-span-3 flex flex-col gap-8">
-              <div className="space-y-6">
-                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 pb-2 border-b border-slate-100">
-                  <Clock size={16} className="text-indigo-500" /> Listing Status
-                </h3>
-
-                <div className="flex flex-col gap-3">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, status: "AVAILABLE" })
-                    }
-                    className={`flex items-center gap-3 p-3.5 rounded-xl border-2 font-bold text-sm transition-all ${
-                      formData.status === "AVAILABLE"
-                        ? "bg-emerald-50 border-emerald-500 text-emerald-800 shadow-sm"
-                        : "bg-white border-slate-100 text-slate-500 hover:border-slate-300"
-                    }`}
-                  >
-                    <CheckCircle2
-                      size={18}
-                      className={
-                        formData.status === "AVAILABLE"
-                          ? "text-emerald-500"
-                          : "text-slate-400"
-                      }
-                    />
-                    Active / Available
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, status: "PREORDER" })
-                    }
-                    className={`flex items-center gap-3 p-3.5 rounded-xl border-2 font-bold text-sm transition-all ${
-                      formData.status === "PREORDER"
-                        ? "bg-amber-50 border-amber-500 text-amber-800 shadow-sm"
-                        : "bg-white border-slate-100 text-slate-500 hover:border-slate-300"
-                    }`}
-                  >
-                    <Clock
-                      size={18}
-                      className={
-                        formData.status === "PREORDER"
-                          ? "text-amber-500"
-                          : "text-slate-400"
-                      }
-                    />
-                    Coming Soon / Wishlist
-                  </button>
-
-                  {formData.status === "PREORDER" && (
-                    <div className="pt-2 animate-in slide-in-from-top-2 duration-300">
-                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                        Expected Availability
-                      </label>
-                      <input
-                        type="date"
-                        className="w-full p-3 bg-white border-2 border-slate-100 rounded-xl outline-none focus:border-amber-400 focus:ring-4 focus:ring-amber-400/10 font-medium text-slate-700 transition-all"
-                        value={formData.wishlistDate}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            wishlistDate: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
           </div>
 
           {variants.length > 0 && (

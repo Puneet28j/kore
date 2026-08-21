@@ -91,7 +91,7 @@ exports.getMasterCatalogById = async (req, res) => {
 
 exports.getStockTotals = async (req, res) => {
   try {
-    const data = await masterCatalogService.getStockTotals(req.query.stage || null);
+    const data = await masterCatalogService.getStockTotals(req.query.filter || null);
     return res.json({ data });
   } catch (err) {
     return sendError(res, err);

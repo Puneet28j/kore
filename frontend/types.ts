@@ -73,10 +73,6 @@ export interface Variant {
   tag?: "online" | "offline";
   onlineMrp?: number;
   offlineMrp?: number;
-  // Per-variant override of the article's stage — falls back to the
-  // article's own `status`/`expectedDate` when unset (see Article below).
-  stage?: "AVAILABLE" | "PREORDER";
-  expectedAvailableDate?: string;
   // PO-derived planned pairs for a still-PREORDER variant — computed by the
   // backend from Purchase Orders (per-size + total), never stored/entered
   // manually. preBookedPairs is what distributors have already pre-booked
@@ -112,9 +108,6 @@ export interface Article {
   soleColor?: string;
   productCategory?: string; // e.g. Footwear
   brand?: string;
-  status?: "AVAILABLE" | "PREORDER";
-  expectedDate?: string;
-  expectedAvailableDate?: string;
   manufacturer?: string;
   unit?: string;
   selectedSizes?: string[];
@@ -144,6 +137,9 @@ export enum OrderStatus {
   PENDING   = "PENDING",       // Placed by distributor, awaiting admin booking
   BOOKED    = "BOOKED",        // Admin booked / confirmed
   PFD       = "PFD",           // Processing for Delivery
+  // NOTE: order-lifecycle "Ready for Delivery" (UI label "In Transit") —
+  // UNRELATED to the catalogue-availability RFD concept (live stock > 0)
+  // in utils/catalogAvailability.ts. Don't conflate the two "RFD"s.
   RFD       = "RFD",           // Ready for Delivery
   OFD       = "OFD",           // Out for Delivery
   RECEIVED  = "RECEIVED",      // Delivered
@@ -174,9 +170,8 @@ export interface OrderItem {
   sizeQuantities?: Record<string, number>;
   /** Immutable catalog details captured server-side at checkout. */
   productSnapshot?: OrderItemProductSnapshot;
-  // Pairs, per size, already claimed out of arrived GRN stock while still
-  // PREORDER — a partial GRN claims what it can and leaves the item
-  // PREORDER holding the remainder (see backend promotePreOrderItems).
+  // Legacy field — no longer written by the backend (kept for historical
+  // orders). Reservation is now purely live/shared, see liveAvailableCartonCodes.
   preorderReservedSizeQuantities?: Record<string, number>;
   fulfilledSizeQuantities?: Record<string, number>;
 
@@ -188,6 +183,12 @@ export interface OrderItem {
   returnedPairCount?: number;
   price: number;
   allocatedCartons?: string[];
+  // Server-attached, transient, NEVER persisted — a live snapshot of this
+  // still-PREORDER item's variant's currently-available carton barcodes,
+  // capped at however many more this item still needs. SHARED: every order
+  // waiting on the same variant sees the same codes here; nothing is
+  // "owned" until a scan actually claims one (first-scan-wins).
+  liveAvailableCartonCodes?: string[];
 }
 
 export interface FulfillmentBatch {

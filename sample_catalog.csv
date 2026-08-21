@@ -1,8 +1,8 @@
-name,color,size,mrp,cost_price,hsn,gender,category,brand,manufacturer,unit,image,sole_color,listing_status,expected_date,size_3,size_4,size_5,size_6,size_7,size_8,size_9,size_10,size_11,size_12
-Urban Runner,Red,5-10,1999,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/red.jpg,White,available,,,,6,8,10,8,4,2,,
-Urban Runner,Blue,5-10,1999,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/blue.jpg,White,available,,,,6,8,10,8,4,2,,
-Urban Runner,Black,5-10,1999,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/black.jpg,Black,available,,,,4,6,8,6,4,2,,
-Classic Loafer,Brown,6-10,2499,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/brown.jpg,Brown,available,,,,,4,6,8,4,2,,,
-Classic Loafer,Tan,6-10,2499,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/tan.jpg,Tan,wishlist,2026-07-01,,,,,4,6,8,4,2,,,
-Kids Sneaker,Pink,3-7,999,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/pink.jpg,White,available,,6,8,10,8,6,,,,,
-Kids Sneaker,Blue,3-7,999,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/kblue.jpg,White,available,,6,8,10,8,6,,,,,
+name,color,size,mrp,cost_price,hsn,gender,category,brand,manufacturer,unit,image,sole_color,size_3,size_4,size_5,size_6,size_7,size_8,size_9,size_10,size_11,size_12
+Urban Runner,Red,5-10,1999,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/red.jpg,White,,,6,8,10,8,4,2,,
+Urban Runner,Blue,5-10,1999,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/blue.jpg,White,,,6,8,10,8,4,2,,
+Urban Runner,Black,5-10,1999,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/black.jpg,Black,,,4,6,8,6,4,2,,
+Classic Loafer,Brown,6-10,2499,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/brown.jpg,Brown,,,,4,6,8,4,2,,,
+Classic Loafer,Tan,6-10,2499,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/tan.jpg,Tan,,,,,4,6,8,4,2,,,
+Kids Sneaker,Pink,3-7,999,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/pink.jpg,White,6,8,10,8,6,,,,,
+Kids Sneaker,Blue,3-7,999,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/kblue.jpg,White,6,8,10,8,6,,,,,

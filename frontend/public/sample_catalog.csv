@@ -1,7 +1,7 @@
-name,sku_ctn,color,size,online_mrp,offline_mrp,tag,cost_price,hsn,gender,category,brand,manufacturer,unit,image,sole_color,listing_status,expected_date,size_01,size_02,size_03,size_3,size_4,size_5,size_6,size_7,size_8,size_9,size_10,size_11,size_12,size_13
-Urban Runner,urb-red-5-10,Red,5-10,1999,1799,online,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/red.jpg,White,available,,,,,6,8,10,8,4,2,,,,,
-Urban Runner,urb-blu-5-10,Blue,5-10,1999,1799,online,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/blue.jpg,White,available,,,,,6,8,10,8,4,2,,,,,
-Classic Loafer,cls-brn-6-10,Brown,6-10,2499,2299,offline,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/brown.jpg,Brown,available,,,,,,,4,6,8,4,2,,,
-Classic Loafer,cls-tan-6-10,Tan,6-10,2499,2299,offline,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/tan.jpg,Tan,preorder,2026-07-01,,,,,,,4,6,8,4,2,,,
-Kids Sneaker,kid-pnk-10-03,Pink,10-03,999,899,online,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/pink.jpg,White,available,,2,2,2,,,,,,,4,4,2
-Kids Sneaker,kid-blu-10-03,Blue,10-03,999,899,online,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/kblue.jpg,White,available,,2,2,2,,,,,,,4,4,2
+name,sku_ctn,color,size,online_mrp,offline_mrp,tag,cost_price,hsn,gender,category,brand,manufacturer,unit,image,sole_color,size_01,size_02,size_03,size_3,size_4,size_5,size_6,size_7,size_8,size_9,size_10,size_11,size_12,size_13
+Urban Runner,urb-red-5-10,Red,5-10,1999,1799,online,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/red.jpg,White,,,,6,8,10,8,4,2,,,,,
+Urban Runner,urb-blu-5-10,Blue,5-10,1999,1799,online,1200,6403,MEN,Sports,Nike,Nike Factory,PAIR,https://img.com/blue.jpg,White,,,,6,8,10,8,4,2,,,,,
+Classic Loafer,cls-brn-6-10,Brown,6-10,2499,2299,offline,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/brown.jpg,Brown,,,,,,4,6,8,4,2,,,
+Classic Loafer,cls-tan-6-10,Tan,6-10,2499,2299,offline,1500,6403,MEN,Casual,Bata,Bata Factory,PAIR,https://img.com/tan.jpg,Tan,,,,,,,4,6,8,4,2,,,
+Kids Sneaker,kid-pnk-10-03,Pink,10-03,999,899,online,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/pink.jpg,White,2,2,2,,,,,,,4,4,2
+Kids Sneaker,kid-blu-10-03,Blue,10-03,999,899,online,600,6403,KIDS,Sports,Nike,Nike Factory,PAIR,https://img.com/kblue.jpg,White,2,2,2,,,,,,,4,4,2

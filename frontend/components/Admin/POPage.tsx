@@ -39,6 +39,7 @@ import { exportPOToPDF, exportOrderToExcel } from "../../utils/exportPO";
 import { formatAssortment } from "../../utils/assortmentUtils";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
+import { getVariantAvailability } from "../../utils/catalogAvailability";
 
 // ─── Reusable styles ───────────────────────────────────
 const inputClass =
@@ -964,15 +965,17 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     if (article.variants && article.variants.length > 0) {
       article.variants.forEach((variant: any) => {
         const variantId = String(variant.id || variant._id || "");
-        const sku = String(variant.sku || article.sku || "").trim().toLowerCase();
-        const color = String(variant.color || "Default").trim().toLowerCase();
-        const sizeRange = String(variant.sizeRange || "NoRange").trim().toLowerCase();
-        const assortment = formatAssortment(variant.sizeQuantities);
-        // Retain separate colours even when they share SKU and assortment,
-        // but collapse duplicate catalog variants representing the same PO item.
-        const dedupeKey = `item__${articleId}__${color}__${sku}__${sizeRange}__${assortment}`;
-        if (seen.has(dedupeKey)) return;
+        // Dedupe by the variant's own real _id — NOT a composite of
+        // color+sku+sizeRange+assortment. Two genuinely distinct catalog
+        // variants (e.g. an assortment-collision auto-split, like
+        // "Arizona-Brown-6-10" vs "Arizona-Brown-6-10-A") can legitimately
+        // share every one of those display attributes while still being
+        // separate, individually-orderable records — collapsing on the
+        // composite silently dropped the second one from this picker.
+        const dedupeKey = `item__${variantId}`;
+        if (!variantId || seen.has(dedupeKey)) return;
         seen.add(dedupeKey);
+        const assortment = formatAssortment(variant.sizeQuantities);
         list.push({
           articleId,
           masterName: article.name,
@@ -1007,7 +1010,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
           assortment,
           gender: article.category || "",
           color: variant.color || "",
-          status: article.status || "AVAILABLE",
+          status: getVariantAvailability(variant),
         });
       });
     } else {
@@ -1029,7 +1032,6 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
         basePrice: article.pricePerPair || 0,
         mrp: article.mrp || 0,
         gender: article.category || "",
-        status: article.status || "AVAILABLE",
       });
     }
   });
@@ -1049,7 +1051,11 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
       if (!groups[master]) groups[master] = [];
       groups[master].push(it);
     });
-    return groups;
+    // Name-wise (A→Z) master order in the picker — object key order follows
+    // insertion order, so sort the entries before rebuilding.
+    return Object.fromEntries(
+      Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))
+    );
   }, [itemOptions, itemPickerSearch]);
 
   // ── Which options are currently in the PO ──
@@ -2163,6 +2169,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                             disabled={isApprovedPO}
                             value={item.cartonCount || 0}
                             onChange={e => handleCartonCountChange(item.id, parseInt(e.target.value) || 0)}
+                            onWheel={e => e.currentTarget.blur()}
                             className={`w-16 h-9 px-2 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-black text-indigo-700 text-center outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all ${isApprovedPO ? "cursor-not-allowed opacity-70" : ""}`}
                           />
                         ) : (
@@ -2328,6 +2335,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                         disabled={isApprovedPO}
                         value={item.cartonCount || 0}
                         onChange={e => handleCartonCountChange(item.id, parseInt(e.target.value) || 0)}
+                        onWheel={e => e.currentTarget.blur()}
                         className={`w-full h-8 px-2 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-black text-indigo-700 text-center outline-none focus:ring-2 focus:ring-indigo-500/20 ${isApprovedPO ? "cursor-not-allowed opacity-70" : ""}`}
                       />
                     ) : <div className="w-full h-8 bg-slate-100 rounded-lg flex items-center justify-center text-slate-300 text-xs">—</div>}

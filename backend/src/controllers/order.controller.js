@@ -417,6 +417,8 @@ const getOrderByIdCtrl = async (req, res) => {
       }
     }
 
+    await OrderService.attachLiveCartonAvailability(order);
+
     res.json({ success: true, data: order });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

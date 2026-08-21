@@ -63,6 +63,7 @@ import { useKoreStore } from "./store";
 import { Toaster, toast } from "sonner";
 import Bill from "./components/Admin/Bill";
 import { distributorOrderService } from "./services/distributorOrderService";
+import { getVariantAvailability } from "./utils/catalogAvailability";
 
 const App: React.FC = () => {
   const store = useKoreStore();
@@ -71,6 +72,25 @@ const App: React.FC = () => {
 
   useEffect(() => {
     checkAuth();
+  }, []);
+
+  // Mouse-wheel over a focused number input silently changes its value in
+  // most browsers — surprising and easy to trigger by accident while
+  // scrolling a page (e.g. carton/qty fields). Blur any focused <input
+  // type="number"> on wheel so scrolling never mutates a value; only typing
+  // does. App-wide, so every number input is covered without touching each one.
+  useEffect(() => {
+    const handleWheelBlur = (e: WheelEvent) => {
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLInputElement &&
+        active.type === "number"
+      ) {
+        active.blur();
+      }
+    };
+    document.addEventListener("wheel", handleWheelBlur, { passive: true });
+    return () => document.removeEventListener("wheel", handleWheelBlur);
   }, []);
 
   // Use URL hash for reliable tab persistence
@@ -100,7 +120,7 @@ const App: React.FC = () => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showMasterForm, setShowMasterForm] = useState(false);
   const [returnToArticleId, setReturnToArticleId] = useState<string | null>(null);
-  const [catalogueActiveTab, setCatalogueActiveTab] = useState<"AVAILABLE" | "PREORDER">("AVAILABLE");
+  const [catalogueActiveTab, setCatalogueActiveTab] = useState<"ALL" | "RFD" | "PREORDER">("ALL");
 
   // Articles state from API
   const [articles, setArticles] = useState<Article[]>([]);
@@ -214,10 +234,6 @@ const App: React.FC = () => {
           soleColor: item.soleColor,
           manufacturer: item.manufacturerCompanyId?.name,
           unit: item.unitId?.name,
-          status: item.stage,
-          expectedDate: item.expectedAvailableDate
-            ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
-            : "",
           imageUrl: item.primaryImage?.url,
           secondaryImages: item.secondaryImages || [],
           selectedSizes: item.sizeRanges || [],
@@ -786,7 +802,7 @@ const App: React.FC = () => {
     const variant = art?.variants?.find(
       (v) => v.id === variantId || (v as any)._id === variantId
     );
-    const isPreOrder = (variant?.stage || art?.status) === "PREORDER";
+    const isPreOrder = variant != null && getVariantAvailability(variant) === "PREORDER";
 
     if (variant) {
       const breakdown = variant.sizeQuantities || {};
@@ -932,23 +948,23 @@ const App: React.FC = () => {
   const placeOrder = async (gstPercent: number = 5) => {
     if (!user || cart.length === 0) return;
 
-    // Effective stage for the SPECIFIC variant in the cart, not just the
-    // parent article — a variant can have arrived (its own GRN) while the
-    // article as a whole is still PREORDER because a sibling variant
-    // hasn't. Used here only for the client-side credit-limit UX check;
-    // the backend independently (and authoritatively) resolves each item's
-    // bookingType server-side and merges everything into ONE order — RFD
-    // items dispatchable immediately, pre-order items held until their GRN
-    // lands, all inside that same order (see Order Breakdown).
+    // Computed availability for the SPECIFIC variant in the cart, not just
+    // the parent article — a variant can have live stock while a sibling
+    // variant on the same article doesn't. Used here only for the
+    // client-side credit-limit UX check; the backend independently (and
+    // authoritatively) resolves each item's bookingType server-side and
+    // merges everything into ONE order — RFD items dispatchable immediately,
+    // pre-order items held until their GRN lands, all inside that same
+    // order (see Order Breakdown).
     const getCartItemStage = (item: { articleId: string; variantId?: string }) => {
       const art = articles.find((a) => a.id === item.articleId);
       const variant = art?.variants?.find(
         (v) => v.id === item.variantId || v._id === item.variantId
       );
-      return variant?.stage || art?.status;
+      return variant ? getVariantAvailability(variant) : "NONE";
     };
 
-    const availableItems = cart.filter((i) => getCartItemStage(i) === "AVAILABLE");
+    const availableItems = cart.filter((i) => getCartItemStage(i) === "RFD");
 
     const placePromise = async () => {
       await checkAuth(true);
@@ -1172,12 +1188,23 @@ const App: React.FC = () => {
             const vari = art?.variants?.find(
               (v) => v.id === viewingVariant.variantId
             );
-            if (!art || !vari)
+            if (!art || !vari) {
+              // On a fresh page load / reload, `viewingVariant` restores from
+              // the saved draft before `fetchArticles()` finishes — don't
+              // flash "not found" while articles are still loading.
+              if (loadingArticles) {
+                return (
+                  <div className="text-center text-slate-400 py-12">
+                    Loading…
+                  </div>
+                );
+              }
               return (
                 <div className="text-center text-slate-400 py-12">
                   Variant not found.
                 </div>
               );
+            }
             return (
               <VariantDetailsPage
                 article={art}

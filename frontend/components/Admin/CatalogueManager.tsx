@@ -37,15 +37,12 @@ import { getImageUrl } from "../../utils/imageUtils";
 import { formatAssortment } from "../../utils/assortmentUtils";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
+import { getVariantAvailability } from "../../utils/catalogAvailability";
 
-type CatalogStatus = "AVAILABLE" | "PREORDER";
-
-function effectiveCatalogStatus(
-  variant: { stage?: CatalogStatus },
-  articleStatus?: CatalogStatus
-): CatalogStatus {
-  return variant.stage || articleStatus || "AVAILABLE";
-}
+// Catalogue Manager's own filter tab — distinct from CatalogAvailability
+// (which never includes "ALL"; that's a per-variant classification, this is
+// the page-level filter state).
+type CatalogTab = "ALL" | "RFD" | "PREORDER";
 
 type CatalogueForm = {
   name: string;
@@ -55,8 +52,6 @@ type CatalogueForm = {
   sizeRange: string;
   sizeBreakup: Record<string, number>;
   images: File[];
-  catalogStatus: CatalogStatus;
-  expectedAvailableDate: string;
 };
 
 interface CatalogueManagerProps {
@@ -72,8 +67,8 @@ interface CatalogueManagerProps {
   onAddNewMaster?: () => void;
   scrollToArticleId?: string | null;
   onScrollRestored?: () => void;
-  initialActiveTab?: "AVAILABLE" | "PREORDER";
-  onActiveTabChange?: (tab: "AVAILABLE" | "PREORDER") => void;
+  initialActiveTab?: CatalogTab;
+  onActiveTabChange?: (tab: CatalogTab) => void;
 }
 
 // ─── CSV Types ──────────────────────────────────────────────────────────────────
@@ -94,62 +89,17 @@ interface CsvRow {
   unit?: string;
   image?: string;
   sole_color?: string;
-  listing_status?: string;
-  expected_date?: string;
   _isAutoRenamed?: boolean; // true when name was auto-suffixed due to assortment collision
   [key: string]: string | boolean | undefined;
-}
-
-// Flexible date parser — accepts DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, DD-MM-YYYY, etc.
-function parseFlexibleDate(input: string | undefined): string {
-  if (!input?.trim()) return "";
-  const s = input.trim();
-  // Already ISO
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // YYYY/MM/DD
-  if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(s))
-    return s
-      .replace(/\//g, "-")
-      .split("-")
-      .map((p, i) => (i > 0 ? p.padStart(2, "0") : p))
-      .join("-");
-  // DD/MM/YYYY or D/M/YYYY  (Indian slash = day first)
-  const slashDMY = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (slashDMY)
-    return `${slashDMY[3]}-${slashDMY[2].padStart(
-      2,
-      "0"
-    )}-${slashDMY[1].padStart(2, "0")}`;
-  // DD-MM-YYYY (if first part ≤ 2 digits, third is 4 digits)
-  const dashDMY = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (dashDMY)
-    return `${dashDMY[3]}-${dashDMY[2].padStart(2, "0")}-${dashDMY[1].padStart(
-      2,
-      "0"
-    )}`;
-  // DD.MM.YYYY
-  const dotDMY = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-  if (dotDMY)
-    return `${dotDMY[3]}-${dotDMY[2].padStart(2, "0")}-${dotDMY[1].padStart(
-      2,
-      "0"
-    )}`;
-  // Fallback: try native Date parse
-  const d = new Date(s);
-  if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
-  return s;
 }
 
 // ─── CSV Conflict Detection ───────────────────────────────────────────────────
 // "skip"/"import" = user decision required; "info" = informational only, always imports
 type ConflictResolution = "skip" | "import" | "info";
 interface CsvConflict {
-  key: string; // groupKey "Name|||STAGE" for blocking; "⚠type:..." for info
+  key: string; // groupKey "Name" for blocking; "⚠type:..." for info
   name: string;
-  csvStage: "AVAILABLE" | "PREORDER";
   type:
-    | "db-cross-stage" // DB has same name in opposite stage
-    | "csv-both-stages" // CSV has same name in both stages
     | "auto-rename" // Name was auto-suffixed due to assortment collision
     | "duplicate-sku" // Same sku_ctn used in multiple articles
     | "zero-mrp" // Online/offline row has MRP = 0
@@ -302,10 +252,6 @@ function parseCsvRow(line: string): string[] {
 // Column header aliases — maps flexible user-written names to canonical CsvRow keys
 const CSV_HEADER_ALIASES: Record<string, string> = {
   sku: "sku_ctn",
-  "listing status": "listing_status",
-  listingstatus: "listing_status",
-  listing_status: "listing_status",
-  "expected date": "expected_date",
   "sole color": "sole_color",
   "cost price": "cost_price",
   "online mrp": "online_mrp",
@@ -346,11 +292,6 @@ const CSV_REQUIRED_COLUMNS: {
     check: (hs) => hs.includes("gender"),
   },
   {
-    key: "listing_status",
-    label: "listing_status  (available / wishlist)",
-    check: (hs) => hs.includes("listing_status"),
-  },
-  {
     key: "size_assortment",
     label: "size assortment columns  (e.g. size_5, size_6 …)",
     check: (hs) => hs.some((h) => /^size_[\d]/.test(h)),
@@ -382,54 +323,34 @@ function getMissingColumns(firstLine: string): string[] {
   );
 }
 
-// function groupCsvByName(rows: CsvRow[]): Record<string, CsvRow[]> {
-//   const g: Record<string, CsvRow[]> = {};
-//   rows.forEach(r => { (g[r.name] = g[r.name] || []).push(r); });
-//   return g;
-// }
-
-// Normalize listing_status → "PREORDER" or "AVAILABLE"
-// Accepts: wishlist, preorder, pre-order, pre_order, "pre order" → all = PREORDER
-function resolveStage(raw: string | undefined): "AVAILABLE" | "PREORDER" {
-  const s = (raw || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]/g, "");
-  return s === "wishlist" || s === "preorder" ? "PREORDER" : "AVAILABLE";
-}
-
-// Normalize gender — same identity dimension as stage: "Echo" MEN and "Echo" WOMEN
-// are distinct articles, not the same one with conflicting data.
+// Normalize gender for grouping/identity purposes.
 function resolveGender(raw: string | undefined): string {
   return (raw || "MEN").trim().toUpperCase();
 }
 
-// Article identity = name + gender + listing_status (stage). Two entries differing on
-// ANY of these are legitimately different articles, not duplicates/conflicts.
+// Article identity = name + gender. Two entries differing on either are
+// legitimately different articles, not duplicates/conflicts.
 function findExistingMaster(
   articles: Article[],
   name: string,
-  gender: string,
-  stage: string
+  gender: string
 ): Article | undefined {
   return articles.find(
     (a) =>
       a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-      resolveGender(a.category) === gender &&
-      (a.status || "AVAILABLE") === stage
+      resolveGender(a.category) === gender
   );
 }
 
-// Group by (name + stage + gender) — key format: "ArticleName|||AVAILABLE|||MEN"
+// Group by (name + gender) — key format: "ArticleName|||MEN"
 // ALSO splits same-name groups where the same color+size appears with DIFFERENT assortments
 // into separate masters: "ArticleName", "ArticleName2", "ArticleName3", etc. (not "ArticleName-2")
-function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
-  // Step 1: basic grouping by name + stage + gender
+function groupCsvByName(rows: CsvRow[]): Record<string, CsvRow[]> {
+  // Step 1: basic grouping by name + gender
   const raw: Record<string, CsvRow[]> = {};
   rows.forEach((r) => {
-    const stage = resolveStage(r.listing_status as string | undefined);
     const gender = resolveGender(r.gender as string | undefined);
-    const key = `${r.name}|||${stage}|||${gender}`;
+    const key = `${r.name}|||${gender}`;
     (raw[key] = raw[key] || []).push(r);
   });
 
@@ -439,7 +360,7 @@ function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
   // Step 2: for each group, detect assortment collisions and split into sub-groups
   const result: Record<string, CsvRow[]> = {};
   Object.entries(raw).forEach(([key, groupRows]) => {
-    const [name, stage, gender] = key.split("|||");
+    const [name, gender] = key.split("|||");
 
     // Assign each row to the first sub-group where its color+size isn't already taken
     // with a different assortment. Same color+size + same assortment = same variant (OK).
@@ -467,7 +388,7 @@ function groupCsvByNameAndStage(rows: CsvRow[]): Record<string, CsvRow[]> {
       const renamed = sg.map((r) =>
         idx === 0 ? r : { ...r, name: newName, _isAutoRenamed: true }
       );
-      result[`${newName}|||${stage}|||${gender}`] = renamed;
+      result[`${newName}|||${gender}`] = renamed;
     });
   });
 
@@ -492,8 +413,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   initialActiveTab,
   onActiveTabChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<CatalogStatus>(
-    initialActiveTab ?? "AVAILABLE"
+  const [activeTab, setActiveTab] = useState<CatalogTab>(
+    initialActiveTab ?? "ALL"
   );
   const [searchTerm, setSearchTerm] = useState("");
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
@@ -609,73 +530,26 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       );
 
     // Run grouping (which applies assortment-based splitting + auto-renaming)
-    const groups = groupCsvByNameAndStage(rawRows);
+    const groups = groupCsvByName(rawRows);
     // Flatten back to rows — names may have been updated (e.g. "Nike-Air2")
     const processedRows = Object.values(groups).flat();
 
     // ── Conflict detection ──────────────────────────────────────────────────
-    // Article identity = name + gender + listing_status (stage). Same name in a
-    // different stage or gender is NOT a conflict — it's a legitimately distinct
-    // article, so there's no "DB cross-stage" / "both stages" check anymore.
+    // Article identity = name + gender. There's no RFD/PreOrder concept at
+    // import time any more (that's a computed live-stock/PO signal), so no
+    // "cross-stage"/"both stages" checks are needed.
     const conflicts: CsvConflict[] = [];
-
-    // Check: same article name exists in opposite stage in DB
-    Object.keys(groups).forEach((key) => {
-      const [name, stage] = key.split("|||");
-      const opposite = stage === "AVAILABLE" ? "PREORDER" : "AVAILABLE";
-      const existsInOpposite = articles.some(
-        (a) =>
-          a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-          (a.status || "AVAILABLE") === opposite
-      );
-      if (existsInOpposite) {
-        conflicts.push({
-          key,
-          name,
-          csvStage: stage as "AVAILABLE" | "PREORDER",
-          type: "db-cross-stage",
-          detail: `"${name}" already exists as ${opposite} in the database. Importing as ${stage} will create a duplicate cross-stage entry.`,
-          resolution: "import",
-        });
-      }
-    });
-
-    // Check: same article name in both stages in this CSV
-    const nameToKeys: Record<string, string[]> = {};
-    Object.keys(groups).forEach((key) => {
-      const [name] = key.split("|||");
-      (nameToKeys[name] = nameToKeys[name] || []).push(key);
-    });
-    Object.entries(nameToKeys).forEach(([name, keys]) => {
-      if (keys.length > 1) {
-        keys.forEach((key) => {
-          if (
-            !conflicts.find((c) => c.key === key && c.type === "db-cross-stage")
-          ) {
-            conflicts.push({
-              key,
-              name,
-              csvStage: key.split("|||")[1] as "AVAILABLE" | "PREORDER",
-              type: "csv-both-stages",
-              detail: `"${name}" appears in both AVAILABLE and PREORDER in this CSV.`,
-              resolution: "import",
-            });
-          }
-        });
-      }
-    });
 
     // ── A6: Auto-rename → conflict card (skip/import choice) ─────────────────
     const renamedGroups = Object.keys(groups).filter((k) =>
       groups[k].some((r) => r._isAutoRenamed)
     );
     renamedGroups.forEach((k) => {
-      const [name, stage] = k.split("|||");
+      const [name] = k.split("|||");
       if (!conflicts.find((c) => c.key === k)) {
         conflicts.push({
           key: k,
           name,
-          csvStage: stage as "AVAILABLE" | "PREORDER",
           type: "auto-rename",
           detail: `"${name}" was auto-renamed — the original article already had the same color+size with a different assortment distribution. Importing creates a new separate master. Skip to ignore and fix your CSV instead.`,
           resolution: "import",
@@ -685,12 +559,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
     // ── DB duplicate check: 100% match on name + color + size range + size assortment ──
     Object.entries(groups).forEach(([key, groupRows]) => {
-      const [name, stage] = key.split("|||");
-      const existingMaster = articles.find(
-        (a) =>
-          a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-          (a.status || "AVAILABLE") === stage
-      );
+      const [name, gender] = key.split("|||");
+      const existingMaster = findExistingMaster(articles, name, gender);
       if (!existingMaster) return; // brand new article — nothing in DB to compare against
 
       const existingVariantKeys = new Set(
@@ -716,7 +586,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           conflicts.push({
             key,
             name,
-            csvStage: stage as "AVAILABLE" | "PREORDER",
             type: "db-full-duplicate",
             detail: `"${name}" is a 100% duplicate — every color+size combo (${duplicateLabels.join(
               ", "
@@ -728,7 +597,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         conflicts.push({
           key: `⚠dbdup:${key}`,
           name,
-          csvStage: stage as "AVAILABLE" | "PREORDER",
           type: "db-partial-duplicate",
           detail: `"${name}" — ${
             duplicateLabels.length
@@ -755,7 +623,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       conflicts.push({
         key: `⚠zero:${name}`,
         name,
-        csvStage: "AVAILABLE",
         type: "zero-mrp",
         detail: `"${name}" — ${
           labels.length
@@ -779,7 +646,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         conflicts.push({
           key: `⚠sku:${sku}`,
           name: sku,
-          csvStage: "AVAILABLE",
           type: "duplicate-sku",
           detail: `SKU "${sku}" appears in multiple articles: ${Array.from(
             names
@@ -791,7 +657,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
     // ── A4: Duplicate CSV rows within same group → info warning ───────────
     Object.entries(groups).forEach(([key, groupRows]) => {
-      const [name, stage] = key.split("|||");
+      const [name] = key.split("|||");
       const seen = new Set<string>();
       const dups: string[] = [];
       groupRows.forEach((r) => {
@@ -808,7 +674,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         conflicts.push({
           key: `⚠dup:${key}`,
           name,
-          csvStage: stage as "AVAILABLE" | "PREORDER",
           type: "csv-duplicate-row",
           detail: `"${name}" has ${
             dups.length
@@ -838,7 +703,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   };
 
   const handleCsvImport = async () => {
-    const groups = groupCsvByNameAndStage(csvRows);
+    const groups = groupCsvByName(csvRows);
     // Build set of group keys the user chose to SKIP
     const skippedKeys = new Set(
       csvConflicts.filter((c) => c.resolution === "skip").map((c) => c.key)
@@ -868,7 +733,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       const normalizeSavedArticle = (raw: any) => ({
         id: raw._id,
         name: raw.articleName,
-        status: raw.stage,
         variants: (raw.variants || []).map((v: any) => ({ ...v, id: v._id })),
       });
 
@@ -900,8 +764,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       const warnings: string[] = [];
 
       for (const groupKey of keys) {
-        // groupKey = "ArticleName|||AVAILABLE" or "ArticleName|||PREORDER"
-        const [name, groupStage] = groupKey.split("|||");
+        // groupKey = "ArticleName|||MEN" (etc.)
+        const [name] = groupKey.split("|||");
         const rows = groups[groupKey];
         const firstRow = rows[0];
 
@@ -1033,18 +897,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           .map(buildVariant);
 
         const soleColor = firstRow.sole_color?.trim() || "";
-        const stage = groupStage as "AVAILABLE" | "PREORDER";
-        // Flexible date: accept any format, convert to YYYY-MM-DD
-        const expectedDate = parseFlexibleDate(firstRow.expected_date);
 
-        // Match existing master by BOTH name AND stage — reads localArticles
-        // (kept in sync below after every create/update), not the `articles`
-        // prop, so a later group in this SAME run correctly finds an article
-        // created by an EARLIER group instead of creating a duplicate.
+        // Match existing master by name — reads localArticles (kept in sync
+        // below after every create/update), not the `articles` prop, so a
+        // later group in this SAME run correctly finds an article created by
+        // an EARLIER group instead of creating a duplicate.
         const existingMaster = localArticles.find(
-          (a) =>
-            a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-            (a.status || "AVAILABLE") === stage
+          (a) => a.name.trim().toLowerCase() === name.trim().toLowerCase()
         );
 
         const fd = new FormData();
@@ -1055,10 +914,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         fd.append("brandId", brandDoc._id);
         fd.append("manufacturerCompanyId", manDoc._id);
         fd.append("unitId", unitDoc._id);
-        fd.append("stage", stage);
         if (soleColor) fd.append("soleColor", soleColor);
-        if (stage === "PREORDER" && expectedDate)
-          fd.append("expectedAvailableDate", expectedDate);
         if (Object.keys(colorImageUrls).length > 0) {
           fd.append("colorImageUrls", JSON.stringify(colorImageUrls));
         }
@@ -1163,11 +1019,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             onlineMrp: v.onlineMrp || 0,
             offlineMrp: v.offlineMrp || 0,
             sku: v.sku || "",
-            // Round-trip GRN-promotion state — omitting these would make the
-            // backend fall back to the article's stage, silently undoing an
-            // already-promoted variant on the next CSV import.
-            stage: v.stage,
-            expectedAvailableDate: v.expectedAvailableDate,
           }));
 
           const allVariants = [...existingVariants, ...newVariantsOnly];
@@ -1254,8 +1105,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     sizeRange: "",
     sizeBreakup: {},
     images: [],
-    catalogStatus: "PREORDER",
-    expectedAvailableDate: "",
   });
 
   useEffect(() => {
@@ -1420,10 +1269,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       soleColor: item.soleColor,
       manufacturer: item.manufacturerCompanyId?.name,
       unit: item.unitId?.name,
-      status: item.stage,
-      expectedDate: item.expectedAvailableDate
-        ? new Date(item.expectedAvailableDate).toISOString().split("T")[0]
-        : "",
       imageUrl: item.primaryImage?.url,
       secondaryImages: item.secondaryImages || [],
       selectedSizes: item.sizeRanges || [],
@@ -1439,7 +1284,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     async (
       page: number,
       q: string,
-      tab: CatalogStatus,
+      tab: CatalogTab,
       append = false,
       gender = genderFilter,
       sort = sortOption
@@ -1451,9 +1296,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           page,
           limit: BATCH_SIZE,
           q: q || undefined,
-          // An active search is global across Available and Pre-Order.
-          // Without a search, preserve the selected tab as a stage filter.
-          stage: q.trim() ? undefined : tab,
+          // An active search is global across every tab. Without a search,
+          // preserve the selected tab as the RFD/PreOrder filter.
+          filter: q.trim() ? undefined : tab,
           gender: gender !== "ALL" ? gender : undefined,
           sort,
         });
@@ -1586,7 +1431,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     try {
       const exportSearch = appliedSearchTerm.trim();
       const isCombinedExport = exportScope === "COMBINED";
-      const exportStage =
+      const exportFilter =
         isCombinedExport || exportSearch ? undefined : activeTab;
       const exportGender = genderFilter !== "ALL" ? genderFilter : undefined;
       const exportLimit = 1000;
@@ -1601,7 +1446,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           page,
           limit: exportLimit,
           q: exportSearch || undefined,
-          stage: exportStage,
+          filter: exportFilter,
           gender: exportGender,
           sort: sortOption,
         });
@@ -1618,12 +1463,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
       allItems.forEach((item: any) => {
         const variants = (item.variants || []).filter((variant: any) => {
-          if (isCombinedExport || exportSearch) return true;
-          return effectiveCatalogStatus(variant, item.stage) === activeTab;
+          if (isCombinedExport || exportSearch || activeTab === "ALL") return true;
+          return getVariantAvailability(variant) === activeTab;
         });
 
         variants.forEach((variant: any) => {
-          const stage = effectiveCatalogStatus(variant, item.stage);
+          const availability = getVariantAvailability(variant);
           const sizeMap = variant.sizeMap || {};
           const livePairs: number = Object.values(sizeMap).reduce<number>(
             (sum: number, cell: any) => sum + (Number(cell?.qty) || 0),
@@ -1636,11 +1481,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
               (sum: number, qty: any) => sum + (Number(qty) || 0),
               0
             );
-          const quantityPairs = stage === "AVAILABLE" ? livePairs : plannedPairs;
+          const quantityPairs =
+            availability === "PREORDER" ? plannedPairs : livePairs;
           const bookedPairs =
-            stage === "AVAILABLE"
-              ? Number(bookedPairsByVariant[String(variant._id)] || 0)
-              : Number(variant.preBookedPairs || 0);
+            availability === "PREORDER"
+              ? Number(variant.preBookedPairs || 0)
+              : Number(bookedPairsByVariant[String(variant._id)] || 0);
           const poPendingPairs = Number(variant.poPendingPairs || 0);
           const sizeQuantities =
             variant.sizeQuantities &&
@@ -1652,8 +1498,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     Number(cell?.qty) || 0,
                   ])
                 );
-          const expectedDate =
-            variant.expectedAvailableDate || item.expectedAvailableDate;
 
           serialNumber += 1;
           exportRows.push({
@@ -1669,15 +1513,18 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             color: variant.color || "",
             sizeRange: variant.sizeRange || "",
             assortment: formatAssortment(sizeQuantities),
-            status: stage === "PREORDER" ? "PRE-ORDER" : "AVAILABLE",
-            expectedAvailableDate: expectedDate
-              ? new Date(expectedDate).toLocaleDateString("en-IN")
-              : "",
+            status:
+              availability === "PREORDER"
+                ? "PRE-ORDER"
+                : availability === "RFD"
+                ? "RFD"
+                : "UNAVAILABLE",
             onlineMrp: Number(variant.onlineMrp ?? item.onlineMrp ?? 0),
             offlineMrp: Number(variant.offlineMrp ?? item.offlineMrp ?? 0),
             costPerPair: Number(variant.costPrice || 0),
             mrpPerPair: Number(variant.mrp || item.mrp || 0),
-            quantityBasis: stage === "AVAILABLE" ? "Available Stock" : "PO Planned",
+            quantityBasis:
+              availability === "PREORDER" ? "PO Planned" : "Available Stock",
             quantityPairs,
             quantityCartons: Math.floor(quantityPairs / 24),
             bookedPairs,
@@ -1695,7 +1542,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       }
 
       const availableCount = exportRows.filter(
-        (row) => row.status === "AVAILABLE"
+        (row) => row.status === "RFD"
       ).length;
       const preOrderCount = exportRows.filter(
         (row) => row.status === "PRE-ORDER"
@@ -1717,7 +1564,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         ["Size Range", "sizeRange", 14],
         ["Size Assortment", "assortment", 28],
         ["Status", "status", 16],
-        ["Expected Available Date", "expectedAvailableDate", 24],
         ["Online MRP / Pair", "onlineMrp", 16],
         ["Offline MRP / Pair", "offlineMrp", 16],
         ["Cost / Pair", "costPerPair", 14],
@@ -1735,11 +1581,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
       worksheet.columns = columns.map(([, key, width]) => ({ key, width }));
       const reportScope = isCombinedExport
-        ? "Available + Pre-Order"
+        ? "All"
         : exportSearch
         ? "Global Search"
-        : activeTab === "AVAILABLE"
-        ? "Available"
+        : activeTab === "ALL"
+        ? "All"
+        : activeTab === "RFD"
+        ? "RFD"
         : "Pre-Order";
       worksheet.insertRow(1, [COMPANY_CONFIG.name.toUpperCase()]);
       worksheet.insertRow(2, [
@@ -1891,8 +1739,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         ? "combined"
         : exportSearch
         ? "global-search"
-        : activeTab === "AVAILABLE"
-        ? "available"
+        : activeTab === "ALL"
+        ? "all"
+        : activeTab === "RFD"
+        ? "rfd"
         : "pre-order";
       const date = new Date().toISOString().split("T")[0];
       saveAs(
@@ -1921,8 +1771,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
     if (article) {
       setEditingArticle(article);
-      const status: CatalogStatus =
-        (article.status as CatalogStatus) || "AVAILABLE";
 
       // Derive onlineMrp/offlineMrp from variants (not article.mrp which drifts)
       const variants: any[] = (article as any).variants || [];
@@ -1948,10 +1796,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         sizeRange: String((article as any).sizeRange || ""),
         sizeBreakup: (article as any).sizeBreakup || {},
         images: [],
-        catalogStatus: status,
-        expectedAvailableDate: String(
-          (article as any).expectedAvailableDate || ""
-        ),
       });
       const savedUrls: string[] = (article as any).images || [];
       if (savedUrls.length) setImagePreviews(savedUrls);
@@ -1965,8 +1809,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         sizeRange: "",
         sizeBreakup: {},
         images: [],
-        catalogStatus: "PREORDER",
-        expectedAvailableDate: "",
       });
     }
     setIsModalOpen(true);
@@ -1984,14 +1826,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       !isValidMultiple
     ) {
       return toast.error("Total pairs must be 24, 48, 72... (multiple of 24)");
-    }
-    if (
-      formData.catalogStatus === "PREORDER" &&
-      !formData.expectedAvailableDate
-    ) {
-      return toast.error(
-        "Expected available date is required for Wish List items."
-      );
     }
     const storedImages: string[] = imagePreviews;
     const payload: Article = {
@@ -2016,11 +1850,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       sizeBreakup: formData.sizeBreakup || {},
       // @ts-ignore
       images: storedImages,
-      status: formData.catalogStatus,
-      expectedDate:
-        formData.catalogStatus === "PREORDER"
-          ? formData.expectedAvailableDate
-          : "",
     };
 
     if (!isValidMultiple) {
@@ -2039,8 +1868,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             offlineMrp: (payload as any).offlineMrp,
             mrp: (payload as any).mrp,
             sizeRanges: [payload.sizeRange],
-            stage: payload.status,
-            expectedAvailableDate: payload.expectedAvailableDate || null,
           });
           updateArticle(payload);
         } else {
@@ -2089,7 +1916,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
               {pageLoading
                 ? "Loading…"
                 : `${totalItems} Master${totalItems !== 1 ? "s" : ""}`}{" "}
-              • <b>{activeTab === "AVAILABLE" ? "Available" : "Pre-Order"}</b>
+              •{" "}
+              <b>
+                {activeTab === "ALL"
+                  ? "All"
+                  : activeTab === "RFD"
+                  ? "RFD"
+                  : "Pre-Order"}
+              </b>
             </p>
           </div>
         </div>
@@ -2142,8 +1976,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   <span className="mt-0.5 block text-[10px] font-medium text-slate-400">
                     {isGlobalSearchActive
                       ? "Current global search results"
-                      : activeTab === "AVAILABLE"
-                      ? "Available catalogue"
+                      : activeTab === "ALL"
+                      ? "All catalogue"
+                      : activeTab === "RFD"
+                      ? "RFD catalogue"
                       : "Pre-Order catalogue"}
                   </span>
                 </button>
@@ -2157,7 +1993,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                 >
                   Export Combined Catalogue
                   <span className="mt-0.5 block text-[10px] font-medium text-slate-400">
-                    Available + Pre-Order in one file
+                    Every item, RFD + Pre-Order, in one file
                   </span>
                 </button>
               </div>
@@ -2178,18 +2014,33 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
         <button
           onClick={() => {
-            setActiveTab("AVAILABLE");
+            setActiveTab("ALL");
             setCurrentPage(1);
-            onActiveTabChange?.("AVAILABLE");
+            onActiveTabChange?.("ALL");
           }}
           className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "AVAILABLE"
+            activeTab === "ALL"
+              ? "bg-slate-800 text-white shadow"
+              : "text-slate-600 hover:bg-slate-50"
+          }`}
+        >
+          <Layers size={16} />
+          All
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab("RFD");
+            setCurrentPage(1);
+            onActiveTabChange?.("RFD");
+          }}
+          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
+            activeTab === "RFD"
               ? "bg-emerald-600 text-white shadow"
               : "text-slate-600 hover:bg-slate-50"
           }`}
         >
           <CheckCircle2 size={16} />
-          Available Catalogue
+          RFD
         </button>
         <button
           onClick={() => {
@@ -2219,7 +2070,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             type="text"
-            placeholder="Search article or SKU across all stages..."
+            placeholder="Search article or SKU across the whole catalogue..."
             className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-sm font-medium"
           />
         </div>
@@ -2283,25 +2134,21 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         )}
 
         {filteredMasters.map((article) => {
-          // Global searches include matching articles from both stages.
-          // The API query omits stage while a search is active.
-          // Empty searches keep the selected tab's stage-specific variant view.
-          const tabVariants = isGlobalSearchActive
+          // Global searches include matching articles regardless of RFD/
+          // PreOrder classification. The API query omits `filter` while a
+          // search is active. Empty searches keep the selected tab's
+          // computed-availability variant view — "ALL" shows everything.
+          const tabVariants = isGlobalSearchActive || activeTab === "ALL"
             ? article.variants || []
             : (article.variants || []).filter(
-                (v) => (v.stage || article.status) === activeTab
+                (v) => getVariantAvailability(v) === activeTab
               );
           if (tabVariants.length === 0) return null;
           const visibleStatuses = Array.from(
-            new Set(
-              tabVariants.map((variant) =>
-                effectiveCatalogStatus(variant, article.status)
-              )
-            )
+            new Set(tabVariants.map((variant) => getVariantAvailability(variant)))
           );
 
           const isExpanded = expandedIds.has(article.id);
-          const status = (article.status || "AVAILABLE") as CatalogStatus;
           const variantCount = tabVariants.length;
           const cover = imgSrc(article.imageUrl);
 
@@ -2392,28 +2239,25 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         <span
                           key={catalogStatus}
                           className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border ${
-                            catalogStatus === "AVAILABLE"
+                            catalogStatus === "RFD"
                               ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : "bg-amber-50 text-amber-700 border-amber-200"
+                              : catalogStatus === "PREORDER"
+                              ? "bg-amber-50 text-amber-700 border-amber-200"
+                              : "bg-slate-100 text-slate-500 border-slate-200"
                           }`}
                         >
-                          {catalogStatus === "AVAILABLE" ? (
+                          {catalogStatus === "RFD" ? (
                             <CheckCircle2 size={9} />
                           ) : (
                             <Clock size={9} />
                           )}
-                          {catalogStatus === "AVAILABLE"
-                            ? "AVAILABLE"
-                            : "PRE-ORDER"}
+                          {catalogStatus === "RFD"
+                            ? "RFD"
+                            : catalogStatus === "PREORDER"
+                            ? "PRE-ORDER"
+                            : "UNAVAILABLE"}
                         </span>
                       ))}
-                    {status === "PREORDER" && article.expectedDate && (
-                      <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 text-[9px] font-bold flex items-center gap-1 border border-rose-100/50">
-                        <CalendarDays size={8} />
-                        ETA:{" "}
-                        {new Date(article.expectedDate).toLocaleDateString()}
-                      </span>
-                    )}
                   </div>
 
                   {/* Compact Stats Row */}
@@ -2900,8 +2744,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <p className="text-xs text-slate-400 mb-1">
                       <span className="font-bold text-red-500">Required: </span>
                       <code className="bg-slate-100 px-1 rounded">
-                        name, color, sku, size, tag, gender, listing_status,
-                        size_5 / size_6 …
+                        name, color, sku, size, tag, gender, size_5 / size_6 …
                       </code>
                     </p>
                     <p className="text-xs text-slate-400 mb-3">
@@ -2910,8 +2753,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       </span>
                       <code className="bg-slate-100 px-1 rounded">
                         online_mrp, offline_mrp, cost_price, hsn, category,
-                        brand, manufacturer, unit, image, sole_color,
-                        expected_date
+                        brand, manufacturer, unit, image, sole_color
                       </code>
                     </p>
                     <a
@@ -2949,12 +2791,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       CSV columns: <code>size_11</code>, <code>size_12</code>,{" "}
                       <code>size_13</code>, <code>size_01</code>,{" "}
                       <code>size_02</code>, <code>size_03</code>.
-                    </p>
-                    <p>
-                      <b>listing_status</b> = <code>available</code> ya{" "}
-                      <code>wishlist</code> ya <code>preorder</code>.{" "}
-                      <b>expected_date</b> = any format (DD/MM/YYYY, YYYY-MM-DD,
-                      etc.).
                     </p>
                   </div>
 
@@ -3001,7 +2837,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
                   <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-800">
                     {(() => {
-                      const groups = groupCsvByNameAndStage(csvRows);
+                      const groups = groupCsvByName(csvRows);
                       const names = Object.keys(groups).map(
                         (k) => k.split("|||")[0]
                       );
@@ -3063,24 +2899,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                               <div
                                 key={conflict.key}
                                 className={`rounded-xl border p-3 text-xs flex items-start justify-between gap-3 ${
-                                  conflict.type === "db-cross-stage"
-                                    ? "bg-rose-50 border-rose-200 text-rose-800"
-                                    : conflict.type === "auto-rename"
+                                  conflict.type === "auto-rename"
                                     ? "bg-purple-50 border-purple-200 text-purple-800"
-                                    : conflict.type === "db-full-duplicate"
-                                    ? "bg-slate-100 border-slate-300 text-slate-700"
-                                    : "bg-amber-50 border-amber-200 text-amber-800"
+                                    : "bg-slate-100 border-slate-300 text-slate-700"
                                 }`}
                               >
                                 <div className="flex-1">
                                   <p className="font-black text-[10px] uppercase tracking-wider mb-0.5 opacity-60">
-                                    {conflict.type === "db-cross-stage"
-                                      ? "DB Conflict"
-                                      : conflict.type === "auto-rename"
+                                    {conflict.type === "auto-rename"
                                       ? "Auto Renamed"
-                                      : conflict.type === "db-full-duplicate"
-                                      ? "100% Duplicate"
-                                      : "Both Stages"}
+                                      : "100% Duplicate"}
                                   </p>
                                   <p className="leading-relaxed">
                                     {conflict.detail}
@@ -3220,22 +3048,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                               Brand
                             </th>
                             <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Status
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
                               Image
                             </th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {csvRows.slice(0, 20).map((r, i) => {
-                            const isWishlist =
-                              resolveStage(
-                                r.listing_status as string | undefined
-                              ) === "PREORDER";
-                            const groupKey = `${r.name}|||${
-                              isWishlist ? "PREORDER" : "AVAILABLE"
-                            }`;
+                            const groupKey = `${r.name}|||${resolveGender(
+                              r.gender as string | undefined
+                            )}`;
                             const conflict = csvConflicts.find(
                               (c) => c.key === groupKey
                             );
@@ -3315,17 +3136,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                   {r.brand || "—"}
                                 </td>
                                 <td className="px-3 py-2">
-                                  <span
-                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                      isWishlist
-                                        ? "bg-amber-100 text-amber-700"
-                                        : "bg-emerald-100 text-emerald-700"
-                                    }`}
-                                  >
-                                    {isWishlist ? "PREORDER" : "AVAILABLE"}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2">
                                   {r.image ? (
                                     <img
                                       src={r.image}
@@ -3375,7 +3185,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       <>
                         Import{" "}
                         {
-                          Object.keys(groupCsvByNameAndStage(csvRows)).filter(
+                          Object.keys(groupCsvByName(csvRows)).filter(
                             (k) =>
                               !csvConflicts.find(
                                 (c) => c.key === k && c.resolution === "skip"
@@ -3603,77 +3413,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                       )}
                     </div>
                   </div>
-
-                  {/* Add To: Catalogue or Wish List */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
-                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">
-                      Add To (Before Submit)
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setFormData((p) => ({
-                            ...p,
-                            catalogStatus: "AVAILABLE",
-                            expectedAvailableDate: "",
-                          }))
-                        }
-                        className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
-                          formData.catalogStatus === "AVAILABLE"
-                            ? "bg-emerald-600 text-white border-emerald-600"
-                            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-                        }`}
-                      >
-                        Catalogue
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setFormData((p) => ({
-                            ...p,
-                            catalogStatus: "PREORDER",
-                          }))
-                        }
-                        className={`flex-1 px-3 py-2 rounded-xl font-bold text-sm border transition ${
-                          formData.catalogStatus === "PREORDER"
-                            ? "bg-rose-600 text-white border-rose-600"
-                            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-                        }`}
-                      >
-                        Wish List
-                      </button>
-                    </div>
-                    <p className="mt-2 text-[11px] text-slate-500">
-                      ✅ Rule: <b>Catalogue → Wish</b> not allowed. Only{" "}
-                      <b>Wish → Catalogue</b>.
-                    </p>
-                    {formData.catalogStatus === "PREORDER" && (
-                      <div className="mt-4">
-                        <Field
-                          label="Expected Available Date"
-                          required
-                          icon={<CalendarDays size={12} />}
-                        >
-                          <input
-                            type="date"
-                            className="w-full p-3 bg-white border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20"
-                            value={formData.expectedAvailableDate}
-                            onChange={(e) =>
-                              setFormData((p) => ({
-                                ...p,
-                                expectedAvailableDate: e.target.value,
-                              }))
-                            }
-                            required
-                          />
-                        </Field>
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          Wish list item me expected date mandatory hai.
-                        </p>
-                      </div>
-                    )}
-                  </div>
                 </div>
 
                 {/* Right */}
@@ -3729,12 +3468,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                    <p className="font-bold text-slate-900 mb-1">Rules</p>
+                    <p className="font-bold text-slate-900 mb-1">Note</p>
                     <p className="text-slate-600 text-sm">
-                      1) Create master → choose <b>Catalogue</b> or{" "}
-                      <b>Wish List</b> before submit <br />
-                      2) <b>Catalogue → Wish</b> not allowed <br />
-                      3) Only <b>Wish → Catalogue</b> allowed (Move button)
+                      RFD vs Pre-Order isn't set manually — it's computed
+                      automatically from live stock and any pending Purchase
+                      Order for each variant.
                     </p>
                   </div>
                 </div>

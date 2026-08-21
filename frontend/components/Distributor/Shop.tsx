@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import { getImageUrl } from "../../utils/imageUtils";
 import { masterCatalogService } from "../../services/masterCatalogService";
 import { distributorOrderService } from "../../services/distributorOrderService";
+import { getVariantAvailability } from "../../utils/catalogAvailability";
 
 interface ShopProps {
   articles: Article[];
@@ -205,10 +206,10 @@ const ArticleCard: React.FC<{
   );
   const totalPairs = totalPairsPerCarton * cartonCount;
 
-  // Effective stage of the SPECIFIC selected variant — a variant can have
-  // arrived (own GRN) while the article as a whole is still PREORDER.
+  // Computed availability of the SPECIFIC selected variant — a variant can
+  // have live stock while a sibling variant on the same article doesn't.
   const isPreOrderVariant =
-    (selectedVariant?.stage || article.status) === "PREORDER";
+    selectedVariant != null && getVariantAvailability(selectedVariant) === "PREORDER";
 
   // ── Cap logic (per variant) ──────────────────────────────────────────────
   // AVAILABLE variant: capped by real per-size stock. Still-PREORDER
@@ -734,8 +735,6 @@ const mapDocToArticle = (doc: any): Article => ({
   soleColor: doc.soleColor,
   productCategory: doc.categoryId?.name,
   brand: doc.brandId?.name,
-  status: doc.stage || "AVAILABLE",
-  expectedDate: doc.expectedAvailableDate,
   selectedColors: doc.productColors || [],
   selectedSizes: doc.sizeRanges || [],
   variants: (doc.variants || []).map((v: any) => ({
@@ -760,10 +759,6 @@ const mapDocToArticle = (doc: any): Article => ({
     tag: v.tag,
     onlineMrp: v.onlineMrp,
     offlineMrp: v.offlineMrp,
-    // Per-variant override — falls back to the article's own stage below
-    // when a variant hasn't had its own GRN promotion yet.
-    stage: v.stage,
-    expectedAvailableDate: v.expectedAvailableDate,
     // PO-derived planned + already pre-booked pairs (backend-injected) —
     // caps pre-booking for still-PREORDER variants.
     poPlannedQty: v.poPlannedQty || {},
@@ -859,12 +854,12 @@ const Shop: React.FC<ShopProps> = ({
       let totalCount = 0;
 
       if (statusFilter === "ALL") {
-        // Fetch both AVAILABLE and PREORDER (pre-book) items
+        // Fetch both RFD and PREORDER (pre-book) items
         const [resAvailable, resPreBook] = await Promise.all([
           masterCatalogService.listMasterItems({
             page: 1,
             limit: 1000,
-            stage: "AVAILABLE",
+            filter: "RFD",
             q: search || undefined,
             gender: genderFilter !== "ALL" ? genderFilter : undefined,
             sort: sortOption,
@@ -872,7 +867,7 @@ const Shop: React.FC<ShopProps> = ({
           masterCatalogService.listMasterItems({
             page: 1,
             limit: 1000,
-            stage: "PREORDER",
+            filter: "PREORDER",
             q: search || undefined,
             gender: genderFilter !== "ALL" ? genderFilter : undefined,
             sort: sortOption,
@@ -884,11 +879,11 @@ const Shop: React.FC<ShopProps> = ({
         docs = [...docsAvailable, ...docsPreBook];
         totalCount = docs.length;
       } else {
-        // Fetch single stage
+        // Fetch single filter (RFD or PREORDER)
         const res = await masterCatalogService.listMasterItems({
           page: 1,
           limit: BATCH_SIZE,
-          stage: statusFilter,
+          filter: statusFilter,
           q: search || undefined,
           gender: genderFilter !== "ALL" ? genderFilter : undefined,
           sort: sortOption,
@@ -919,7 +914,7 @@ const Shop: React.FC<ShopProps> = ({
       const res = await masterCatalogService.listMasterItems({
         page: nextPage,
         limit: BATCH_SIZE,
-        stage: statusFilter,
+        filter: statusFilter,
         q: search || undefined,
         gender: genderFilter !== "ALL" ? genderFilter : undefined,
         sort: sortOption,
@@ -982,11 +977,13 @@ const Shop: React.FC<ShopProps> = ({
         // but distributors must not see or order them.
         if (v.isActive === false) return;
         if (distributorTag && v.tag && v.tag !== distributorTag) return;
-        const effStage = v.stage || article.status;
-        if (effStage === "PREORDER") {
-          // Still-PREORDER variant — sold against its PO planned quantity,
-          // no real stock exists yet. Hide it only once fully pre-booked
-          // (or when no PO has been raised for it at all).
+        const availability = getVariantAvailability(v);
+        // Not orderable at all (no live stock, no pending PO) — hide
+        // entirely from the shopping grid, not just the RFD/PreOrder split.
+        if (availability === "NONE") return;
+        if (availability === "PREORDER") {
+          // Sold against its PO planned quantity, no real stock exists yet.
+          // Hide it only once fully pre-booked (or no PO raised for it).
           if (remainingPlannedPairs(v) <= 0) return;
         } else if (inStockOnly && !isVariantInStock(v)) {
           return;
@@ -1000,22 +997,21 @@ const Shop: React.FC<ShopProps> = ({
           article,
           color,
           variants: colorVariants,
-          // "Available in 30 Days" only if EVERY variant of this color is
-          // still pending its own GRN — the moment even one has arrived,
-          // the card should reflect that (falls back to the article's own
-          // stage per variant until each has its own explicit value).
-          cardStage: colorVariants.every((v) => (v.stage || article.status) === "AVAILABLE")
-            ? "AVAILABLE"
+          // "Available in 30 Days" only if EVERY variant of this color has
+          // 0 live stock — the moment even one has real stock, the card
+          // should reflect that.
+          cardStage: colorVariants.every((v) => getVariantAvailability(v) === "RFD")
+            ? "RFD"
             : "PREORDER",
         }));
     });
 
-    // Sort so cards for the same article appear adjacent (AVAILABLE before PREORDER within each article)
+    // Sort so cards for the same article appear adjacent (RFD before PreOrder within each article)
     groups.sort((a, b) => {
       const nameCompare = a.article.name.localeCompare(b.article.name);
       if (nameCompare !== 0) return nameCompare;
       if (a.cardStage === b.cardStage) return 0;
-      return a.cardStage === "AVAILABLE" ? -1 : 1;
+      return a.cardStage === "RFD" ? -1 : 1;
     });
 
     return groups;
@@ -1060,7 +1056,7 @@ const Shop: React.FC<ShopProps> = ({
 
           {/* Availability Filter Pills */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
-            {["ALL", "AVAILABLE", "PREORDER"].map((s) => (
+            {["ALL", "RFD", "PREORDER"].map((s) => (
               <button
                 key={s}
                 onClick={() => setStatusFilter(s)}
@@ -1070,7 +1066,7 @@ const Shop: React.FC<ShopProps> = ({
                     : "text-slate-500 hover:text-slate-800"
                 }`}
               >
-                {s === "ALL" ? "All" : s === "AVAILABLE" ? "RFD" : "30 Days"}
+                {s === "ALL" ? "All" : s === "RFD" ? "RFD" : "30 Days"}
               </button>
             ))}
           </div>

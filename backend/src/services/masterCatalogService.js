@@ -96,7 +96,7 @@ const buildFlatImagesFromColorMedia = (colorMedia = []) => {
   };
 };
 
-const normalizeVariants = (variantsRaw, articleStage, articleExpectedDate) => {
+const normalizeVariants = (variantsRaw) => {
   const variants = Array.isArray(variantsRaw) ? variantsRaw : [];
 
   return variants.map((v) => {
@@ -171,11 +171,6 @@ const normalizeVariants = (variantsRaw, articleStage, articleExpectedDate) => {
       onlineMrp,
       offlineMrp,
       sku: ctnSku,
-      // Seed from the article's own stage/date at creation time so it's
-      // explicit from the start — GRN promotes each variant independently
-      // from here on (see grn.service.js).
-      stage: v.stage || articleStage || undefined,
-      expectedAvailableDate: v.expectedAvailableDate || articleExpectedDate || undefined,
     };
   });
 };
@@ -254,11 +249,7 @@ exports.create = async (req) => {
 
   const productColors = parseMaybeJson(body.productColors, []);
   const sizeRanges = parseMaybeJson(body.sizeRanges, []);
-  const variants = normalizeVariants(
-    parseMaybeJson(body.variants, []),
-    body.stage || "AVAILABLE",
-    body.expectedAvailableDate || null
-  );
+  const variants = normalizeVariants(parseMaybeJson(body.variants, []));
 
   const colorImageUrls = body.colorImageUrls;
   const colorMedia = colorImageUrls
@@ -285,8 +276,6 @@ exports.create = async (req) => {
     unitId: body.unitId,
     productColors: Array.isArray(productColors) ? productColors : [],
     sizeRanges: Array.isArray(sizeRanges) ? sizeRanges : [],
-    stage: body.stage || "AVAILABLE",
-    expectedAvailableDate: body.expectedAvailableDate || null,
     isActive: parseBoolean(body.isActive, true),
     primaryImage,
     secondaryImages,
@@ -300,7 +289,7 @@ exports.create = async (req) => {
 exports.list = async (query) => {
   const {
     q,
-    stage,
+    filter: availabilityFilter,
     categoryId,
     brandId,
     manufacturerCompanyId,
@@ -315,53 +304,32 @@ exports.list = async (query) => {
   const normalizedLimit = normalizeLimit(limit);
   const skip = (normalizedPage - 1) * normalizedLimit;
 
-  const filter = { isDeleted: false };
+  const mongoFilter = { isDeleted: false };
   const andConditions = [];
 
-  if (stage === "PREORDER") {
-    // An article stays PREORDER at the article level as long as ANY variant
-    // is still pending — so this alone correctly captures "has at least one
-    // variant not yet available", mixed articles included.
-    filter.stage = "PREORDER";
-  } else if (stage === "AVAILABLE") {
-    // Fully-available articles, PLUS still-PREORDER articles that have at
-    // least one variant individually promoted via GRN (e.g. Matrix with 1
-    // of 6 variants received) — those must show up here too, not just once
-    // every sibling variant is done.
-    andConditions.push({
-      $or: [
-        { stage: { $ne: "PREORDER" } },
-        { stage: "PREORDER", "variants.stage": "AVAILABLE" },
-      ],
-    });
-  } else if (stage) {
-    filter.stage = stage;
-  }
-  if (gender) filter.gender = gender;
+  if (gender) mongoFilter.gender = gender;
 
   if (categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
-    filter.categoryId = categoryId;
+    mongoFilter.categoryId = categoryId;
   }
 
   if (brandId && mongoose.Types.ObjectId.isValid(brandId)) {
-    filter.brandId = brandId;
+    mongoFilter.brandId = brandId;
   }
 
   if (
     manufacturerCompanyId &&
     mongoose.Types.ObjectId.isValid(manufacturerCompanyId)
   ) {
-    filter.manufacturerCompanyId = manufacturerCompanyId;
+    mongoFilter.manufacturerCompanyId = manufacturerCompanyId;
   }
 
   const parsedIsActive = parseBoolean(isActive, undefined);
   if (parsedIsActive !== undefined) {
-    filter.isActive = parsedIsActive;
+    mongoFilter.isActive = parsedIsActive;
   }
 
   if (q) {
-    // Composed via $and (not a bare filter.$or) so this doesn't clobber the
-    // AVAILABLE-tab $or condition above when both are present at once.
     andConditions.push({
       $or: [
         { articleName: { $regex: q, $options: "i" } },
@@ -375,7 +343,7 @@ exports.list = async (query) => {
     });
   }
 
-  if (andConditions.length) filter.$and = andConditions;
+  if (andConditions.length) mongoFilter.$and = andConditions;
 
   let sortObj = { createdAt: -1 };
   if (sort === "price_asc") sortObj = { mrp: 1, createdAt: -1 };
@@ -384,45 +352,100 @@ exports.list = async (query) => {
   else if (sort === "oldest") sortObj = { createdAt: 1 };
   else if (sort === "newest") sortObj = { createdAt: -1 };
 
-  const items = await MasterCatalog.find(filter)
-    .populate("categoryId", "name")
-    .populate("brandId", "name")
-    .populate("manufacturerCompanyId", "name")
-    .populate("unitId", "name")
-    .sort(sortObj)
-    .skip(skip)
-    .limit(normalizedLimit)
-    .lean();
-
-  const total = await MasterCatalog.countDocuments(filter);
-
   // Attach PO-derived planned + active pre-booked pairs to every variant.
   // Planned is no longer stored on the catalog — a still-PREORDER variant's
   // "planned" is exactly what's on Purchase Orders for it, and the remaining
   // bookable amount (planned − preBooked) is what Shop/Pre-Order pages cap
   // distributor bookings against.
-  const articleIds = items.map((doc) => doc._id);
-  if (articleIds.length) {
-    const [plannedMap, preBookedMap, grnReceivedMap] = await Promise.all([
-      exports.getPoPlannedQtyMap(articleIds),
-      exports.getPreBookedQtyMap(articleIds),
-      exports.getGrnReceivedQtyMap(),
-    ]);
-    items.forEach((doc) => {
+  const attachPoFields = (docs, plannedMap, preBookedMap, grnReceivedMap) => {
+    docs.forEach((doc) => {
       (doc.variants || []).forEach((v) => {
         const key = String(v._id);
         v.poPlannedQty = plannedMap.bySize[key] || {};
         v.plannedPairs = plannedMap.totals[key] || 0;
         v.preBookedPairs = preBookedMap.totals[key] || 0;
         // Still-incoming pairs: what the POs planned minus what GRNs have
-        // already received — the "PO Pending" column everywhere.
+        // already received — the "PO Pending" column everywhere, and the
+        // signal RFD/PREORDER classification is computed from.
         v.poPendingPairs = Math.max(
           0,
           (plannedMap.totals[key] || 0) - (grnReceivedMap.totals[key] || 0)
         );
       });
     });
+  };
+
+  // "ALL"/no filter stays a normal DB-paginated query. RFD/PREORDER are
+  // computed (never stored) per variant, so those two branches fetch the
+  // full non-availability-filtered candidate set, classify + narrow in
+  // memory, then paginate the narrowed list — acceptable at this catalog's
+  // scale (getStockTotals already does full-collection scans for the same
+  // reason); revisit with an aggregation pipeline if the catalog grows an
+  // order of magnitude.
+  if (!availabilityFilter || availabilityFilter === "ALL") {
+    const items = await MasterCatalog.find(mongoFilter)
+      .populate("categoryId", "name")
+      .populate("brandId", "name")
+      .populate("manufacturerCompanyId", "name")
+      .populate("unitId", "name")
+      .sort(sortObj)
+      .skip(skip)
+      .limit(normalizedLimit)
+      .lean();
+
+    const total = await MasterCatalog.countDocuments(mongoFilter);
+
+    const articleIds = items.map((doc) => doc._id);
+    if (articleIds.length) {
+      const [plannedMap, preBookedMap, grnReceivedMap] = await Promise.all([
+        exports.getPoPlannedQtyMap(articleIds),
+        exports.getPreBookedQtyMap(articleIds),
+        exports.getGrnReceivedQtyMap(),
+      ]);
+      attachPoFields(items, plannedMap, preBookedMap, grnReceivedMap);
+    }
+
+    return {
+      items,
+      total,
+      page: normalizedPage,
+      limit: normalizedLimit,
+      totalPages: Math.ceil(total / normalizedLimit) || 1,
+      hasNextPage: normalizedPage < Math.ceil(total / normalizedLimit),
+      hasPrevPage: normalizedPage > 1,
+      pageSizeOptions: ALLOWED_PAGE_LIMITS,
+    };
   }
+
+  const candidates = await MasterCatalog.find(mongoFilter)
+    .populate("categoryId", "name")
+    .populate("brandId", "name")
+    .populate("manufacturerCompanyId", "name")
+    .populate("unitId", "name")
+    .sort(sortObj)
+    .lean();
+
+  const candidateIds = candidates.map((doc) => doc._id);
+  const [plannedMap, preBookedMap, grnReceivedMap] = candidateIds.length
+    ? await Promise.all([
+        exports.getPoPlannedQtyMap(candidateIds),
+        exports.getPreBookedQtyMap(candidateIds),
+        exports.getGrnReceivedQtyMap(),
+      ])
+    : [{ bySize: {}, totals: {} }, { totals: {} }, { totals: {} }];
+
+  attachPoFields(candidates, plannedMap, preBookedMap, grnReceivedMap);
+
+  const matched = candidates.filter((doc) =>
+    (doc.variants || []).some(
+      (v) =>
+        exports.classifyVariantAvailability(v, v.poPendingPairs || 0) ===
+        availabilityFilter
+    )
+  );
+
+  const total = matched.length;
+  const items = matched.slice(skip, skip + normalizedLimit);
 
   return {
     items,
@@ -516,14 +539,39 @@ exports.getGrnReceivedQtyMap = async () => {
   return { totals };
 };
 
+// Live/real stock for a variant — sum of sizeMap[size].qty across sizes.
+// The single source of "is this variant RFD" everywhere (never stored).
+exports.getVariantLiveStock = (variant) => {
+  const sizeMap =
+    variant?.sizeMap instanceof Map
+      ? Object.fromEntries(variant.sizeMap)
+      : variant?.sizeMap || {};
+  return Object.values(sizeMap).reduce(
+    (s, cell) => s + Math.max(0, Number(cell?.qty || 0)),
+    0
+  );
+};
+
+// Classifies a variant's availability. Never stored — computed fresh from
+// real stock + PO-pending (planned − GRN-received) every time it's read.
+// RFD: live stock > 0 (PO/booked status is irrelevant to this).
+// PREORDER: live stock === 0 AND poPendingPairs > 0.
+// NONE: live stock === 0 AND poPendingPairs <= 0 — nothing in stock, nothing
+// incoming, not orderable.
+exports.classifyVariantAvailability = (variant, poPendingPairs = 0) => {
+  if (exports.getVariantLiveStock(variant) > 0) return "RFD";
+  if (Number(poPendingPairs || 0) > 0) return "PREORDER";
+  return "NONE";
+};
+
 // Still-owed pre-booked pairs per variant — caps how much MORE can be
 // pre-booked against a PO's remaining (not-yet-arrived) planned quantity.
 // For each active order's still-PREORDER item, only sizeQuantities MINUS
-// whatever's already been reserved out of arrived GRN stock counts — that
-// reserved portion has already been fulfilled from real stock, so it's no
-// longer competing for the PO's future arrivals (see promotePreOrderItems).
-// An item that's fully promoted to REGULAR drops out entirely: a completed
-// booking, nothing left owed.
+// whatever's already been dispatched (fulfilledSizeQuantities) — that
+// dispatched portion has already been claimed from real stock via an actual
+// carton scan (see scanCarton's shared-pool claim), so it's no longer
+// competing for the PO's future arrivals. An item that's fully promoted to
+// REGULAR drops out entirely: a completed booking, nothing left owed.
 exports.getPreBookedQtyMap = async (articleIds) => {
   const Order = require("../models/Order");
   const q = {
@@ -543,13 +591,13 @@ exports.getPreBookedQtyMap = async (articleIds) => {
       if (!item.variantId) return;
       const key = String(item.variantId);
       const sizeQuantities = item.sizeQuantities || {};
-      const reserved = item.preorderReservedSizeQuantities || {};
+      const fulfilled = item.fulfilledSizeQuantities || {};
       const entries = Object.entries(sizeQuantities);
       if (entries.length) {
         if (!bySize[key]) bySize[key] = {};
         entries.forEach(([size, qty]) => {
           const cleanSize = String(size).trim();
-          const owed = Number(qty || 0) - Number(reserved[size] || 0);
+          const owed = Number(qty || 0) - Number(fulfilled[size] || 0);
           const pairs = Math.max(0, owed);
           if (pairs <= 0) return;
           bySize[key][cleanSize] = (bySize[key][cleanSize] || 0) + pairs;
@@ -565,27 +613,14 @@ exports.getPreBookedQtyMap = async (articleIds) => {
 };
 
 /** Company-wide live + blocked pair totals across all non-deleted catalog items */
-exports.getStockTotals = async (stage) => {
-  const baseStages = [
+exports.getStockTotals = async (filterParam) => {
+  // A variant with 0 live stock never contributes to this sum (nothing to
+  // add), so summing across every variant unconditionally already equals
+  // "sum restricted to RFD-classified variants" — no per-filter branching
+  // needed here.
+  const [liveRow] = await MasterCatalog.aggregate([
     { $match: { isDeleted: false } },
     { $unwind: { path: "$variants", preserveNullAndEmptyArrays: false } },
-  ];
-
-  if (stage) {
-    // Match each variant's OWN effective stage (its own override, falling
-    // back to the parent article's) rather than the article's stage alone
-    // — otherwise a variant promoted via GRN on an otherwise-still-PREORDER
-    // article (e.g. 1 of 6 variants received) would be excluded from the
-    // AVAILABLE total, and vice versa.
-    baseStages.push({
-      $match: {
-        $expr: { $eq: [{ $ifNull: ["$variants.stage", "$stage"] }, stage] },
-      },
-    });
-  }
-
-  const [liveRow] = await MasterCatalog.aggregate([
-    ...baseStages,
     { $project: { sizeCells: { $objectToArray: { $ifNull: ["$variants.sizeMap", {}] } } } },
     { $unwind: { path: "$sizeCells", preserveNullAndEmptyArrays: false } },
     {
@@ -596,95 +631,72 @@ exports.getStockTotals = async (stage) => {
     },
   ]);
 
-  // Planned pairs come from Purchase Orders now (not a stored field) and only
-  // exist for still-PREORDER variants — the AVAILABLE tab has nothing planned.
+  const scoped = Boolean(filterParam) && filterParam !== "ALL";
+
+  // Classify every variant company-wide once (RFD/PREORDER/NONE) — reused
+  // for planned/PO-pending/booked totals below instead of a stored stage.
+  const allDocs = await MasterCatalog.find({ isDeleted: false })
+    .select("variants._id variants.sizeMap")
+    .lean();
+
+  const [allPlannedMap, grnReceivedMap, bookedMap, preBookedMap] = await Promise.all([
+    exports.getPoPlannedQtyMap(),
+    exports.getGrnReceivedQtyMap(),
+    exports.getBookedQuantityMap(),
+    exports.getPreBookedQtyMap(),
+  ]);
+
+  const classificationByVariant = {};
+  allDocs.forEach((doc) => {
+    (doc.variants || []).forEach((v) => {
+      const vid = String(v._id);
+      const poPending = Math.max(
+        0,
+        (allPlannedMap.totals[vid] || 0) - (grnReceivedMap.totals[vid] || 0)
+      );
+      classificationByVariant[vid] = exports.classifyVariantAvailability(v, poPending);
+    });
+  });
+
+  // Planned/pre-ordered pairs only exist for PREORDER-classified variants —
+  // suppressed entirely on the RFD tab.
   let totalPlannedPairs = 0;
   let totalPreOrderedPairs = 0;
-  if (stage !== "AVAILABLE") {
-    const preorderDocs = await MasterCatalog.find({
-      isDeleted: false,
-      $or: [{ stage: "PREORDER" }, { "variants.stage": "PREORDER" }],
-    })
-      .select("stage variants._id variants.stage")
-      .lean();
+  if (filterParam !== "RFD") {
+    const preorderVariantIds = new Set(
+      Object.entries(classificationByVariant)
+        .filter(([, c]) => c === "PREORDER")
+        .map(([vid]) => vid)
+    );
 
-    const preorderVariantIds = new Set();
-    const preorderArticleIds = [];
-    preorderDocs.forEach((doc) => {
-      let hasPreorderVariant = false;
-      (doc.variants || []).forEach((v) => {
-        if ((v.stage || doc.stage) === "PREORDER") {
-          preorderVariantIds.add(String(v._id));
-          hasPreorderVariant = true;
-        }
-      });
-      if (hasPreorderVariant) preorderArticleIds.push(doc._id);
+    Object.entries(allPlannedMap.totals).forEach(([variantId, pairs]) => {
+      if (preorderVariantIds.has(variantId)) totalPlannedPairs += pairs;
     });
 
-    if (preorderArticleIds.length) {
-      const plannedMap = await exports.getPoPlannedQtyMap(preorderArticleIds);
-      Object.entries(plannedMap.totals).forEach(([variantId, pairs]) => {
-        if (preorderVariantIds.has(variantId)) totalPlannedPairs += pairs;
-      });
-    }
-
-    // Pairs reserved by distributors for PREORDER variants across all active
-    // order statuses. preorderReservedSizeQuantities is empty until GRN stock
-    // arrives, so we always use sizeQuantities directly here.
-    if (preorderVariantIds.size > 0) {
-      const Order = require("../models/Order");
-      const preOrders = await Order.find({
-        status: { $in: ["PRE_BOOKED", "CONFIRMED", "PENDING", "BOOKED", "PARTIAL"] },
-      }).lean();
-      preOrders.forEach((order) => {
-        (order.items || []).forEach((item) => {
-          if (!item.variantId) return;
-          if (!preorderVariantIds.has(String(item.variantId))) return;
-          const sq =
-            item.sizeQuantities instanceof Map
-              ? Object.fromEntries(item.sizeQuantities)
-              : item.sizeQuantities || {};
-          Object.values(sq).forEach((qty) => {
-            totalPreOrderedPairs += Number(qty) || 0;
-          });
-        });
-      });
-    }
+    // Pairs reserved by distributors for PREORDER variants — reuses the
+    // exact same getPreBookedQtyMap formula the per-variant "Booked" column
+    // uses (sizeQuantities minus whatever's already claimed out of arrived
+    // GRN stock), so the header card always tallies with the table instead
+    // of drifting from a separately-reimplemented raw-order sum.
+    Object.entries(preBookedMap.totals).forEach(([variantId, pairs]) => {
+      if (preorderVariantIds.has(variantId)) totalPreOrderedPairs += pairs;
+    });
   }
 
   // Company-wide "PO Pending" — same per-variant formula the list API
   // injects (PO planned − GRN received), so the header card always tallies
   // with the per-variant column.
-  // Build stage-per-variant map first — reused for both PO-pending and booked filtering.
-  const stageByVariant = {};
-  if (stage) {
-    const allDocs = await MasterCatalog.find({ isDeleted: false })
-      .select("stage variants._id variants.stage")
-      .lean();
-    allDocs.forEach((doc) => {
-      (doc.variants || []).forEach((v) => {
-        stageByVariant[String(v._id)] = v.stage || doc.stage;
-      });
-    });
-  }
-
-  const [allPlannedMap, grnReceivedMap, bookedMap] = await Promise.all([
-    exports.getPoPlannedQtyMap(),
-    exports.getGrnReceivedQtyMap(),
-    exports.getBookedQuantityMap(),
-  ]);
-
   let totalPoPendingPairs = 0;
   Object.entries(allPlannedMap.totals).forEach(([variantId, pairs]) => {
-    if (stage && stageByVariant[variantId] !== stage) return;
+    if (scoped && classificationByVariant[variantId] !== filterParam) return;
     totalPoPendingPairs += Math.max(0, pairs - (grnReceivedMap.totals[variantId] || 0));
   });
 
-  // "Booked" scoped to variants matching this tab's stage filter.
+  // "Booked" scoped to variants matching this tab's filter.
   let totalBookedPairs = 0;
-  if (stage) {
+  if (scoped) {
     Object.entries(bookedMap.totals).forEach(([variantId, pairs]) => {
-      if (stageByVariant[variantId] === stage) totalBookedPairs += pairs;
+      if (classificationByVariant[variantId] === filterParam) totalBookedPairs += pairs;
     });
   } else {
     totalBookedPairs = Object.values(bookedMap.totals).reduce((s, p) => s + p, 0);
@@ -738,19 +750,15 @@ exports.getBookedQuantityMap = async (statuses = ["BOOKED", "PENDING", "PARTIAL"
         ? Object.fromEntries(item.fulfilledSizeQuantities)
         : (item.fulfilledSizeQuantities || {});
 
-      // Still-PREORDER item: only what's actually been RESERVED out of
-      // arrived GRN stock is real, undispatched, warehouse-sitting stock —
-      // that's genuinely "booked" the same as any other order's remainder.
-      // The still-owed-but-not-yet-reserved portion isn't backed by real
-      // stock yet, so it must not count here (see promotePreOrderItems).
+      // "Booked" = ordered minus already-dispatched, uniformly for REGULAR
+      // and still-PREORDER items alike. A still-PREORDER item's un-scanned
+      // remainder is genuine outstanding demand (contested, shared-pool
+      // stock it's still competing for — see scanCarton), so it counts here
+      // exactly like any other order's undispatched remainder.
       const sizeQuantities =
-        item.bookingType === "PREORDER"
-          ? (item.preorderReservedSizeQuantities instanceof Map
-              ? Object.fromEntries(item.preorderReservedSizeQuantities)
-              : item.preorderReservedSizeQuantities || {})
-          : (item.sizeQuantities instanceof Map
-              ? Object.fromEntries(item.sizeQuantities)
-              : (item.sizeQuantities || {}));
+        item.sizeQuantities instanceof Map
+          ? Object.fromEntries(item.sizeQuantities)
+          : (item.sizeQuantities || {});
 
       if (!bySize[key]) bySize[key] = {};
       Object.entries(sizeQuantities).forEach(([size, qty]) => {
@@ -807,8 +815,6 @@ exports.update = async (req, id) => {
     brandId: body.brandId,
     manufacturerCompanyId: body.manufacturerCompanyId,
     unitId: body.unitId,
-    stage: body.stage,
-    expectedAvailableDate: body.expectedAvailableDate || null,
     isActive: parseBoolean(body.isActive, undefined),
   };
 
@@ -849,7 +855,7 @@ exports.update = async (req, id) => {
 
   if (body.variants !== undefined) {
     const variantsRaw = parseMaybeJson(body.variants, []);
-    const normalized = normalizeVariants(variantsRaw, doc.stage, doc.expectedAvailableDate);
+    const normalized = normalizeVariants(variantsRaw);
 
     const existingById = new Map(
       doc.variants.map((v) => [v._id.toString(), v])
@@ -1322,12 +1328,11 @@ exports.getVariantStock = async (variantId) => {
   bookedOrders.forEach(order => {
     const item = (order.items || []).find(i => i.variantId && i.variantId.toString() === variantId.toString());
     if (!item) return;
-    // Still-PREORDER item — only the RESERVED-so-far portion is real,
-    // undispatched warehouse stock (already deducted straight from
-    // sizeMap.qty, see promotePreOrderItems); the still-owed remainder
-    // isn't backed by real stock and must not count here.
-    const sizeSource =
-      item.bookingType === "PREORDER" ? item.preorderReservedSizeQuantities : item.sizeQuantities;
+    // Ordered minus already-dispatched, uniformly for REGULAR and still-
+    // PREORDER items — a still-PREORDER item's un-scanned remainder is
+    // genuine outstanding/contested demand against the shared carton pool
+    // (see scanCarton), so it counts here just like any other remainder.
+    const sizeSource = item.sizeQuantities;
     if (sizeSource) {
       const entries = sizeSource instanceof Map
         ? Array.from(sizeSource.entries())
@@ -1445,16 +1450,25 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
       ? variant.sizeQuantities.toJSON()
       : Object.fromEntries(variant.sizeQuantities || []);
 
-  // Manual Inward on a still-PREORDER variant is not allowed — its planned
-  // quantity is whatever the Purchase Orders say, and real stock arrives via
-  // GRN only (which promotes it to AVAILABLE).
-  const effectiveStage = variant.stage || catalog.stage;
-  if (type === "INWARD" && effectiveStage === "PREORDER") {
-    const err = new Error(
-      "Manual inward is not allowed for a pre-order variant — planned quantity comes from its Purchase Order and stock arrives via GRN"
+  // Manual Inward on a variant currently classified PREORDER (0 live stock,
+  // an approved PO still pending) is not allowed — its planned quantity is
+  // whatever the Purchase Order says, and real stock arrives via GRN only.
+  if (type === "INWARD") {
+    const [plannedMap, grnMap] = await Promise.all([
+      exports.getPoPlannedQtyMap([catalog._id]),
+      exports.getGrnReceivedQtyMap(),
+    ]);
+    const poPending = Math.max(
+      0,
+      (plannedMap.totals[variantIdStr] || 0) - (grnMap.totals[variantIdStr] || 0)
     );
-    err.statusCode = 400;
-    throw err;
+    if (exports.classifyVariantAvailability(variant, poPending) === "PREORDER") {
+      const err = new Error(
+        "Manual inward is not allowed for a pre-order variant — planned quantity comes from its Purchase Order and stock arrives via GRN"
+      );
+      err.statusCode = 400;
+      throw err;
+    }
   }
 
   const delta = {};

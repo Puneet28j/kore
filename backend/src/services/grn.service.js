@@ -462,33 +462,9 @@ exports.submitDraft = async (draftId, {
         { $inc: incUpdate }
       );
       stockedVariantIds.push(String(variant._id));
-
-      // Auto-promote PREORDER → AVAILABLE, scoped to the variant that
-      // actually received stock — sibling variants without their own GRN
-      // yet must stay PREORDER, not get flipped along with this one.
-      const effectiveVariantStage = variant.stage || catalog.stage;
-      if (effectiveVariantStage === "PREORDER") {
-        await MasterCatalog.updateOne(
-          { "variants._id": variant._id },
-          { $set: { "variants.$.stage": "AVAILABLE", "variants.$.expectedAvailableDate": null } }
-        );
-        console.log(`[GRN-SUBMIT] Auto-promoted variant "${variant.itemName}" on "${catalog.articleName}" from PREORDER → AVAILABLE`);
-
-        // Recompute the article-level aggregate — it only flips to
-        // AVAILABLE once every variant has arrived; otherwise the article
-        // keeps showing up in Pre-Order listings for its remaining variants.
-        const refreshed = await MasterCatalog.findById(catalog._id).select("stage variants.stage").lean();
-        const allAvailable = (refreshed?.variants || []).every(
-          (v) => (v.stage || refreshed.stage) === "AVAILABLE"
-        );
-        if (allAvailable && refreshed.stage !== "AVAILABLE") {
-          await MasterCatalog.updateOne(
-            { _id: catalog._id },
-            { $set: { stage: "AVAILABLE", expectedAvailableDate: null } }
-          );
-          console.log(`[GRN-SUBMIT] All variants now available — promoted article "${catalog.articleName}" from PREORDER → AVAILABLE`);
-        }
-      }
+      // No explicit stage promotion needed — RFD/PreOrder is computed live
+      // from sizeMap.qty + PO-pending, so incrementing qty above already
+      // makes this variant RFD by definition.
     }
   }
 
@@ -529,29 +505,51 @@ exports.submitDraft = async (draftId, {
 
   await draft.save();
 
-  // Promote any pre-order ITEMS whose stock just arrived — flips them to
-  // REGULAR in place (no order-level status change) so they join the scan
-  // pool alongside that order's already-dispatchable RFD items. Whatever
-  // stock the promotion doesn't consume stays in sizeMap.qty as regular
-  // available stock. GRN submission itself must not fail if this step errors.
+  // Notify every order with a still-PREORDER item on this variant — under
+  // the shared-pool model they all now see the same live carton pool, so
+  // ALL of them (not just one) need their Scan screen refreshed, not just
+  // whichever order happened to be "next in line". GRN submission itself
+  // must not fail if this step errors.
   if (stockedVariantIds.length) {
     try {
       const orderService = require("./order.service");
-      const updatedOrders = await orderService.promotePreOrderItems(stockedVariantIds);
-      if (updatedOrders.length) {
+      const affectedOrders = await orderService.promotePreOrderItems(stockedVariantIds);
+      if (affectedOrders.length) {
         let emitOrderUpdate;
         try {
           ({ emitOrderUpdate } = require("../socket"));
         } catch (_) {}
-        updatedOrders.forEach((o) => {
+        affectedOrders.forEach((o) => {
           try {
             if (emitOrderUpdate) emitOrderUpdate(o);
           } catch (_) {}
         });
-        console.log(`[GRN-SUBMIT] Promoted pre-order item(s) in ${updatedOrders.length} order(s) to regular`);
+        console.log(`[GRN-SUBMIT] Notified ${affectedOrders.length} order(s) waiting on this stock`);
       }
     } catch (err) {
-      console.error("[GRN-SUBMIT] Pre-order item promotion failed:", err.message);
+      console.error("[GRN-SUBMIT] Pre-order notification failed:", err.message);
+    }
+
+    // Top up any REGULAR items stuck without allocatedCartons because the
+    // barcode pool was short/empty at booking time — see
+    // backfillRegularCartonAllocations for why this can't just self-heal.
+    try {
+      const orderService = require("./order.service");
+      const backfilledOrders = await orderService.backfillRegularCartonAllocations(stockedVariantIds);
+      if (backfilledOrders.length) {
+        let emitOrderUpdate;
+        try {
+          ({ emitOrderUpdate } = require("../socket"));
+        } catch (_) {}
+        backfilledOrders.forEach((o) => {
+          try {
+            if (emitOrderUpdate) emitOrderUpdate(o);
+          } catch (_) {}
+        });
+        console.log(`[GRN-SUBMIT] Backfilled carton codes for ${backfilledOrders.length} regular order(s)`);
+      }
+    } catch (err) {
+      console.error("[GRN-SUBMIT] Regular carton backfill failed:", err.message);
     }
   }
 

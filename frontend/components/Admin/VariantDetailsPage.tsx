@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { getImageUrl } from "../../utils/imageUtils";
 import { formatAssortment } from "../../utils/assortmentUtils";
 import { masterCatalogService } from "../../services/masterCatalogService";
+import { getVariantAvailability } from "../../utils/catalogAvailability";
 
 interface VariantDetailsPageProps {
   article: Article;
@@ -416,12 +417,12 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
               </div>
               <span
                 className={`shrink-0 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
-                  article.status === "PREORDER"
+                  getVariantAvailability(variant) === "PREORDER"
                     ? "bg-rose-50 text-rose-600 border border-rose-100"
                     : "bg-emerald-50 text-emerald-600 border border-emerald-100"
                 }`}
               >
-                {article.status === "PREORDER" ? "Wish" : "Live"}
+                {getVariantAvailability(variant) === "PREORDER" ? "Wish" : "Live"}
               </span>
             </div>
 
@@ -515,13 +516,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
             {/* <SpecRow label="Live Stock (Ctn)" value={`${liveCartonsCount} Ctn`} badge={liveCartonsCount > 0 ? "emerald" : "rose"} /> */}
             <SpecRow label="Manufacturer" value={article.manufacturer || "—"} />
             <SpecRow label="Unit" value={article.unit || "—"} />
-            {article.status === "PREORDER" && (
-              <SpecRow
-                label="Expected Date"
-                value={article.expectedDate || "Required"}
-                badge={!article.expectedDate ? "rose" : undefined}
-              />
-            )}
           </div>
         </div>
       </div>

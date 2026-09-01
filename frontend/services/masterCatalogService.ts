@@ -168,4 +168,13 @@ export const masterCatalogService = {
       body: JSON.stringify({ sku }),
     });
   },
+
+  async bulkStockMovementBySku(
+    rows: { sku: string; type: "INWARD" | "OUTWARD"; cartons: number; reason?: string; note?: string }[]
+  ) {
+    return apiFetch(`/master-catalog/stock-movement/bulk-by-sku`, {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    });
+  },
 };

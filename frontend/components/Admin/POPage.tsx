@@ -37,9 +37,9 @@ import { poService } from "../../services/poService";
 import { vendorService } from "../../services/vendorService";
 import { exportPOToPDF, exportOrderToExcel } from "../../utils/exportPO";
 import { formatAssortment } from "../../utils/assortmentUtils";
+import { enrichItemsWithCatalogMrp } from "../../utils/poItemEnrichment";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
-import { getVariantAvailability } from "../../utils/catalogAvailability";
 
 // ─── Reusable styles ───────────────────────────────────
 const inputClass =
@@ -64,6 +64,8 @@ const emptyItem = (): PurchaseOrderItem => ({
   taxType: "GST",
   basePrice: 0,
   mrp: 0,
+  onlineMrp: 0,
+  offlineMrp: 0,
   taxPerItem: 0,
   unitTotal: 0,
   sizeMap: {},
@@ -72,6 +74,19 @@ const emptyItem = (): PurchaseOrderItem => ({
 
 // ─── Format date for input ─────────────────────────────
 const todayStr = () => new Date().toISOString().split("T")[0];
+
+// Draggable handle rendered at the right edge of a resizable Item Details
+// header cell — module-level so its identity is stable across renders
+// (defining it inside POPage would remount it on every width change).
+const ColResizeHandle: React.FC<{
+  col: string;
+  onResizeStart: (col: string) => (e: React.MouseEvent) => void;
+}> = ({ col, onResizeStart }) => (
+  <div
+    onMouseDown={onResizeStart(col)}
+    className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize select-none hover:bg-indigo-400/70 active:bg-indigo-500 z-10"
+  />
+);
 
 // ─── Computations ──────────────────────────────────────
 const computeItem = (item: PurchaseOrderItem): PurchaseOrderItem => {
@@ -547,6 +562,8 @@ const QuantityGridModal: React.FC<{
       basePrice:
         variant.costPrice || variant.sellingPrice || article.pricePerPair || 0,
       mrp: variant.mrp || article.mrp || 0,
+      onlineMrp: variant.onlineMrp || 0,
+      offlineMrp: variant.offlineMrp || 0,
       image: (() => {
         const colorMedia = article.colorMedia || [];
         const variantColor = (variant.color || "").toLowerCase().trim();
@@ -833,6 +850,66 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
     savedDraft?.discountPercent || 0
   );
 
+  // ── Item Details table: drag-to-resize columns ──────────────────────────
+  const [itemColWidths, setItemColWidths] = useState<Record<string, number>>({
+    item: 300,
+    hsn: 90,
+    qty: 90,
+    onlineMrp: 110,
+    offlineMrp: 110,
+    costing: 110,
+    gst: 80,
+    totalEx: 110,
+    totalIncl: 110,
+  });
+  const resizingColRef = useRef<{
+    col: string;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+
+  const handleColResizeMove = useCallback((e: MouseEvent) => {
+    const r = resizingColRef.current;
+    if (!r) return;
+    const delta = e.clientX - r.startX;
+    const newWidth = Math.max(50, r.startWidth + delta);
+    setItemColWidths((prev) => ({ ...prev, [r.col]: newWidth }));
+  }, []);
+
+  const handleColResizeEnd = useCallback(() => {
+    resizingColRef.current = null;
+    document.removeEventListener("mousemove", handleColResizeMove);
+    document.removeEventListener("mouseup", handleColResizeEnd);
+  }, [handleColResizeMove]);
+
+  const handleColResizeStart = useCallback(
+    (col: string) => (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resizingColRef.current = {
+        col,
+        startX: e.clientX,
+        startWidth: itemColWidths[col],
+      };
+      document.addEventListener("mousemove", handleColResizeMove);
+      document.addEventListener("mouseup", handleColResizeEnd);
+    },
+    [itemColWidths, handleColResizeMove, handleColResizeEnd]
+  );
+
+  const itemTableWidth =
+    32 +
+    itemColWidths.item +
+    itemColWidths.hsn +
+    itemColWidths.qty +
+    itemColWidths.onlineMrp +
+    itemColWidths.offlineMrp +
+    itemColWidths.costing +
+    itemColWidths.gst +
+    itemColWidths.totalEx +
+    itemColWidths.totalIncl +
+    32;
+
   const isApprovedPO = useMemo(() => {
     if (!editingPOId) return false;
     const po = purchaseOrders.find((p) => p.id === editingPOId);
@@ -951,10 +1028,11 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     image: string;
     basePrice: number;
     mrp: number;
+    onlineMrp: number;
+    offlineMrp: number;
     assortment?: string;
     gender: string;
     color?: string;
-    status?: string;
   }[] = [];
 
   const seen = new Set<string>();
@@ -1007,10 +1085,11 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
             article.pricePerPair ||
             0,
           mrp: variant.mrp || article.mrp || 0,
+          onlineMrp: variant.onlineMrp || 0,
+          offlineMrp: variant.offlineMrp || 0,
           assortment,
           gender: article.category || "",
           color: variant.color || "",
-          status: getVariantAvailability(variant),
         });
       });
     } else {
@@ -1031,6 +1110,8 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
         image: article.imageUrl || "",
         basePrice: article.pricePerPair || 0,
         mrp: article.mrp || 0,
+        onlineMrp: 0,
+        offlineMrp: 0,
         gender: article.category || "",
       });
     }
@@ -1131,15 +1212,18 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
     setNotes(po.notes || "");
     setTermsAndConditions(po.termsAndConditions || "");
     setItems(
-      po.items.map((it: any) =>
-        computeItem({
-          ...it,
-          id:
-            it.rowId ||
-            it._id ||
-            it.id ||
-            `poi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        })
+      enrichItemsWithCatalogMrp(
+        po.items.map((it: any) =>
+          computeItem({
+            ...it,
+            id:
+              it.rowId ||
+              it._id ||
+              it.id ||
+              `poi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          })
+        ),
+        articles
       )
     );
     setDiscountPercent(po.discountPercent || 0);
@@ -1261,6 +1345,8 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
         image: option.image,
         basePrice: option.basePrice * 24,
         mrp: (option.mrp || 0) * 24,
+        onlineMrp: (option.onlineMrp || 0) * 24,
+        offlineMrp: (option.offlineMrp || 0) * 24,
         cartonCount: base.cartonCount || 1,
         sizeMap: defaultSizeMap,
         assortment: option.assortment,
@@ -1612,7 +1698,10 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                             const v = vendors.find(
                               (ven) => ven.id === po.vendorId
                             );
-                            await exportPOToPDF(po, v);
+                            await exportPOToPDF(
+                              { ...po, items: enrichItemsWithCatalogMrp(po.items, articles) },
+                              v
+                            );
                           }}
                           className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-all inline-flex items-center gap-1 font-semibold text-xs"
                           title="Download PDF"
@@ -2052,60 +2141,104 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
             )}
           </div>
 
-          {/* ── Desktop Table ── */}
+          {/* ── Desktop Table (Google-Sheets style: bordered grid, flat inputs) ── */}
           <div className="hidden md:block border border-slate-200 rounded-2xl overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left" style={{ minWidth: "1080px" }}>
+              <table
+                className="text-left border-collapse"
+                style={{ tableLayout: "fixed", width: itemTableWidth }}
+              >
+                <colgroup>
+                  <col style={{ width: 32 }} />
+                  <col style={{ width: itemColWidths.item }} />
+                  <col style={{ width: itemColWidths.hsn }} />
+                  <col style={{ width: itemColWidths.qty }} />
+                  <col style={{ width: itemColWidths.onlineMrp }} />
+                  <col style={{ width: itemColWidths.offlineMrp }} />
+                  <col style={{ width: itemColWidths.costing }} />
+                  <col style={{ width: itemColWidths.gst }} />
+                  <col style={{ width: itemColWidths.totalEx }} />
+                  <col style={{ width: itemColWidths.totalIncl }} />
+                  <col style={{ width: 32 }} />
+                </colgroup>
                 <thead>
                   {/* Section group row */}
-                  <tr className="border-b border-slate-200">
-                    <th className="px-4 py-2 bg-slate-100 text-[9px] font-black text-slate-500 uppercase tracking-widest" colSpan={2}>
+                  <tr>
+                    <th className="border border-slate-200 px-3 py-1.5 bg-slate-100 text-[9px] font-black text-slate-500 uppercase tracking-widest" colSpan={2}>
                       #&nbsp;&nbsp;Item
                     </th>
-                    <th className="px-3 py-2 bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-widest border-l border-slate-200" colSpan={2}>
+                    <th className="border border-slate-200 px-2 py-1.5 bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-widest" colSpan={2}>
                       Details
                     </th>
-                    <th className="px-3 py-2 bg-violet-50 text-[9px] font-black text-violet-400 uppercase tracking-widest border-l border-violet-100 text-right" colSpan={2}>
+                    <th className="border border-slate-200 px-2 py-1.5 bg-violet-50 text-[9px] font-black text-violet-400 uppercase tracking-widest text-right" colSpan={3}>
                       Pricing
                     </th>
-                    <th className="px-3 py-2 bg-amber-50 text-[9px] font-black text-amber-500 uppercase tracking-widest border-l border-amber-100 text-right" colSpan={3}>
+                    <th className="border border-slate-200 px-2 py-1.5 bg-amber-50 text-[9px] font-black text-amber-500 uppercase tracking-widest text-right" colSpan={3}>
                       Tax &amp; Totals
                     </th>
-                    <th className="px-2 py-2 bg-slate-100" />
+                    <th className="border border-slate-200 px-2 py-1.5 bg-slate-100 w-8" />
                   </tr>
                   {/* Column labels */}
-                  <tr className="bg-slate-50 border-b border-slate-200">
-                    <th className="w-8 px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">#</th>
-                    <th className="px-4 py-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider">Item</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-l border-slate-200 whitespace-nowrap">HSN</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">Qty (Ctn)</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-violet-500 uppercase tracking-wider border-l border-violet-100 text-right whitespace-nowrap">MRP / Pair (₹)</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-violet-500 uppercase tracking-wider text-right whitespace-nowrap">Costing / Pair (₹)</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-amber-500 uppercase tracking-wider border-l border-amber-100 text-right whitespace-nowrap">GST&nbsp;%</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-amber-500 uppercase tracking-wider text-right whitespace-nowrap">Total (ex.GST)</th>
-                    <th className="px-3 py-2.5 text-[10px] font-bold text-amber-600 uppercase tracking-wider text-right whitespace-nowrap">Total (incl.GST)</th>
-                    <th className="w-10 px-2 py-2.5" />
+                  <tr className="bg-slate-50">
+                    <th className="border border-slate-200 w-8 px-2 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">#</th>
+                    <th className="relative border border-slate-200 px-3 py-2 text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                      <span className="block truncate pr-2" title="Item">Item</span>
+                      <ColResizeHandle col="item" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      <span className="block truncate pr-2" title="HSN">HSN</span>
+                      <ColResizeHandle col="hsn" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      <span className="block truncate pr-2" title="Qty (Ctn)">Qty (Ctn)</span>
+                      <ColResizeHandle col="qty" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-violet-500 uppercase tracking-wider text-right">
+                      <span className="block truncate pr-2" title="Online MRP (₹)">Online MRP (₹)</span>
+                      <ColResizeHandle col="onlineMrp" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-violet-500 uppercase tracking-wider text-right">
+                      <span className="block truncate pr-2" title="Offline MRP (₹)">Offline MRP (₹)</span>
+                      <ColResizeHandle col="offlineMrp" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-violet-500 uppercase tracking-wider text-right">
+                      <span className="block truncate pr-2" title="Costing / Pair (₹)">Costing / Pair (₹)</span>
+                      <ColResizeHandle col="costing" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-amber-500 uppercase tracking-wider text-right">
+                      <span className="block truncate pr-2" title="GST %">GST&nbsp;%</span>
+                      <ColResizeHandle col="gst" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-amber-500 uppercase tracking-wider text-right">
+                      <span className="block truncate pr-2" title="Total (ex.GST)">Total (ex.GST)</span>
+                      <ColResizeHandle col="totalEx" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="relative border border-slate-200 px-2 py-2 text-[10px] font-bold text-amber-600 uppercase tracking-wider text-right">
+                      <span className="block truncate pr-2" title="Total (incl.GST)">Total (incl.GST)</span>
+                      <ColResizeHandle col="totalIncl" onResizeStart={handleColResizeStart} />
+                    </th>
+                    <th className="border border-slate-200 w-8 px-1 py-2" />
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody>
                   {items.map((item, idx) => (
                     <tr key={item.id} className={`group transition-colors ${item.articleId ? "hover:bg-indigo-50/30" : "bg-slate-50/60 hover:bg-slate-50"}`}>
 
                       {/* Row # */}
-                      <td className="px-3 py-3 text-center">
+                      <td className="border border-slate-200 px-2 py-1.5 text-center">
                         <span className="text-[11px] font-bold text-slate-300">{idx + 1}</span>
                       </td>
 
-                      {/* Item (image + name + gender + assortment) */}
-                      <td className="px-4 py-3 min-w-[240px]">
-                        <div className="flex items-center gap-3">
+                      {/* Item (image + name + gender/color + assortment/sku) */}
+                      <td className="border border-slate-200 px-2 py-1.5">
+                        <div className="flex items-center gap-2.5">
                           {/* Thumbnail */}
                           <div className="shrink-0">
                             {item.image ? (
-                              <img src={getImageUrl(item.image)} className="w-10 h-10 rounded-xl object-cover border border-slate-200 shadow-sm" alt="" />
+                              <img src={getImageUrl(item.image)} className="w-9 h-9 rounded-lg object-cover border border-slate-200" alt="" />
                             ) : (
-                              <div className="w-10 h-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center">
-                                <Package size={14} className="text-slate-300" />
+                              <div className="w-9 h-9 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center">
+                                <Package size={13} className="text-slate-300" />
                               </div>
                             )}
                           </div>
@@ -2120,20 +2253,24 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                               {item.articleId ? (
                                 <>
                                   <p className="text-xs font-semibold text-slate-800 truncate leading-tight">{item.itemName}</p>
-                                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                                    {item.gender && (
-                                      <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] font-bold uppercase tracking-wide">{item.gender}</span>
-                                    )}
-                                    {item.color && (
-                                      <span className="px-1.5 py-0.5 bg-rose-50 text-rose-500 rounded text-[9px] font-bold border border-rose-100">{item.color}</span>
-                                    )}
-                                    {item.assortment && (
+                                  {(item.gender || item.color || item.sku) && (
+                                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                      {item.gender && (
+                                        <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] font-bold uppercase tracking-wide">{item.gender}</span>
+                                      )}
+                                      {item.color && (
+                                        <span className="px-1.5 py-0.5 bg-rose-50 text-rose-500 rounded text-[9px] font-bold border border-rose-100">{item.color}</span>
+                                      )}
+                                      {item.sku && (
+                                        <span className="text-[9px] text-slate-400 font-mono">{item.sku}</span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {item.assortment && (
+                                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                                       <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[9px] font-bold border border-indigo-100">{item.assortment}</span>
-                                    )}
-                                    {item.sku && (
-                                      <span className="text-[9px] text-slate-400 font-mono">{item.sku}</span>
-                                    )}
-                                  </div>
+                                    </div>
+                                  )}
                                 </>
                               ) : (
                                 <span className="text-xs text-slate-400 flex items-center gap-1 group-hover/btn:text-indigo-500 transition-colors">
@@ -2148,10 +2285,10 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                       </td>
 
                       {/* HSN */}
-                      <td className="px-3 py-3 border-l border-slate-100">
+                      <td className="border border-slate-200 p-0">
                         <input
                           type="text"
-                          className="w-20 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 text-[11px] font-mono text-center"
+                          className="w-full px-2 py-1.5 bg-transparent outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 text-[11px] font-mono text-center"
                           value={item.itemTaxCode}
                           disabled={isApprovedPO}
                           onChange={(e) => updateItem(item.id, "itemTaxCode", e.target.value)}
@@ -2160,61 +2297,67 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                       </td>
 
                       {/* Qty (Ctn) */}
-                      <td className="px-3 py-3">
+                      <td className="border border-slate-200 p-0">
                         {item.articleId ? (
                           <input
                             type="number"
                             min={0}
                             step={1}
                             disabled={isApprovedPO}
-                            value={item.cartonCount || 0}
+                            value={item.cartonCount || ""}
                             onChange={e => handleCartonCountChange(item.id, parseInt(e.target.value) || 0)}
                             onWheel={e => e.currentTarget.blur()}
-                            className={`w-16 h-9 px-2 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-black text-indigo-700 text-center outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all ${isApprovedPO ? "cursor-not-allowed opacity-70" : ""}`}
+                            className={`w-full px-2 py-1.5 bg-indigo-50/60 outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 text-[11px] font-black text-indigo-700 text-center transition-all ${isApprovedPO ? "cursor-not-allowed opacity-70" : ""}`}
                           />
                         ) : (
-                          <div className="w-16 h-9 bg-slate-100 rounded-lg flex items-center justify-center text-slate-300 text-xs">—</div>
+                          <div className="px-2 py-1.5 text-center text-slate-300 text-xs">—</div>
                         )}
                       </td>
 
-                      {/* MRP / Pair */}
-                      <td className="px-3 py-3 border-l border-violet-100">
+                      {/* Online MRP / Pair */}
+                      <td className="border border-slate-200 p-0">
                         <input
                           type="number"
                           min={0}
-                          className="w-20 px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 text-[11px] font-bold text-right"
-                          value={item.mrp ? item.mrp / 24 : ""}
+                          className="w-full px-2 py-1.5 bg-transparent outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 text-[11px] font-bold text-right"
+                          value={item.onlineMrp ? item.onlineMrp / 24 : ""}
                           disabled={isApprovedPO}
-                          onChange={(e) => updateItem(item.id, "mrp", (parseFloat(e.target.value) || 0) * 24)}
+                          onChange={(e) => updateItem(item.id, "onlineMrp", (parseFloat(e.target.value) || 0) * 24)}
                         />
-                        {item.mrp > 0 && (
-                          <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{item.mrp.toFixed(1)}/ctn</p>
-                        )}
+                      </td>
+
+                      {/* Offline MRP / Pair */}
+                      <td className="border border-slate-200 p-0">
+                        <input
+                          type="number"
+                          min={0}
+                          className="w-full px-2 py-1.5 bg-transparent outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 text-[11px] font-bold text-right"
+                          value={item.offlineMrp ? item.offlineMrp / 24 : ""}
+                          disabled={isApprovedPO}
+                          onChange={(e) => updateItem(item.id, "offlineMrp", (parseFloat(e.target.value) || 0) * 24)}
+                        />
                       </td>
 
                       {/* Costing / Pair */}
-                      <td className="px-3 py-3">
+                      <td className="border border-slate-200 p-0">
                         <input
                           type="number"
                           min={0}
-                          className="w-24 px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 text-[11px] font-bold text-right text-violet-700"
+                          className="w-full px-2 py-1.5 bg-violet-50/50 outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 text-[11px] font-bold text-right text-violet-700"
                           value={item.basePrice ? item.basePrice / 24 : ""}
                           disabled={isApprovedPO}
                           onChange={(e) => updateItem(item.id, "basePrice", (parseFloat(e.target.value) || 0) * 24)}
                         />
-                        {item.basePrice > 0 && (
-                          <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{item.basePrice.toFixed(1)}/ctn</p>
-                        )}
                       </td>
 
                       {/* GST % */}
-                      <td className="px-3 py-3 border-l border-amber-100">
+                      <td className="border border-slate-200 p-0">
                         <input
                           type="number"
                           min={0}
                           max={100}
                           step={0.5}
-                          className="w-16 px-2 py-1.5 bg-amber-50 border border-amber-200 rounded-lg outline-none focus:ring-2 focus:ring-amber-500/20 text-[11px] font-bold text-center text-amber-700"
+                          className="w-full px-2 py-1.5 bg-amber-50/50 outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 text-[11px] font-bold text-center text-amber-700"
                           value={item.taxRate || ""}
                           disabled={isApprovedPO}
                           onChange={(e) => updateItem(item.id, "taxRate", parseFloat(e.target.value) || 0)}
@@ -2222,31 +2365,31 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                       </td>
 
                       {/* Total ex.GST */}
-                      <td className="px-3 py-3 text-right">
-                        <div className="flex flex-col items-end">
-                          <span className="text-xs font-bold text-slate-700">₹{item.unitTotal.toFixed(2)}</span>
+                      <td className="border border-slate-200 px-2 py-1.5 text-right overflow-hidden">
+                        <div className="flex flex-col items-end min-w-0">
+                          <span className="text-xs font-bold text-slate-700 truncate max-w-full">₹{item.unitTotal.toFixed(2)}</span>
                           {item.taxPerItem > 0 && (
-                            <span className="text-[10px] text-amber-500 font-medium">+₹{item.taxPerItem.toFixed(2)} tax</span>
+                            <span className="text-[9px] text-amber-500 font-medium truncate max-w-full">+₹{item.taxPerItem.toFixed(2)} tax</span>
                           )}
                         </div>
                       </td>
 
                       {/* Total incl.GST */}
-                      <td className="px-3 py-3 text-right">
-                        <span className={`text-sm font-black whitespace-nowrap ${item.articleId ? "text-indigo-700" : "text-slate-300"}`}>
+                      <td className="border border-slate-200 px-2 py-1.5 text-right overflow-hidden">
+                        <span className={`block text-xs font-black truncate ${item.articleId ? "text-indigo-700" : "text-slate-300"}`}>
                           ₹{(item.unitTotal + item.taxPerItem).toFixed(2)}
                         </span>
                       </td>
 
                       {/* Delete */}
-                      <td className="px-2 py-3">
+                      <td className="border border-slate-200 px-1 py-1.5 text-center">
                         {items.length > 1 && !isApprovedPO && (
                           <button
                             type="button"
                             onClick={() => removeRow(item.id)}
-                            className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                            className="p-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded transition-all opacity-0 group-hover:opacity-100"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={13} />
                           </button>
                         )}
                       </td>
@@ -2256,21 +2399,21 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                 {/* Totals footer */}
                 {items.some(it => it.articleId) && (
                   <tfoot>
-                    <tr className="bg-gradient-to-r from-indigo-50 to-violet-50 border-t-2 border-indigo-200">
-                      <td colSpan={7} className="px-4 py-3 text-xs font-bold text-slate-500 text-right border-l border-amber-100">
+                    <tr className="bg-gradient-to-r from-indigo-50 to-violet-50">
+                      <td colSpan={8} className="border border-slate-200 px-3 py-2 text-xs font-bold text-slate-500 text-right">
                         Totals
                       </td>
-                      <td className="px-3 py-3 text-right">
+                      <td className="border border-slate-200 px-2 py-2 text-right">
                         <span className="text-xs font-bold text-slate-700">
                           ₹{items.reduce((s, it) => s + it.unitTotal, 0).toFixed(2)}
                         </span>
                       </td>
-                      <td className="px-3 py-3 text-right">
+                      <td className="border border-slate-200 px-2 py-2 text-right">
                         <span className="text-sm font-black text-indigo-700">
                           ₹{items.reduce((s, it) => s + it.unitTotal + it.taxPerItem, 0).toFixed(2)}
                         </span>
                       </td>
-                      <td />
+                      <td className="border border-slate-200" />
                     </tr>
                   </tfoot>
                 )}
@@ -2333,7 +2476,7 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                         min={0}
                         step={1}
                         disabled={isApprovedPO}
-                        value={item.cartonCount || 0}
+                        value={item.cartonCount || ""}
                         onChange={e => handleCartonCountChange(item.id, parseInt(e.target.value) || 0)}
                         onWheel={e => e.currentTarget.blur()}
                         className={`w-full h-8 px-2 bg-indigo-50 border border-indigo-200 rounded-lg text-sm font-black text-indigo-700 text-center outline-none focus:ring-2 focus:ring-indigo-500/20 ${isApprovedPO ? "cursor-not-allowed opacity-70" : ""}`}
@@ -2345,9 +2488,12 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                     <input type="number" min={0} max={100} step={0.5} className="w-full px-2 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] font-bold text-center outline-none text-amber-700" value={item.taxRate || ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "taxRate", parseFloat(e.target.value) || 0)} />
                   </div>
                   <div>
-                    <p className="text-[9px] font-bold text-violet-500 uppercase mb-1">MRP/Pair (₹)</p>
-                    <input type="number" min={0} className="w-full px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-[11px] font-bold text-right outline-none" value={item.mrp ? item.mrp / 24 : ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "mrp", (parseFloat(e.target.value) || 0) * 24)} />
-                    {item.mrp > 0 && <p className="text-[9px] text-violet-400 text-right mt-0.5">₹{item.mrp.toFixed(1)}/ctn</p>}
+                    <p className="text-[9px] font-bold text-violet-500 uppercase mb-1">Online MRP (₹)</p>
+                    <input type="number" min={0} className="w-full px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-[11px] font-bold text-right outline-none" value={item.onlineMrp ? item.onlineMrp / 24 : ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "onlineMrp", (parseFloat(e.target.value) || 0) * 24)} />
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-bold text-violet-500 uppercase mb-1">Offline MRP (₹)</p>
+                    <input type="number" min={0} className="w-full px-2 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-[11px] font-bold text-right outline-none" value={item.offlineMrp ? item.offlineMrp / 24 : ""} disabled={isApprovedPO} onChange={(e) => updateItem(item.id, "offlineMrp", (parseFloat(e.target.value) || 0) * 24)} />
                   </div>
                   <div>
                     <p className="text-[9px] font-bold text-violet-600 uppercase mb-1">Costing/Pair (₹)</p>
@@ -2467,7 +2613,6 @@ const itemPickerDropdownRef = useRef<HTMLDivElement>(null);
                                   <span className="text-[10px] text-slate-400 font-mono">{option.sku}{option.brand ? ` · ${option.brand}` : ""}</span>
                                   {option.gender && <span className="text-[9px] px-1 py-0.5 bg-slate-100 text-slate-500 rounded font-bold">{option.gender}</span>}
                                   {option.assortment && <span className="text-[9px] px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded font-bold border border-indigo-100">{option.assortment}</span>}
-                                  {option.status === "PREORDER" && <span className="text-[9px] px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded font-bold border border-amber-200">Pre-Order</span>}
                                 </div>
                               </div>
                               <span className={`ml-auto text-xs font-bold shrink-0 ${selected ? "text-indigo-600" : "text-slate-500"}`}>₹{option.basePrice}</span>

@@ -33,7 +33,7 @@ interface MyOrdersProps {
 
 const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.PENDING]:   'Pending',
-  [OrderStatus.BOOKED]:    'Pending',
+  [OrderStatus.BOOKED]:    'Booked',
   [OrderStatus.PFD]:       'Dispatched',
   [OrderStatus.RFD]:       'In Transit',
   [OrderStatus.RECEIVED]:  'Delivered',
@@ -140,7 +140,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
 
   const statCards = [
     { label: 'Total CTN',  val: statusCounts.total    || 0, color: 'text-slate-700',   bg: 'bg-slate-50',   border: 'border-slate-200', filter: 'ALL' as const },
-    { label: 'Pending',    val: statusCounts.BOOKED   || 0, color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-100',  filter: OrderStatus.BOOKED    },
+    { label: 'Booked',     val: statusCounts.BOOKED   || 0, color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-100',  filter: OrderStatus.BOOKED    },
     { label: 'Dispatched', val: statusCounts.PFD       || 0, color: 'text-amber-600',   bg: 'bg-amber-50',   border: 'border-amber-100', filter: OrderStatus.PFD       },
     { label: 'In Transit', val: statusCounts.RFD       || 0, color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-100',  filter: OrderStatus.RFD       },
     { label: 'Delivered',  val: statusCounts.RECEIVED  || 0, color: 'text-green-700',   bg: 'bg-green-50',   border: 'border-green-100', filter: OrderStatus.RECEIVED  },
@@ -153,7 +153,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">Order History</h2>
-          <p className="text-slate-400 text-xs font-medium">Track your orders · Pending → Dispatched → In Transit → Delivered</p>
+          <p className="text-slate-400 text-xs font-medium">Track your orders · Booked → Dispatched → In Transit → Delivered</p>
         </div>
         {lastUpdated && (
           <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg">
@@ -166,7 +166,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
       </div>
 
       {/* Stats Bar — clickable filters */}
-      <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${statCards.length}, 1fr)` }}>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
         {statCards.map(s => (
           <button
             key={s.label}
@@ -183,7 +183,7 @@ const MyOrders: React.FC<MyOrdersProps> = ({ userId, articles, inventory, isLoad
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         {/* Row 1: Search + Date + Sort */}
         <div className="px-4 py-3 flex flex-wrap gap-2 items-center border-b border-slate-100">
-          <div className="relative flex-1 min-w-[160px] max-w-[220px]">
+          <div className="relative w-full sm:flex-1 sm:min-w-[160px] sm:max-w-[220px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={13} />
             <input
               type="text"

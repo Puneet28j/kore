@@ -147,6 +147,49 @@ exports.rejectBill = async (req, res) => {
   }
 };
 
+exports.addInvoice = async (req, res) => {
+  try {
+    const doc = await service.addInvoice(req.params.id, req.body);
+    const latest = doc.invoices[doc.invoices.length - 1];
+
+    activityLog.createLog({
+      action: "PO_INVOICE_ADDED",
+      entityType: "PO",
+      entityId: String(req.params.id),
+      description: `Vendor invoice ${latest?.invoiceNumber ? `#${latest.invoiceNumber} ` : ""}(₹${latest?.invoiceAmount.toLocaleString()}) logged for PO #${doc.poNumber} by ${req.user?.name || "admin"} (${doc.invoices.length} invoice(s) total)`,
+      user: req.user,
+    });
+
+    emitPOEvent("poUpdated", { poId: String(req.params.id), poNumber: doc.poNumber });
+    return res.json({ message: "Invoice added", data: doc });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+exports.recordPayment = async (req, res) => {
+  try {
+    const doc = await service.recordPayment(req.params.id, {
+      ...req.body,
+      recordedBy: req.user?.name || "admin",
+    });
+
+    activityLog.createLog({
+      action: "PO_PAYMENT_RECORDED",
+      entityType: "PO",
+      entityId: String(req.params.id),
+      description: `₹${Number(req.body.amount).toLocaleString()} paid to vendor for PO #${doc.poNumber} by ${req.user?.name || "admin"}`,
+      metadata: { amount: req.body.amount, note: req.body.note },
+      user: req.user,
+    });
+
+    emitPOEvent("poUpdated", { poId: String(req.params.id), poNumber: doc.poNumber });
+    return res.json({ message: "Payment recorded", data: doc });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
 exports.deletePO = async (req, res) => {
   try {
     const PurchaseOrder = require("../models/PurchaseOrder");

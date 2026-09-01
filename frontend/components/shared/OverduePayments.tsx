@@ -11,6 +11,8 @@ interface OverdueOrder {
   deliveredAt?: string;
   finalAmount?: number;
   totalAmount: number;
+  amountPaid: number;
+  remainingAmount: number;
   daysSinceDelivery: number;
   daysOverdue: number;
   paymentTerms: string;
@@ -37,6 +39,7 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
   const [orders, setOrders] = useState<OverdueOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [marking, setMarking] = useState(false);
 
@@ -61,18 +64,30 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
     return () => window.removeEventListener("orderUpdatedSocket", handler);
   }, [load]);
 
-  const handleMarkPaid = async () => {
+  const confirmOrder = orders.find(o => o._id === confirmId);
+
+  const handleRecordPayment = async () => {
     if (!confirmId) return;
+    const amt = Number(amount);
+    if (!amt || amt <= 0) {
+      toast.error('Enter a valid amount');
+      return;
+    }
+    if (confirmOrder && amt > confirmOrder.remainingAmount) {
+      toast.error(`Amount exceeds remaining balance (₹${confirmOrder.remainingAmount.toLocaleString()})`);
+      return;
+    }
     setMarking(true);
     try {
-      await orderService.markOrderPaid(confirmId, note);
-      toast.success('Payment marked as received');
+      await orderService.recordPayment(confirmId, amt, note);
+      toast.success('Payment recorded');
       setConfirmId(null);
+      setAmount('');
       setNote('');
       load();
       onPaymentMarked?.();
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to mark payment');
+      toast.error(err?.response?.data?.message || 'Failed to record payment');
     } finally {
       setMarking(false);
     }
@@ -85,8 +100,9 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
 
   // Kabhi null return mat karo — hamesha section dikhao
 
-  // Total overdue amount
-  const totalOverdue = orders.reduce((s, o) => s + (o.finalAmount || o.totalAmount || 0), 0);
+  // Total overdue amount — remaining balance, not the full order value, so a
+  // partially-paid order only counts what's actually still outstanding.
+  const totalOverdue = orders.reduce((s, o) => s + (o.remainingAmount ?? (o.finalAmount || o.totalAmount || 0)), 0);
 
   return (
     <>
@@ -159,7 +175,9 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
           <div className="divide-y divide-slate-100">
             {displayOrders.map(o => {
               const isRed = o.urgency === 'RED';
-              const amount = o.finalAmount || o.totalAmount || 0;
+              const orderTotal = o.finalAmount || o.totalAmount || 0;
+              const remaining = o.remainingAmount ?? orderTotal;
+              const hasPartialPayment = (o.amountPaid || 0) > 0;
               const deliveredDate = o.deliveredAt || o.date;
 
               return (
@@ -202,22 +220,28 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
                   <div className="text-right shrink-0">
                     <div className="flex items-center gap-0.5 justify-end">
                       <IndianRupee size={11} className="text-slate-600" />
-                      <span className="font-black text-sm text-slate-800">{amount.toLocaleString()}</span>
+                      <span className="font-black text-sm text-slate-800">{remaining.toLocaleString()}</span>
                     </div>
-                    <div className="flex items-center gap-1 justify-end mt-0.5">
-                      <Clock size={9} className="text-slate-400" />
-                      <span className="text-[9px] text-slate-400">
-                        {new Date(deliveredDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
-                      </span>
-                    </div>
+                    {hasPartialPayment ? (
+                      <p className="text-[9px] text-emerald-600 font-bold mt-0.5">
+                        ₹{(o.amountPaid || 0).toLocaleString()} paid of ₹{orderTotal.toLocaleString()}
+                      </p>
+                    ) : (
+                      <div className="flex items-center gap-1 justify-end mt-0.5">
+                        <Clock size={9} className="text-slate-400" />
+                        <span className="text-[9px] text-slate-400">
+                          {new Date(deliveredDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   {isAdmin && (
                     <button
-                      onClick={() => { setConfirmId(o._id); setNote(''); }}
+                      onClick={() => { setConfirmId(o._id); setAmount(String(remaining)); setNote(''); }}
                       className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-bold hover:bg-emerald-700 transition-all shadow-sm"
                     >
-                      <CheckCircle size={12} /> Mark Paid
+                      <CheckCircle size={12} /> Record Payment
                     </button>
                   )}
                 </div>
@@ -242,7 +266,7 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
         )}
       </div>
 
-      {/* Mark Paid confirmation modal */}
+      {/* Record Payment modal */}
       {confirmId && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95 duration-200">
@@ -254,10 +278,29 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
                 <X size={18} />
               </button>
             </div>
-            <h3 className="font-bold text-slate-900 mb-1">Mark Payment Received</h3>
+            <h3 className="font-bold text-slate-900 mb-1">Record Payment</h3>
             <p className="text-sm text-slate-500 mb-4">
-              {orders.find(o => o._id === confirmId)?.orderNumber} — {orders.find(o => o._id === confirmId)?.distributorName}
+              {confirmOrder?.orderNumber} — {confirmOrder?.distributorName}
             </p>
+            {confirmOrder && (confirmOrder.amountPaid || 0) > 0 && (
+              <p className="text-[11px] text-emerald-600 font-bold mb-3">
+                ₹{(confirmOrder.amountPaid || 0).toLocaleString()} already paid · ₹{confirmOrder.remainingAmount.toLocaleString()} remaining
+              </p>
+            )}
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">Amount received</label>
+            <div className="relative mb-4">
+              <IndianRupee size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="number"
+                min={1}
+                max={confirmOrder?.remainingAmount}
+                placeholder="0"
+                className="w-full pl-8 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20"
+                value={amount}
+                onChange={e => setAmount(e.target.value)}
+                autoFocus
+              />
+            </div>
             <label className="block text-xs font-bold text-slate-700 mb-1.5">Note <span className="font-normal text-slate-400">(optional)</span></label>
             <input
               type="text"
@@ -265,7 +308,6 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
               className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 mb-4"
               value={note}
               onChange={e => setNote(e.target.value)}
-              autoFocus
             />
             <div className="flex gap-3">
               <button
@@ -275,7 +317,7 @@ const OverduePayments: React.FC<OverduePaymentsProps> = ({
                 Cancel
               </button>
               <button
-                onClick={handleMarkPaid}
+                onClick={handleRecordPayment}
                 disabled={marking}
                 className="flex-1 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
               >

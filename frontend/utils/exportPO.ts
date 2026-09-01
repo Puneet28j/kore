@@ -66,9 +66,12 @@ interface POLineItem {
   productCode: string;
   hsn: string;
   description: string;
+  gender: string;
   color: string;
   qty: number;
   mrp: number;
+  onlineMrp: number;
+  offlineMrp: number;
   rate: number;
   taxRatePct: number;
   taxableValue: number;
@@ -88,6 +91,7 @@ const buildPOLineItems = (po: PurchaseOrder): POLineItem[] => {
   po.items.filter((item) => item.itemName?.trim()).forEach((item) => {
     const parts = item.itemName.split("-").map((p) => p.trim());
     const description = parts[0] || item.itemName;
+    const gender = item.gender || "";
     const color = item.color || (parts.length > 1 ? parts[1] : "");
     const hsn = item.itemTaxCode || "";
     const taxRatePct = item.taxRate || 0;
@@ -112,6 +116,11 @@ const buildPOLineItems = (po: PurchaseOrder): POLineItem[] => {
         ? validSizes.reduce((s, [, d]) => s + (d.qty || 0), 0) || 24
         : 24;
     const mrpPerPair = (item.mrp || 0) / pairsPerCarton;
+    // Falls back to the legacy single `mrp` field for POs created before
+    // onlineMrp/offlineMrp were tracked separately, same fallback pattern
+    // used everywhere else in the catalogue.
+    const onlineMrpPerPair = (item.onlineMrp || item.mrp || 0) / pairsPerCarton;
+    const offlineMrpPerPair = (item.offlineMrp || item.mrp || 0) / pairsPerCarton;
     const ratePerPair = (item.basePrice || 0) / pairsPerCarton;
 
     const pushRow = (productCode: string, qty: number) => {
@@ -123,9 +132,12 @@ const buildPOLineItems = (po: PurchaseOrder): POLineItem[] => {
         productCode,
         hsn,
         description,
+        gender,
         color,
         qty,
         mrp: mrpPerPair,
+        onlineMrp: onlineMrpPerPair,
+        offlineMrp: offlineMrpPerPair,
         rate: ratePerPair,
         taxRatePct,
         taxableValue,
@@ -210,7 +222,7 @@ export const exportPOToPDF = async (
   const doc = new jsPDF("portrait", "pt", "a4");
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 32;
+  const margin = 16;
 
   const gstLabel = resolveGstLabel(po);
   const lineItems = buildPOLineItems(po);
@@ -222,10 +234,10 @@ export const exportPOToPDF = async (
   const brand = po.items.find((i) => i.skuCompany)?.skuCompany || vendor?.brand || COMPANY_CONFIG.brand || "-";
 
   autoTable(doc, {
-    startY: 28,
+    startY: 14,
     margin: { left: margin, right: margin },
     theme: "plain",
-    styles: { halign: "center", fontStyle: "bold", fontSize: 14, textColor: [0, 0, 0] },
+    styles: { halign: "center", fontStyle: "bold", fontSize: 14, textColor: [0, 0, 0], cellPadding: 2 },
     body: [[isBill ? "Proforma Invoice / Bill" : "Purchase Order"]],
   });
 
@@ -233,10 +245,10 @@ export const exportPOToPDF = async (
   const midLabelStyle = { fontStyle: "bold" as const };
 
   autoTable(doc, {
-    startY: (doc as any).lastAutoTable.finalY + 4,
+    startY: (doc as any).lastAutoTable.finalY + 2,
     margin: { left: margin, right: margin },
     theme: "grid",
-    styles: { fontSize: 8, cellPadding: 4, textColor: [0, 0, 0], lineColor: [0, 0, 0], lineWidth: 0.5, valign: "middle" },
+    styles: { fontSize: 8, cellPadding: 2, textColor: [0, 0, 0], lineColor: [0, 0, 0], lineWidth: 0.5, valign: "middle" },
     columnStyles: { 0: { cellWidth: 78 }, 1: { cellWidth: 140 }, 2: { cellWidth: 70 }, 3: { cellWidth: 105 }, 4: { cellWidth: 60 }, 5: { cellWidth: "auto" } },
     body: [
       [{ content: "Purchaser", styles: labelStyle }, COMPANY_CONFIG.name, { content: "PO Number", styles: midLabelStyle }, po.poNumber || "Pending Approval", { content: "PO Date", styles: midLabelStyle }, formatDisplayDate(po.date)],
@@ -251,18 +263,19 @@ export const exportPOToPDF = async (
 
   const footRows: any[] = [];
   footRows.push([
-    { content: "Logistic Charges", colSpan: 10, styles: { halign: "right", fontStyle: "bold" } },
+    { content: "Logistic Charges", colSpan: 12, styles: { halign: "right", fontStyle: "bold" } },
     { content: "0.00", styles: { halign: "right" } },
   ]);
   if (po.discountAmount) {
     footRows.push([
-      { content: `Discount (${po.discountPercent || 0}%)`, colSpan: 10, styles: { halign: "right", fontStyle: "bold" } },
+      { content: `Discount (${po.discountPercent || 0}%)`, colSpan: 12, styles: { halign: "right", fontStyle: "bold" } },
       { content: `-${po.discountAmount.toFixed(2)}`, styles: { halign: "right" } },
     ]);
   }
   footRows.push([
-    { content: "Total", colSpan: 3, styles: { halign: "center", fontStyle: "bold", fillColor: [240, 245, 240] } },
+    { content: "Total", colSpan: 4, styles: { halign: "center", fontStyle: "bold", fillColor: [240, 245, 240] } },
     { content: totals.totalQty.toString(), styles: { halign: "center", fontStyle: "bold", fillColor: [240, 245, 240] } },
+    { content: "", styles: { fillColor: [240, 245, 240] } },
     { content: "", styles: { fillColor: [240, 245, 240] } },
     { content: "", styles: { fillColor: [240, 245, 240] } },
     { content: "", styles: { fillColor: [240, 245, 240] } },
@@ -273,36 +286,40 @@ export const exportPOToPDF = async (
   ]);
 
   autoTable(doc, {
-    startY: (doc as any).lastAutoTable.finalY + 8,
+    startY: (doc as any).lastAutoTable.finalY + 4,
     margin: { left: margin, right: margin },
     theme: "grid",
-    styles: { fontSize: 7, cellPadding: 3, textColor: [0, 0, 0], lineColor: [0, 0, 0], lineWidth: 0.5, valign: "middle", halign: "center", overflow: "linebreak", minCellHeight: 34 },
+    styles: { fontSize: 7, cellPadding: 1.5, textColor: [0, 0, 0], lineColor: [0, 0, 0], lineWidth: 0.5, valign: "middle", halign: "center", overflow: "linebreak", minCellHeight: 26 },
     headStyles: { fillColor: [240, 245, 240], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 7, halign: "center", valign: "middle" },
     footStyles: { fontSize: 7.5, textColor: [0, 0, 0], lineColor: [0, 0, 0], lineWidth: 0.5 },
     // Only show Logistic Charges/Total once, on the last page — by default
     // autoTable repeats the foot row at the bottom of every page.
     showFoot: "lastPage",
     columnStyles: {
-      0: { cellWidth: 24 },
-      1: { cellWidth: 58, halign: "left" },
-      2: { cellWidth: 52, halign: "left" },
-      3: { cellWidth: 28 },
-      4: { cellWidth: 42 },
-      5: { cellWidth: 32, halign: "right" },
-      6: { cellWidth: 32, halign: "right" },
-      7: { cellWidth: 42, halign: "left" },
-      8: { cellWidth: 55, halign: "right" },
-      9: { cellWidth: 58, halign: "right" },
-      10: { cellWidth: "auto", halign: "right" },
+      0: { cellWidth: 20 },
+      1: { cellWidth: 50, halign: "left" },
+      2: { cellWidth: 44, halign: "left" },
+      3: { cellWidth: 30, halign: "left" },
+      4: { cellWidth: 24 },
+      5: { cellWidth: 36 },
+      6: { cellWidth: 30, halign: "right" },
+      7: { cellWidth: 30, halign: "right" },
+      8: { cellWidth: 30, halign: "right" },
+      9: { cellWidth: 34, halign: "left" },
+      10: { cellWidth: 48, halign: "right" },
+      11: { cellWidth: 50, halign: "right" },
+      12: { cellWidth: "auto", halign: "right" },
     },
-    head: [["SI No.", "Product\nCode", "Description\nof Goods", "QTY", "Image", "MRP", "Rate", "Color", "Taxable\nValue", `${gstLabel}\nAmount`, "Amount"]],
+    head: [["SI No.", "Product\nCode", "Description\nof Goods", "Gender", "QTY", "Image", "Online\nMRP", "Offline\nMRP", "Rate", "Color", "Taxable\nValue", `${gstLabel}\nAmount`, "Amount"]],
     body: lineItems.map((r) => [
       r.siNo,
       `${r.productCode}\nHSN: ${r.hsn}`,
       r.description,
+      r.gender,
       r.qty,
       "",
-      r.mrp.toFixed(2),
+      r.onlineMrp.toFixed(2),
+      r.offlineMrp.toFixed(2),
       r.rate.toFixed(2),
       r.color,
       r.taxableValue.toFixed(2),
@@ -311,7 +328,7 @@ export const exportPOToPDF = async (
     ]),
     foot: footRows,
     didDrawCell: (data) => {
-      if (data.section === "body" && data.column.index === 4) {
+      if (data.section === "body" && data.column.index === 5) {
         const img = rowImages[data.row.index];
         if (img) {
           const boxW = data.cell.width - 6;
@@ -327,12 +344,12 @@ export const exportPOToPDF = async (
     },
   });
 
-  let y = (doc as any).lastAutoTable.finalY + 16;
+  let y = (doc as any).lastAutoTable.finalY + 8;
   const ensureSpace = (needed: number) => {
-    if (y + needed > pageHeight - 40) { doc.addPage(); y = 40; }
+    if (y + needed > pageHeight - 24) { doc.addPage(); y = 20; }
   };
 
-  ensureSpace(24);
+  ensureSpace(20);
   doc.setFontSize(9);
   doc.setFont("helvetica", "bold");
   doc.text("Amount Chargeable (in words):", margin, y);
@@ -340,50 +357,50 @@ export const exportPOToPDF = async (
   doc.setFont("helvetica", "normal");
   const wordsText = `INR ${numberToWordsIndian(totals.totalAmount)} Only`;
   const wordsLines = doc.splitTextToSize(wordsText, pageWidth - margin * 2 - 120);
-  doc.text(wordsLines, margin, y + 12);
-  y += 12 + wordsLines.length * 11 + 10;
+  doc.text(wordsLines, margin, y + 11);
+  y += 11 + wordsLines.length * 10 + 4;
 
-  ensureSpace(14);
+  ensureSpace(11);
   doc.text("Tax is payable on reverse charge basis: No", margin, y);
-  y += 24;
+  y += 14;
 
-  ensureSpace(50);
+  ensureSpace(40);
   doc.setFont("helvetica", "bold");
   doc.text(`For ${COMPANY_CONFIG.name}`, pageWidth - margin, y, { align: "right" });
-  y += 34;
+  y += 26;
   doc.text("Authorised Signatory", pageWidth - margin, y, { align: "right" });
-  y += 22;
+  y += 16;
 
-  ensureSpace(14);
+  ensureSpace(11);
   doc.setFont("helvetica", "bold");
   doc.text("Payment Terms:", margin, y);
   doc.setFont("helvetica", "normal");
   doc.text(po.paymentTerms || "-", margin + 78, y);
-  y += 16;
+  y += 11;
 
   if (po.notes) {
-    ensureSpace(14);
+    ensureSpace(11);
     doc.setFont("helvetica", "bold");
     doc.text("Remarks:", margin, y);
     doc.setFont("helvetica", "normal");
     const noteLines = doc.splitTextToSize(po.notes, pageWidth - margin * 2 - 60);
     doc.text(noteLines, margin + 55, y);
-    y += noteLines.length * 11 + 8;
+    y += noteLines.length * 10 + 4;
   }
 
   if (po.termsAndConditions) {
-    ensureSpace(20);
+    ensureSpace(16);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.text("Terms and Conditions:", margin, y);
-    y += 12;
+    y += 10;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
     const tcLines: string[] = doc.splitTextToSize(po.termsAndConditions, pageWidth - margin * 2);
     tcLines.forEach((line: string) => {
-      ensureSpace(11);
+      ensureSpace(10);
       doc.text(line, margin, y);
-      y += 11;
+      y += 10;
     });
   }
 
@@ -401,15 +418,17 @@ export const exportOrderToExcel = async (po: PurchaseOrder, vendor?: Vendor) => 
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet(isBill ? "Bill" : "Purchase Order");
 
-  const COLUMN_COUNT = 13;
+  const COLUMN_COUNT = 15;
   worksheet.columns = [
     { header: "SI No.", key: "siNo", width: 8 },
     { header: "Product Code", key: "productCode", width: 22 },
     { header: "HSN", key: "hsn", width: 14 },
     { header: "Description of Goods", key: "description", width: 26 },
+    { header: "Gender", key: "gender", width: 12 },
     { header: "QTY", key: "qty", width: 10 },
     { header: "Image", key: "image", width: 14 },
-    { header: "MRP (₹)", key: "mrp", width: 12 },
+    { header: "Online MRP (₹)", key: "onlineMrp", width: 14 },
+    { header: "Offline MRP (₹)", key: "offlineMrp", width: 14 },
     { header: "Rate (₹)", key: "rate", width: 12 },
     { header: "Color", key: "color", width: 18 },
     { header: "Taxable Value (₹)", key: "taxableValue", width: 18 },
@@ -455,7 +474,7 @@ export const exportOrderToExcel = async (po: PurchaseOrder, vendor?: Vendor) => 
 
   const HEADER_ROW = 9;
   const tableHeaderRow = worksheet.getRow(HEADER_ROW);
-  tableHeaderRow.values = ["SI No.", "Product Code", "HSN", "Description of Goods", "QTY", "Image", "MRP (₹)", "Rate (₹)", "Color", "Taxable Value (₹)", `${gstLabel} (%)`, `${gstLabel} Amount (₹)`, "Amount (₹)"];
+  tableHeaderRow.values = ["SI No.", "Product Code", "HSN", "Description of Goods", "Gender", "QTY", "Image", "Online MRP (₹)", "Offline MRP (₹)", "Rate (₹)", "Color", "Taxable Value (₹)", `${gstLabel} (%)`, `${gstLabel} Amount (₹)`, "Amount (₹)"];
   tableHeaderRow.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
   tableHeaderRow.height = 25;
   tableHeaderRow.eachCell((cell) => {
@@ -464,11 +483,11 @@ export const exportOrderToExcel = async (po: PurchaseOrder, vendor?: Vendor) => 
     cell.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "medium" }, right: { style: "thin" } };
   });
 
-  const IMAGE_COL_INDEX0 = 5; // 0-based column index of "Image"
+  const IMAGE_COL_INDEX0 = 6; // 0-based column index of "Image"
   lineItems.forEach((r, idx) => {
     const row = worksheet.addRow({
-      siNo: r.siNo, productCode: r.productCode, hsn: r.hsn, description: r.description, qty: r.qty,
-      image: "", mrp: r.mrp, rate: r.rate, color: r.color, taxableValue: r.taxableValue,
+      siNo: r.siNo, productCode: r.productCode, hsn: r.hsn, description: r.description, gender: r.gender, qty: r.qty,
+      image: "", onlineMrp: r.onlineMrp, offlineMrp: r.offlineMrp, rate: r.rate, color: r.color, taxableValue: r.taxableValue,
       gstPercent: r.taxRatePct, gstAmount: r.taxAmount, amount: r.amount,
     });
 
@@ -488,11 +507,11 @@ export const exportOrderToExcel = async (po: PurchaseOrder, vendor?: Vendor) => 
 
   worksheet.addRow([]);
   const addSummaryRow = (label: string, value: any) => {
-    const row = worksheet.addRow(["", "", "", "", "", "", "", "", "", "", label, "", value]);
+    const row = worksheet.addRow(["", "", "", "", "", "", "", "", "", "", "", "", label, "", value]);
     row.font = { bold: true };
-    worksheet.mergeCells(row.number, 10, row.number, 11);
-    row.getCell(10).alignment = { horizontal: "right" };
-    row.getCell(13).alignment = { horizontal: "right" };
+    worksheet.mergeCells(row.number, 12, row.number, 13);
+    row.getCell(12).alignment = { horizontal: "right" };
+    row.getCell(15).alignment = { horizontal: "right" };
     return row;
   };
 

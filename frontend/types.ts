@@ -83,6 +83,9 @@ export interface Variant {
   // Still-incoming pairs on POs: plannedPairs − pairs already received via
   // GRN — the "PO Pending" figure everywhere.
   poPendingPairs?: number;
+  // Carton barcodes currently in stock and not yet scanned out (GRN/Stock
+  // Inward add to this pool, dispatch scanning removes from it).
+  availableCartons?: string[];
 }
 
 export interface Assortment {
@@ -274,6 +277,14 @@ export interface Order {
   // Portion of finalAmount that counted against the distributor's credit
   // limit — only the REGULAR items' slice; 0 for a pure pre-order.
   creditAmount?: number;
+  // Payment ledger — amountPaid/payments is the real running total; the
+  // legacy paidAt/paidBy/paymentNote fields mirror the most recent entry.
+  paymentStatus?: "PENDING" | "PARTIAL" | "PAID";
+  amountPaid?: number;
+  payments?: { amount: number; date: string; note?: string; recordedBy?: string }[];
+  paidAt?: string;
+  paidBy?: string;
+  paymentNote?: string;
   gstRate?: number;
   gstAmount?: number;
   billUrl?: string;
@@ -437,6 +448,8 @@ export interface PurchaseOrderItem {
   taxType: "GST" | "IGST";
   basePrice: number;
   mrp: number;
+  onlineMrp?: number;
+  offlineMrp?: number;
   taxPerItem: number;
   unitTotal: number;
   sizeMap?: Record<string, { qty: number; sku: string }>;
@@ -475,4 +488,11 @@ export interface PurchaseOrder {
   billRejectedAt?: string;
   isRevised?: boolean;
   revisionCount?: number;
+  // Vendor payable — invoice(s) + payment ledger against an approved bill.
+  // A PO can be invoiced more than once (e.g. partial shipments billed
+  // separately) — the payable total is the sum of every entry's amount.
+  invoices?: { invoiceNumber?: string; invoiceAmount: number; date: string }[];
+  amountPaid?: number;
+  paymentStatus?: "UNPAID" | "PARTIAL" | "PAID";
+  payments?: { amount: number; date: string; note?: string; recordedBy?: string }[];
 }

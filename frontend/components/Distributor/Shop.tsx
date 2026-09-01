@@ -119,9 +119,18 @@ const isVariantInStock = (v: Variant): boolean => {
 
 // A still-PREORDER variant has no real stock — its bookable amount is what
 // the Purchase Orders planned minus what distributors have already
-// pre-booked (both injected per variant by the backend list API).
-const remainingPlannedPairs = (v: Variant): number =>
-  Math.max(0, (Number(v.plannedPairs) || 0) - (Number(v.preBookedPairs) || 0));
+// pre-booked (both injected per variant by the backend list API). Also
+// capped at poPendingPairs — the actual still-incoming (not yet arrived via
+// GRN) quantity — so once a PO is fully received that stock becomes live
+// stock and stops counting here too; otherwise it gets double-counted (once
+// as live stock, once as "extra" pre-orderable capacity on an RFD variant).
+const remainingPlannedPairs = (v: Variant): number => {
+  const remaining = Math.max(
+    0,
+    (Number(v.plannedPairs) || 0) - (Number(v.preBookedPairs) || 0)
+  );
+  return Math.min(remaining, Number(v.poPendingPairs) || 0);
+};
 
 // ─── Amazon-style zoom hook ─────────────────────────────────────────────────
 const ZOOM_SIZE = 300;
@@ -174,7 +183,6 @@ const ArticleCard: React.FC<{
   discountPercentage: number;
   priceView: PriceView;
   distributorTag?: "online" | "offline";
-  articleStatus?: string;
   pendingDispatchByVariant: Record<string, { cartons: number; pairs: number }>;
 }> = ({
   group,
@@ -184,7 +192,6 @@ const ArticleCard: React.FC<{
   discountPercentage,
   priceView,
   distributorTag,
-  articleStatus,
   pendingDispatchByVariant,
 }) => {
   const { article, color, variants } = group;
@@ -212,10 +219,13 @@ const ArticleCard: React.FC<{
     selectedVariant != null && getVariantAvailability(selectedVariant) === "PREORDER";
 
   // ── Cap logic (per variant) ──────────────────────────────────────────────
-  // AVAILABLE variant: capped by real per-size stock. Still-PREORDER
-  // variant: no stock exists yet — capped by the PO-planned quantity minus
-  // what's already pre-booked (backend enforces the same cap on order
-  // creation).
+  // AVAILABLE variant: capped by real per-size stock, PLUS whatever's still
+  // pre-bookable against a pending PO on top of that — a distributor can
+  // order more than what's physically in stock right now, with the excess
+  // becoming a separate PREORDER item (backend splits it the same way at
+  // order creation, see order.service.js createOrder). Still-PREORDER
+  // variant (0 live stock): capped purely by the PO-planned quantity minus
+  // what's already pre-booked.
   const maxCartonsFromStock = useMemo(() => {
     if (!selectedVariant) return 0;
     if (isPreOrderVariant) {
@@ -235,7 +245,12 @@ const ArticleCard: React.FC<{
       const available = stockEntry ? Math.max(0, stockEntry.qty || 0) : 0;
       min = Math.min(min, Math.floor(available / assortQty));
     }
-    return min === Infinity ? 0 : min;
+    const liveStockCartons = min === Infinity ? 0 : min;
+    const extraPreOrderCartons =
+      totalPairsPerCarton > 0
+        ? Math.floor(remainingPlannedPairs(selectedVariant) / totalPairsPerCarton)
+        : 0;
+    return liveStockCartons + extraPreOrderCartons;
   }, [selectedVariant, baseBreakdown, isPreOrderVariant, totalPairsPerCarton]);
 
   // Cartons already in cart for this specific variant
@@ -268,17 +283,18 @@ const ArticleCard: React.FC<{
     setCartonCount(1);
   }, [selectedVariantId]);
 
-  // Pricing
-  const fullPricePerPair = article.pricePerPair;
+  // Pricing — must use THIS variant's own onlineMrp/offlineMrp, not
+  // article.pricePerPair, which is derived once from the article's FIRST
+  // variant and was showing the same price on every color/size-range card
+  // of the same article regardless of that card's actual variant price.
+  const fullPricePerPair =
+    (distributorTag === "offline"
+      ? selectedVariant?.offlineMrp || selectedVariant?.onlineMrp
+      : selectedVariant?.onlineMrp || selectedVariant?.offlineMrp) ||
+    article.pricePerPair;
   const discountedPricePerPair =
     fullPricePerPair * (1 - discountPercentage / 100);
   const discountedPricePerCarton = discountedPricePerPair * PAIRS_PER_CARTON;
-  const variantMrp =
-    distributorTag === "online"
-      ? selectedVariant?.onlineMrp || article.mrp || fullPricePerPair * 2
-      : distributorTag === "offline"
-      ? selectedVariant?.offlineMrp || article.mrp || fullPricePerPair * 2
-      : article.mrp || fullPricePerPair * 2;
 
   // Images carousel
   // Priority: colorMedia[color] → primaryImage + secondaryImages (article-level flat)
@@ -603,12 +619,12 @@ const ArticleCard: React.FC<{
             </p>
             <span
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border-2 ${
-                articleStatus === "PREORDER"
+                isPreOrderVariant
                   ? "bg-amber-600 text-white border-amber-600"
                   : "bg-indigo-600 text-white border-indigo-600"
               }`}
             >
-              {articleStatus === "PREORDER" ? "Available in 30 Days" : "RFD"}
+              {isPreOrderVariant ? "Available in 30 Days" : "RFD"}
             </span>
           </div>
           <div className="bg-indigo-50 p-2 rounded-xl shrink-0">
@@ -725,8 +741,15 @@ const mapDocToArticle = (doc: any): Article => ({
   name: doc.articleName,
   category: doc.gender || doc.categoryId?.name,
   assortmentId: doc._id,
+  // Distributors ordering online must be charged off Online MRP specifically
+  // — falling back to the legacy/ambiguous mrp fields only for older data
+  // that predates the online/offline MRP split.
   pricePerPair:
-    doc.mrp || doc.variants?.[0]?.sellingPrice || doc.variants?.[0]?.mrp || 0,
+    doc.variants?.[0]?.onlineMrp ||
+    doc.mrp ||
+    doc.variants?.[0]?.sellingPrice ||
+    doc.variants?.[0]?.mrp ||
+    0,
   imageUrl: doc.primaryImage?.url || doc.variants?.[0]?.images?.[0] || "",
   images: doc.secondaryImages?.map((i: any) => i.url) || [],
   secondaryImages: doc.secondaryImages || [],
@@ -876,7 +899,17 @@ const Shop: React.FC<ShopProps> = ({
 
         const docsAvailable = resAvailable.data || resAvailable.items || [];
         const docsPreBook = resPreBook.data || resPreBook.items || [];
-        docs = [...docsAvailable, ...docsPreBook];
+        // A "mixed" article (some variants RFD, some PREORDER) matches both
+        // filter queries and comes back in full (all variants, unfiltered)
+        // from each — dedupe by article id so it renders as one card instead
+        // of once per query it happened to match.
+        const seenIds = new Set<string>();
+        docs = [...docsAvailable, ...docsPreBook].filter((doc) => {
+          const id = String(doc._id || doc.id);
+          if (seenIds.has(id)) return false;
+          seenIds.add(id);
+          return true;
+        });
         totalCount = docs.length;
       } else {
         // Fetch single filter (RFD or PREORDER)
@@ -976,7 +1009,9 @@ const Shop: React.FC<ShopProps> = ({
         // Deactivated variants remain in the catalog for operational history,
         // but distributors must not see or order them.
         if (v.isActive === false) return;
-        if (distributorTag && v.tag && v.tag !== distributorTag) return;
+        // v.tag never gates visibility — every variant is orderable by every
+        // distributor; tag only selects which of onlineMrp/offlineMrp to show
+        // (see fullPricePerPair below, keyed off distributorTag).
         const availability = getVariantAvailability(v);
         // Not orderable at all (no live stock, no pending PO) — hide
         // entirely from the shopping grid, not just the RFD/PreOrder split.
@@ -1015,7 +1050,7 @@ const Shop: React.FC<ShopProps> = ({
     });
 
     return groups;
-  }, [backendArticles, distributorTag, inStockOnly]);
+  }, [backendArticles, inStockOnly]);
 
   return (
     <div className="space-y-8 pb-20">
@@ -1147,7 +1182,7 @@ const Shop: React.FC<ShopProps> = ({
         <>
           {/* Product Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-            {colorGroups.map(({ article, color, variants, cardStage }) => {
+            {colorGroups.map(({ article, color, variants }) => {
               const inv = inventory.find((i) => i.articleId === article.id);
 
               return (
@@ -1160,7 +1195,6 @@ const Shop: React.FC<ShopProps> = ({
                   discountPercentage={discountPercentage}
                   priceView={priceView}
                   distributorTag={distributorTag}
-                  articleStatus={cardStage}
                   pendingDispatchByVariant={pendingDispatchByVariant}
                 />
               );

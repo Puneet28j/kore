@@ -30,6 +30,7 @@ interface Variant {
 interface StockRow {
   articleId: string;
   articleName: string;
+  gender: string;
   category: string;
   brand: string;
   company: string;
@@ -468,7 +469,8 @@ const StockReport: React.FC = () => {
               : "No stock data found"}
           </div>
         ) : (
-          <table className="w-full text-left text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm min-w-[760px]">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
                 <th className="px-4 py-3 w-8"></th>
@@ -523,7 +525,8 @@ const StockReport: React.FC = () => {
                       <tr>
                         <td colSpan={9} className="px-4 pb-4 bg-slate-50/70">
                           <div className="rounded-xl border border-slate-200 overflow-hidden mt-2">
-                            <table className="w-full text-xs">
+                            <div className="overflow-x-auto">
+                            <table className="w-full text-xs min-w-[900px]">
                               <thead className="bg-white border-b border-slate-100">
                                 <tr>
                                   <th className="px-3 py-2.5 text-left font-bold text-slate-400 uppercase tracking-wider text-[10px]">Variant / Color</th>
@@ -547,22 +550,15 @@ const StockReport: React.FC = () => {
                                   return (
                                     <tr key={v.variantId} className={`hover:bg-slate-50 ${vhc.rowClass}`}>
                                       <td className="px-3 py-2.5">
-                                        <div className="flex items-center gap-1.5 flex-wrap">
-                                          <p className="font-semibold text-slate-700">{v.itemName}</p>
-                                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border ${
-                                            classifyVariant(v) === "PREORDER"
-                                              ? "bg-amber-50 text-amber-600 border-amber-200"
-                                              : classifyVariant(v) === "RFD"
-                                              ? "bg-emerald-50 text-emerald-600 border-emerald-200"
-                                              : "bg-slate-100 text-slate-500 border-slate-200"
-                                          }`}>
-                                            {classifyVariant(v) === "PREORDER" ? "Pre-Order" : classifyVariant(v) === "RFD" ? "RFD" : "Unavailable"}
-                                          </span>
+                                        <p className="font-semibold text-slate-700">{v.itemName}</p>
+                                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                          {row.gender && (
+                                            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                                              {row.gender}
+                                            </span>
+                                          )}
+                                          <span className="text-slate-400">{v.color}</span>
                                         </div>
-                                        <p className="text-slate-400 mt-0.5 flex items-center gap-1">
-                                          <span className="w-2.5 h-2.5 rounded-full border border-slate-300 inline-block" style={{ backgroundColor: v.color?.toLowerCase() }} />
-                                          {v.color}
-                                        </p>
                                       </td>
                                       <td className="px-3 py-2.5 font-mono text-slate-500">{v.sizeRange}</td>
                                       <td className="px-3 py-2.5 text-right font-bold text-indigo-600">₹{v.mrp?.toLocaleString()}</td>
@@ -599,6 +595,7 @@ const StockReport: React.FC = () => {
                                 })}
                               </tbody>
                             </table>
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -608,6 +605,7 @@ const StockReport: React.FC = () => {
               })}
             </tbody>
           </table>
+          </div>
         )}
         <Pagination currentPage={safePage} totalPages={totalPages} onPageChange={setPage} totalItems={allFilteredRows.length} itemsPerPage={pageSize} onPageSizeChange={setPageSize} />
       </div>

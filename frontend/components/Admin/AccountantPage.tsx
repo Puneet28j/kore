@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Receipt,
   AlertTriangle,
@@ -8,11 +8,24 @@ import {
 } from "lucide-react";
 import Bill from "./Bill";
 import OverduePayments from "../shared/OverduePayments";
+import { Article } from "../../types";
 
 type ActiveTab = "bills" | "overdue";
 
-const AccountantPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<ActiveTab>("bills");
+interface AccountantPageProps {
+  articles: Article[];
+  initialTab?: ActiveTab;
+}
+
+const AccountantPage: React.FC<AccountantPageProps> = ({ articles, initialTab }) => {
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab || "bills");
+
+  // Sidebar can link straight to either sub-tab (Distributor Invoice /
+  // Overdue Payments) — resync when that changes, since this component
+  // instance may already be mounted from a previous nav.
+  useEffect(() => {
+    if (initialTab) setActiveTab(initialTab);
+  }, [initialTab]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-10">
@@ -60,7 +73,7 @@ const AccountantPage: React.FC = () => {
       </div>
 
       {/* Tab content */}
-      {activeTab === "bills" && <Bill />}
+      {activeTab === "bills" && <Bill articles={articles} />}
 
       {activeTab === "overdue" && (
         <OverduePayments isAdmin={true} showAll={true} />

@@ -108,8 +108,10 @@ const formatDateTime = (value?: string) => {
 
 // USB barcode scanners act like very fast keyboards. Human typing is normally
 // slower than this, so we use the interval to distinguish a scanner burst from
-// normal form entry when the scanner field does not own focus.
-const SCANNER_KEY_INTERVAL_MS = 80;
+// normal form entry. 150ms comfortably covers slower scanners/USB-to-serial
+// bridges (some insert a few tens of ms between characters) while still being
+// far tighter than any human typing a SKU character by character.
+const SCANNER_KEY_INTERVAL_MS = 150;
 const SCANNER_MIN_LENGTH = 3;
 
 type EditableTargetSnapshot = {
@@ -175,6 +177,14 @@ const GRN: React.FC = () => {
   const [scanState, setScanState] = useState<ScanState>({});
   const [scanInput, setScanInput] = useState("");
   const scanInputRef = useRef<HTMLInputElement>(null);
+  // Mirrors scanInput without being a handleScan dependency — keeps
+  // handleScan's identity stable while typing so the scanner-capture effect
+  // below doesn't tear down and re-register (losing its in-flight buffer)
+  // on every single keystroke.
+  const scanInputValueRef = useRef("");
+  useEffect(() => {
+    scanInputValueRef.current = scanInput;
+  }, [scanInput]);
 
   // Track which cartons are already GRN'd (from previous submissions) - stores array of 0-based indices
   const [doneCartons, setDoneCartons] = useState<Record<string, number[]>>({}); // itemName -> array of done carton indices
@@ -194,6 +204,17 @@ const GRN: React.FC = () => {
     error: string;
   } | null>(null);
   const confirmInputRef = useRef<HTMLInputElement>(null);
+  // Mirrors cartonConfirmPopup without being a scanner-capture-effect
+  // dependency — lets that effect stay mounted (buffer intact) across popup
+  // open/close instead of tearing down and losing an in-flight scan burst.
+  const cartonConfirmPopupRef = useRef(cartonConfirmPopup);
+  useEffect(() => {
+    cartonConfirmPopupRef.current = cartonConfirmPopup;
+  }, [cartonConfirmPopup]);
+  // Populated below, right after confirmCartonLabel is defined — declared
+  // here so the scanner-capture effect (which runs earlier in the file) can
+  // still call the latest version without needing it as a dependency.
+  const confirmCartonLabelRef = useRef<(scannedValue?: string) => void>(() => {});
 
   // Collapsible state for items in All Items Status
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
@@ -575,6 +596,22 @@ const GRN: React.FC = () => {
       ? (item.variantId || item.itemName)
       : `${item._poId}::${item.variantId || item.itemName}`;
 
+  // Carton barcode prefix for an item — normally just its sku, but two
+  // variants can legitimately share the same sku with a different assortment
+  // (e.g. "ARM-NVY-M-7-11" vs the same sku's "-A" sibling — see Catalogue
+  // Manager's makeVariantKey, which dedupes by sku+assortment, not sku
+  // alone). Their itemNames are already disambiguated ("...-7-11" vs
+  // "...-7-11-A") for exactly this reason, so mirror that suffix onto the
+  // barcode too — otherwise both variants' "CT1" carton gets the identical
+  // barcode string despite being physically different cartons.
+  const getCartonBarcodeSku = (item: POItemExtended) => {
+    const base = item.sku || item.itemName;
+    const canonical = `${item.color}-${item.sizeRange}`;
+    const idx = item.itemName.indexOf(canonical);
+    const suffix = idx >= 0 ? item.itemName.slice(idx + canonical.length) : "";
+    return `${base}${suffix}`;
+  };
+
   const selectedItem = useMemo(
     () => allPOItems.find((i) => i._scanKey === selectedItemName) || null,
     [allPOItems, selectedItemName]
@@ -765,7 +802,7 @@ const GRN: React.FC = () => {
 
   /* ── Scan handler ── */
   const handleScan = useCallback((scannedCode?: string) => {
-    const code = (scannedCode ?? scanInput).trim();
+    const code = (scannedCode ?? scanInputValueRef.current).trim();
     if (!code) return;
 
     if (!selectedItem) {
@@ -829,11 +866,11 @@ const GRN: React.FC = () => {
       .reduce((s, q) => s + q, 0);
 
     if (newCartonTotal >= 24) {
-      const cartonSku = selectedItem.sku || selectedItem.itemName;
+      const cartonSku = getCartonBarcodeSku(selectedItem);
       const counterBase = selectedItem.variantId
         ? (variantCounterBases[selectedItem.variantId] ?? 1) - 1
         : 0;
-      const barcode = `${cartonSku}-CT${String(counterBase + currentCartonIdx + 1).padStart(4, "0")}`;
+      const barcode = `${cartonSku}-CT${counterBase + currentCartonIdx + 1}`;
       setCartonConfirmPopup({
         scanKey: selectedItemName,
         itemLabel: selectedItem.itemName,
@@ -847,15 +884,26 @@ const GRN: React.FC = () => {
     currentCartonIdx,
     currentCartonScan,
     doneCartons,
-    scanInput,
     selectedItem,
     selectedItemName,
     variantCounterBases,
   ]);
 
-  const scannerCaptureReady = activeTab === "scan" && !!selectedItem && !cartonConfirmPopup;
+  const scannerCaptureReady = activeTab === "scan" && !!selectedItem;
 
-  /* USB scanner capture when another GRN field has focus. */
+  /* USB scanner capture — buffers every keydown into a shadow string
+     regardless of which field currently has focus (including the scan input
+     itself), and decides at Enter time whether it was a scanner burst.
+     Relying on the scan input's own controlled value for this was fragile:
+     a fast HID scanner can fire keystrokes quicker than the field reliably
+     stays focused (e.g. right after selecting an item, before the autofocus
+     effect below has run) — in that case the browser routes the keystrokes
+     wherever focus actually is (often nowhere/body), the input's onChange
+     never sees them, and the box just stays empty. Buffering independently
+     of focus target means a genuine scanner burst is still recognized and
+     forwarded to handleScan() either way. Stays active while the carton
+     label-confirm popup is open too — cartonConfirmPopupRef decides which
+     handler a burst routes to, so the same scanner works for both steps. */
   useEffect(() => {
     if (!scannerCaptureReady) return;
 
@@ -870,13 +918,8 @@ const GRN: React.FC = () => {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      // These two fields own their normal Enter behavior themselves.
-      if (event.target === scanInputRef.current || event.target === confirmInputRef.current) {
-        reset();
-        return;
-      }
-
       const now = performance.now();
+      const isOwnField = event.target === scanInputRef.current || event.target === confirmInputRef.current;
 
       if (event.key === "Enter") {
         const isScannerBurst = buffer.length >= SCANNER_MIN_LENGTH
@@ -884,9 +927,19 @@ const GRN: React.FC = () => {
         if (isScannerBurst) {
           event.preventDefault();
           event.stopPropagation();
-          restoreEditableTarget(editableTarget);
-          handleScan(buffer);
+          // Only undo stray characters left in some OTHER field the scan
+          // accidentally typed into — the scan input's own value is cleared
+          // by handleScan() itself on success.
+          if (!isOwnField) restoreEditableTarget(editableTarget);
+          if (cartonConfirmPopupRef.current) {
+            confirmCartonLabelRef.current(buffer);
+          } else {
+            handleScan(buffer);
+          }
         }
+        // Not a qualifying burst (buffer too short/slow) — this was a real
+        // manual Enter keypress, so let it fall through to the field's own
+        // onKeyDown (scanInputRef/confirmInputRef handle that themselves).
         reset();
         return;
       }
@@ -901,7 +954,7 @@ const GRN: React.FC = () => {
 
       if (!buffer || now - lastKeyAt > SCANNER_KEY_INTERVAL_MS) {
         buffer = event.key;
-        editableTarget = getEditableTargetSnapshot(event.target);
+        editableTarget = isOwnField ? null : getEditableTargetSnapshot(event.target);
       } else {
         buffer += event.key;
       }
@@ -913,9 +966,9 @@ const GRN: React.FC = () => {
   }, [handleScan, scannerCaptureReady]);
 
   /* ── Confirm a completed carton's printed label ── */
-  const confirmCartonLabel = () => {
+  const confirmCartonLabel = (scannedValue?: string) => {
     if (!cartonConfirmPopup) return;
-    const typed = cartonConfirmPopup.inputValue.trim();
+    const typed = (scannedValue ?? cartonConfirmPopup.inputValue).trim();
     if (!typed) return;
 
     if (typed !== cartonConfirmPopup.barcode) {
@@ -940,6 +993,9 @@ const GRN: React.FC = () => {
       toast.success("All cartons for this item are complete!");
     }
   };
+  useEffect(() => {
+    confirmCartonLabelRef.current = confirmCartonLabel;
+  });
 
   /* ── Reset carton scans ── */
   const resetCartonScans = () => {
@@ -1689,12 +1745,12 @@ const GRN: React.FC = () => {
                                       if (isPreviouslyDone) return;
                                       setCurrentCartonIdx(cIdx);
                                       if (isAwaitingLabel) {
-                                        const cartonSku = selectedItem.sku || selectedItem.itemName;
+                                        const cartonSku = getCartonBarcodeSku(selectedItem);
                                         setCartonConfirmPopup({
                                           scanKey: selectedItemName,
                                           itemLabel: selectedItem.itemName,
                                           cartonIdx: cIdx,
-                                          barcode: `${cartonSku}-CT${String(cIdx + 1).padStart(4, "0")}`,
+                                          barcode: `${cartonSku}-CT${cIdx + 1}`,
                                           inputValue: "",
                                           error: "",
                                         });
@@ -1739,7 +1795,7 @@ const GRN: React.FC = () => {
                               ref={scanInputRef}
                               type="text"
                               autoComplete="off"
-                              placeholder="Scan or type SKU, then press Enter..."
+                              placeholder="Scan barcode or type SKU → Enter"
                               value={scanInput}
                               onChange={(e) => setScanInput(e.target.value)}
                               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleScan(); } }}
@@ -1756,7 +1812,7 @@ const GRN: React.FC = () => {
                             )}
                           </div>
                           <p className="text-[10px] text-slate-400 italic pl-1 mt-1.5">
-                            Each scan adds 1 pair. Press <kbd className="px-1 py-0.5 bg-slate-100 rounded text-[9px] font-mono">Enter</kbd> or use barcode scanner.
+                            Each barcode scan adds 1 pair automatically.
                           </p>
                         </div>
 
@@ -2370,7 +2426,7 @@ const GRN: React.FC = () => {
               </div>
               <div>
                 <label className="mb-1.5 block text-[10px] font-black uppercase tracking-widest text-slate-400">
-                  Scan / type the barcode from the label to confirm
+                  Scan the barcode from the label to confirm
                 </label>
                 <input
                   ref={confirmInputRef}
@@ -2379,7 +2435,7 @@ const GRN: React.FC = () => {
                   value={cartonConfirmPopup.inputValue}
                   onChange={(e) => setCartonConfirmPopup({ ...cartonConfirmPopup, inputValue: e.target.value, error: "" })}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); confirmCartonLabel(); } }}
-                  placeholder="Rescan label here…"
+                  placeholder="Scan barcode or type it → Enter"
                   className={`w-full rounded-2xl border-2 p-3 text-sm outline-none transition font-mono ${
                     cartonConfirmPopup.error
                       ? "border-rose-300 bg-rose-50 focus:border-rose-400 focus:ring-4 focus:ring-rose-100"
@@ -2401,7 +2457,7 @@ const GRN: React.FC = () => {
               </button> */}
               <button
                 type="button"
-                onClick={confirmCartonLabel}
+                onClick={() => confirmCartonLabel()}
                 disabled={!cartonConfirmPopup.inputValue.trim()}
                 className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-5 py-2 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:opacity-50"
               >

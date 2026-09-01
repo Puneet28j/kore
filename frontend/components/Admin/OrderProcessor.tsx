@@ -155,7 +155,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             Sales Orders
           </h2>
           <p className="text-slate-400 text-xs font-medium">
-            Manage distributor order flow · Pending → Dispatched → In Transit →
+            Manage distributor order flow · Booked → Dispatched → In Transit →
             Delivered
           </p>
         </div>
@@ -196,7 +196,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             lifecycle: null,
           },
           {
-            label: "Pending",
+            label: "Booked",
             val: stats.BOOKED || 0,
             color: "text-rose-600",
             bg: "bg-rose-50",
@@ -241,10 +241,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           },
         ];
         return (
-          <div
-            className="grid gap-2"
-            style={{ gridTemplateColumns: `repeat(${statCards.length}, 1fr)` }}
-          >
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
             {statCards.map((s) => (
               <button
                 key={s.label}
@@ -277,7 +274,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         {/* Row 1: Search + Date + Sort */}
         <div className="px-4 py-3 flex flex-wrap gap-2 items-center border-b border-slate-100">
-          <div className="relative flex-1 min-w-[160px] max-w-[220px]">
+          <div className="relative w-full sm:flex-1 sm:min-w-[160px] sm:max-w-[220px]">
             <Search
               className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               size={13}
@@ -331,40 +328,6 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
             <option value="finalAmount-true">Amount ↓</option>
             <option value="finalAmount-false">Amount ↑</option>
           </select>
-        </div>
-
-        {/* Row 2: Status filters — scrollable */}
-        <div className="px-4 py-2 flex items-center gap-1.5 overflow-x-auto scrollbar-hide">
-          <Filter className="text-slate-300 shrink-0" size={12} />
-          {(
-            [
-              "ALL",
-              "BOOKED",
-              "PFD",
-              "RFD",
-              "RECEIVED",
-              "CANCELLED",
-            ] as const
-          ).map((status) => (
-            <button
-              key={status}
-              onClick={() => {
-                setStatusFilter(status as any);
-                setLifecycleFilter(null);
-                setCurrentPage(1);
-              }}
-              className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider whitespace-nowrap transition-all border shrink-0 ${
-                statusFilter === status
-                  ? "bg-slate-900 text-white border-slate-900 shadow-sm"
-                  : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"
-              }`}
-            >
-              {status === "ALL"
-                ? "All"
-                : STATUS_LABELS[status as OrderStatus] ||
-                  status.replace(/_/g, " ")}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -434,7 +397,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
                         )}
                       </div>
 
-                      <div className="flex items-center gap-x-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
+                      <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
                         <span className="flex items-center gap-1">
                           <Clock size={10} /> {order.date}
                         </span>
@@ -568,7 +531,7 @@ const STATUS_LABELS: Record<string, string> = {
   [OrderStatus.PRE_BOOKED]: "Pre-Booked",
   [OrderStatus.CONFIRMED]: "Confirmed",
   [OrderStatus.PENDING]: "Pending Confirmation",
-  [OrderStatus.BOOKED]: "Pending",
+  [OrderStatus.BOOKED]: "Booked",
   [OrderStatus.PFD]: "Dispatched",
   [OrderStatus.RFD]: "In Transit",
   [OrderStatus.RECEIVED]: "Delivered",

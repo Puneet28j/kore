@@ -17,7 +17,6 @@ import {
   Image as ImageIcon,
   Tag,
   Layers,
-  CheckCircle2,
   Heart,
   CalendarDays,
   Package,
@@ -27,7 +26,6 @@ import {
   Upload,
   FileSpreadsheet,
   Download,
-  Clock,
 } from "lucide-react";
 import { Article, AssortmentType } from "../../types";
 import { COMPANY_CONFIG } from "../../constants";
@@ -37,12 +35,6 @@ import { getImageUrl } from "../../utils/imageUtils";
 import { formatAssortment } from "../../utils/assortmentUtils";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
-import { getVariantAvailability } from "../../utils/catalogAvailability";
-
-// Catalogue Manager's own filter tab — distinct from CatalogAvailability
-// (which never includes "ALL"; that's a per-variant classification, this is
-// the page-level filter state).
-type CatalogTab = "ALL" | "RFD" | "PREORDER";
 
 type CatalogueForm = {
   name: string;
@@ -67,8 +59,6 @@ interface CatalogueManagerProps {
   onAddNewMaster?: () => void;
   scrollToArticleId?: string | null;
   onScrollRestored?: () => void;
-  initialActiveTab?: CatalogTab;
-  onActiveTabChange?: (tab: CatalogTab) => void;
 }
 
 // ─── CSV Types ──────────────────────────────────────────────────────────────────
@@ -89,26 +79,9 @@ interface CsvRow {
   unit?: string;
   image?: string;
   sole_color?: string;
-  _isAutoRenamed?: boolean; // true when name was auto-suffixed due to assortment collision
   [key: string]: string | boolean | undefined;
 }
 
-// ─── CSV Conflict Detection ───────────────────────────────────────────────────
-// "skip"/"import" = user decision required; "info" = informational only, always imports
-type ConflictResolution = "skip" | "import" | "info";
-interface CsvConflict {
-  key: string; // groupKey "Name" for blocking; "⚠type:..." for info
-  name: string;
-  type:
-    | "auto-rename" // Name was auto-suffixed due to assortment collision
-    | "duplicate-sku" // Same sku_ctn used in multiple articles
-    | "zero-mrp" // Online/offline row has MRP = 0
-    | "csv-duplicate-row" // Exact duplicate rows in CSV (auto-merged)
-    | "db-full-duplicate" // Every color+sizeRange+assortment in group already exists in DB — nothing to import
-    | "db-partial-duplicate"; // Some color+sizeRange+assortment combos already exist in DB — those rows are skipped
-  detail: string;
-  resolution: ConflictResolution;
-}
 
 // Generate per-size SKUs from carton SKU — same 2-strategy logic as backend + VariantDetailsPage
 // Strategy 1: if ctnSku ends with sizeRange (e.g. "amr-gry-7-11" ends with "7-11"), strip it
@@ -160,7 +133,9 @@ function assortFp(sizeQty: Record<string, number>): string {
     .join(",");
 }
 
-// Reads size_5, size_6 ... columns → { "5": 6, "6": 8 }
+// Reads size_5, size_6 ... columns → { "5": 6, "6": 8 }. Kids wrap-around
+// ranges (e.g. "11-1") keep the post-13 segment as a plain unpadded number
+// too — same as every other size, no special-casing.
 function extractSizeQty(row: CsvRow): Record<string, number> {
   const result: Record<string, number> = {};
   Object.keys(row).forEach((key) => {
@@ -173,14 +148,47 @@ function extractSizeQty(row: CsvRow): Record<string, number> {
   return result;
 }
 
-// Variant uniqueness key: color + sizeRange + assortment + tag
-// Tag included so "Black 5-10 online" and "Black 5-10 offline" are treated as distinct variants
+// SKU is the primary duplicate signal — a repeated sku_ctn with the EXACT
+// same size assortment is a true duplicate row (second+ occurrence dropped).
+// A repeated sku_ctn with a DIFFERENT assortment is not a duplicate — an
+// unusual but legitimate distinct variant sharing that SKU — both rows are
+// kept. sku_ctn is mandatory: a row with no sku_ctn at all is dropped,
+// never imported.
+function dedupeBySku(rows: CsvRow[]): { kept: CsvRow[]; skipped: CsvRow[] } {
+  const seenAssortmentsBySku = new Map<string, Set<string>>();
+  const kept: CsvRow[] = [];
+  const skipped: CsvRow[] = [];
+  rows.forEach((r) => {
+    const sku = (r.sku_ctn || "").trim();
+    if (!sku) {
+      skipped.push(r);
+      return;
+    }
+    const fp = assortFp(extractSizeQty(r));
+    const seen = seenAssortmentsBySku.get(sku);
+    if (seen && seen.has(fp)) {
+      skipped.push(r);
+      return;
+    }
+    if (seen) seen.add(fp);
+    else seenAssortmentsBySku.set(sku, new Set([fp]));
+    kept.push(r);
+  });
+  return { kept, skipped };
+}
+
+// Variant uniqueness key — sku_ctn + size assortment ONLY. Same SKU + same
+// assortment = the same variant (duplicate). Same SKU + a different
+// assortment = a genuinely different variant, kept. Color/sizeRange/tag are
+// not part of the identity at all — only used as a fallback when a row has
+// no sku_ctn, so blank-SKU rows don't all collapse into one "duplicate".
 function makeVariantKey(r: CsvRow): string {
-  return `${(r.color || "").toLowerCase().trim()}|||${(
+  const sku = (r.sku_ctn || "").trim();
+  const fp = assortFp(extractSizeQty(r));
+  if (sku) return `sku:${sku}|||${fp}`;
+  return `nosku:${(r.color || "").toLowerCase().trim()}|||${(
     r.size || ""
-  ).trim()}|||${assortFp(extractSizeQty(r))}|||${(r.tag || "online")
-    .toLowerCase()
-    .trim()}`;
+  ).trim()}|||${fp}|||${(r.tag || "online").toLowerCase().trim()}`;
 }
 
 // Same composite key, built from an existing DB variant instead of a CSV row
@@ -189,12 +197,94 @@ function existingVariantKey(v: {
   sizeRange?: string;
   sizeQuantities?: Record<string, number>;
   tag?: string;
+  sku?: string;
 }): string {
-  return `${(v.color || "").toLowerCase().trim()}|||${(
+  const sku = (v.sku || "").trim();
+  const fp = assortFp(v.sizeQuantities || {});
+  if (sku) return `sku:${sku}|||${fp}`;
+  return `nosku:${(v.color || "").toLowerCase().trim()}|||${(
     v.sizeRange || ""
-  ).trim()}|||${assortFp(v.sizeQuantities || {})}|||${(
-    v.tag || "online"
-  ).toLowerCase()}`;
+  ).trim()}|||${fp}|||${(v.tag || "online").toLowerCase()}`;
+}
+
+const SUFFIX_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+// Appends -A, -B, -C... to a variant's itemName ONLY when the computed name
+// (`${article}-${color}-${sizeRange}`) actually collides with another
+// variant's name — i.e. same color + same sizeRange as an existing DB
+// variant or an earlier variant in this same import. This is a DIFFERENT
+// question from duplicate detection (which is sku_ctn + assortment based,
+// see makeVariantKey/existingVariantKey): two rows can share a sku_ctn but
+// have different color/sizeRange (a genuinely different, non-colliding
+// variant — e.g. a SKU mistakenly reused across two different size ranges
+// in the source CSV) and need no suffix at all, since their names already
+// differ. Conversely two rows with DIFFERENT sku_ctn but the same
+// color+sizeRange (e.g. online vs offline tag) DO need a suffix, since
+// their names would otherwise be identical.
+function disambiguateItemNames(
+  newVariants: { itemName: string; color: string; sizeRange: string }[],
+  existingVariants: { itemName?: string; color: string; sizeRange: string }[] = []
+): void {
+  const slotKey = (v: { color: string; sizeRange: string }) =>
+    `${(v.color || "").toLowerCase().trim()}|||${(v.sizeRange || "").trim()}`;
+  const occurrences: Record<string, number> = {};
+  existingVariants.forEach((v) => {
+    const k = slotKey(v);
+    occurrences[k] = (occurrences[k] || 0) + 1;
+  });
+  newVariants.forEach((v) => {
+    const k = slotKey(v);
+    const priorCount = occurrences[k] || 0;
+    if (priorCount > 0) {
+      v.itemName = `${v.itemName}-${
+        SUFFIX_LETTERS[priorCount - 1] || priorCount
+      }`;
+    }
+    occurrences[k] = priorCount + 1;
+  });
+}
+
+// A carton SKU must uniquely identify one (color + sizeRange) combination —
+// reusing the same sku_ctn for two DIFFERENT color/sizeRange slots is
+// corrupt source data (e.g. a copy-paste mistake in the CSV), not a
+// legitimate distinct variant. Rows whose SKU is already bound to a
+// different slot — either by an existing DB variant, or by an earlier row
+// in this same CSV batch — are rejected outright rather than imported
+// under an auto-renamed (-A/-B/-C) name. The same SKU reused for the SAME
+// slot (e.g. an online/offline pair) is unaffected — that's still allowed.
+function findSkuSlotConflicts(
+  rows: CsvRow[],
+  existingVariants: { sku?: string; color?: string; sizeRange?: string }[] = []
+): { valid: CsvRow[]; rejected: { row: CsvRow; conflictSlot: string }[] } {
+  const skuToSlot = new Map<string, string>();
+  existingVariants.forEach((v) => {
+    const sku = (v.sku || "").trim();
+    if (!sku || skuToSlot.has(sku)) return;
+    skuToSlot.set(
+      sku,
+      `${(v.color || "").toLowerCase().trim()}|||${(v.sizeRange || "").trim()}`
+    );
+  });
+  const valid: CsvRow[] = [];
+  const rejected: { row: CsvRow; conflictSlot: string }[] = [];
+  rows.forEach((r) => {
+    const sku = (r.sku_ctn || "").trim();
+    if (!sku) {
+      valid.push(r);
+      return;
+    }
+    const slot = `${(r.color || "").toLowerCase().trim()}|||${(
+      r.size || ""
+    ).trim()}`;
+    const boundSlot = skuToSlot.get(sku);
+    if (boundSlot && boundSlot !== slot) {
+      rejected.push({ row: r, conflictSlot: boundSlot });
+      return;
+    }
+    if (!boundSlot) skuToSlot.set(sku, slot);
+    valid.push(r);
+  });
+  return { valid, rejected };
 }
 
 // Kids-aware size sort: zero-padded junior sizes (01, 02) sort AFTER 13
@@ -310,6 +400,9 @@ function parseCsv(text: string): CsvRow[] {
       headers.forEach((h, i) => {
         row[h] = vals[i] ?? "";
       });
+      // Article name and SKU are always treated as uppercase, everywhere.
+      if (row.name) row.name = String(row.name).trim().toUpperCase();
+      if (row.sku_ctn) row.sku_ctn = String(row.sku_ctn).trim().toUpperCase();
       return row as CsvRow;
     })
     .filter((r) => r.name);
@@ -342,56 +435,19 @@ function findExistingMaster(
   );
 }
 
-// Group by (name + gender) — key format: "ArticleName|||MEN"
-// ALSO splits same-name groups where the same color+size appears with DIFFERENT assortments
-// into separate masters: "ArticleName", "ArticleName2", "ArticleName3", etc. (not "ArticleName-2")
+// Groups CSV rows purely by name + gender — that's what determines which
+// article a row belongs to. No collision detection, no auto-splitting into
+// "Name2", no renaming of any kind. Two rows that land in the same
+// color+sizeRange slot with different assortments just both become variants
+// of the same article (see makeVariantKey/existingVariantKey for how
+// duplicates — same sku_ctn + same assortment — are actually detected).
 function groupCsvByName(rows: CsvRow[]): Record<string, CsvRow[]> {
-  // Step 1: basic grouping by name + gender
-  const raw: Record<string, CsvRow[]> = {};
+  const result: Record<string, CsvRow[]> = {};
   rows.forEach((r) => {
     const gender = resolveGender(r.gender as string | undefined);
     const key = `${r.name}|||${gender}`;
-    (raw[key] = raw[key] || []).push(r);
+    (result[key] = result[key] || []).push(r);
   });
-
-  const getVarKey = (r: CsvRow) =>
-    `${(r.color || "").toLowerCase().trim()}|||${(r.size || "").trim()}`;
-
-  // Step 2: for each group, detect assortment collisions and split into sub-groups
-  const result: Record<string, CsvRow[]> = {};
-  Object.entries(raw).forEach(([key, groupRows]) => {
-    const [name, gender] = key.split("|||");
-
-    // Assign each row to the first sub-group where its color+size isn't already taken
-    // with a different assortment. Same color+size + same assortment = same variant (OK).
-    const subGroups: CsvRow[][] = [];
-    groupRows.forEach((r) => {
-      const vk = getVarKey(r);
-      const fp = assortFp(extractSizeQty(r));
-      let placed = false;
-      for (const sg of subGroups) {
-        const conflict = sg.some(
-          (x) => getVarKey(x) === vk && assortFp(extractSizeQty(x)) !== fp
-        );
-        if (!conflict) {
-          sg.push(r);
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) subGroups.push([r]);
-    });
-
-    // First sub-group keeps the original name; overflow groups get numeric suffix
-    subGroups.forEach((sg, idx) => {
-      const newName = idx === 0 ? name : `${name}${idx + 1}`;
-      const renamed = sg.map((r) =>
-        idx === 0 ? r : { ...r, name: newName, _isAutoRenamed: true }
-      );
-      result[`${newName}|||${gender}`] = renamed;
-    });
-  });
-
   return result;
 }
 
@@ -410,12 +466,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   onAddNewMaster,
   scrollToArticleId,
   onScrollRestored,
-  initialActiveTab,
-  onActiveTabChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<CatalogTab>(
-    initialActiveTab ?? "ALL"
-  );
   const [searchTerm, setSearchTerm] = useState("");
   const [genderFilter, setGenderFilter] = useState<string>("ALL");
   const [sortOption, setSortOption] = useState<string>("name_asc");
@@ -434,7 +485,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [appliedSearchTerm, setAppliedSearchTerm] = useState("");
   const [exportingExcel, setExportingExcel] = useState(false);
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const observerRef = useRef<HTMLDivElement | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useRef("");
@@ -462,10 +512,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   // ── CSV Import State ─────────────────────────────────────────────────────────
   const [csvOpen, setCsvOpen] = useState(false);
   const [csvText, setCsvText] = useState("");
-  const [csvRows, setCsvRows] = useState<CsvRow[]>([]);
   const [csvLoading, setCsvLoading] = useState(false);
-  const [csvStep, setCsvStep] = useState<1 | 2>(1); // 1=upload, 2=preview+import
-  const [csvConflicts, setCsvConflicts] = useState<CsvConflict[]>([]);
   const [csvMissingCols, setCsvMissingCols] = useState<string[]>([]);
   const [taxonomy, setTaxonomy] = useState<{
     categories: any[];
@@ -497,197 +544,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
 
   const openCsvModal = () => {
     setCsvOpen(true);
-    setCsvStep(1);
     setCsvText("");
-    setCsvRows([]);
-    setCsvConflicts([]);
     setCsvMissingCols([]);
     loadTaxonomy();
   };
   const closeCsvModal = () => {
     setCsvOpen(false);
-    setCsvRows([]);
     setCsvText("");
-    setCsvStep(1);
-    setCsvConflicts([]);
     setCsvMissingCols([]);
-  };
-
-  const handleCsvParse = () => {
-    // Validate required columns before any further processing
-    const firstLine = csvText.trim().split(/\r?\n/).find(Boolean) || "";
-    const missing = getMissingColumns(firstLine);
-    if (missing.length > 0) {
-      setCsvMissingCols(missing);
-      return;
-    }
-    setCsvMissingCols([]);
-
-    const rawRows = parseCsv(csvText);
-    if (!rawRows.length)
-      return toast.error(
-        "No valid rows found. Check CSV format: name,sku,color,size,online_mrp,offline_mrp,tag,..."
-      );
-
-    // Run grouping (which applies assortment-based splitting + auto-renaming)
-    const groups = groupCsvByName(rawRows);
-    // Flatten back to rows — names may have been updated (e.g. "Nike-Air2")
-    const processedRows = Object.values(groups).flat();
-
-    // ── Conflict detection ──────────────────────────────────────────────────
-    // Article identity = name + gender. There's no RFD/PreOrder concept at
-    // import time any more (that's a computed live-stock/PO signal), so no
-    // "cross-stage"/"both stages" checks are needed.
-    const conflicts: CsvConflict[] = [];
-
-    // ── A6: Auto-rename → conflict card (skip/import choice) ─────────────────
-    const renamedGroups = Object.keys(groups).filter((k) =>
-      groups[k].some((r) => r._isAutoRenamed)
-    );
-    renamedGroups.forEach((k) => {
-      const [name] = k.split("|||");
-      if (!conflicts.find((c) => c.key === k)) {
-        conflicts.push({
-          key: k,
-          name,
-          type: "auto-rename",
-          detail: `"${name}" was auto-renamed — the original article already had the same color+size with a different assortment distribution. Importing creates a new separate master. Skip to ignore and fix your CSV instead.`,
-          resolution: "import",
-        });
-      }
-    });
-
-    // ── DB duplicate check: 100% match on name + color + size range + size assortment ──
-    Object.entries(groups).forEach(([key, groupRows]) => {
-      const [name, gender] = key.split("|||");
-      const existingMaster = findExistingMaster(articles, name, gender);
-      if (!existingMaster) return; // brand new article — nothing in DB to compare against
-
-      const existingVariantKeys = new Set(
-        (existingMaster.variants || []).map(existingVariantKey)
-      );
-
-      const rowsWithVariant = groupRows.filter((r) => r.color && r.size);
-      const duplicateRows = rowsWithVariant.filter((r) =>
-        existingVariantKeys.has(makeVariantKey(r))
-      );
-      const newRows = rowsWithVariant.filter(
-        (r) => !existingVariantKeys.has(makeVariantKey(r))
-      );
-      if (!duplicateRows.length) return; // no overlap with existing variants
-
-      const duplicateLabels = Array.from(
-        new Set(duplicateRows.map((r) => `${r.color} ${r.size}`))
-      );
-
-      if (newRows.length === 0) {
-        // Every row in this group is an exact match (name + color + size range + assortment) → 100% duplicate
-        if (!conflicts.find((c) => c.key === key)) {
-          conflicts.push({
-            key,
-            name,
-            type: "db-full-duplicate",
-            detail: `"${name}" is a 100% duplicate — every color+size combo (${duplicateLabels.join(
-              ", "
-            )}) already exists in the catalogue with the same assortment. Nothing new to import.`,
-            resolution: "skip",
-          });
-        }
-      } else {
-        conflicts.push({
-          key: `⚠dbdup:${key}`,
-          name,
-          type: "db-partial-duplicate",
-          detail: `"${name}" — ${
-            duplicateLabels.length
-          } variant(s) already exist and will be skipped on import: ${duplicateLabels.join(
-            ", "
-          )}.`,
-          resolution: "info",
-        });
-      }
-    });
-
-    // ── D1/D2: Zero MRP → info warning ────────────────────────────────────
-    const zeroMrpByArticle: Record<string, string[]> = {};
-    processedRows.forEach((r) => {
-      const tag = (r.tag || "online").toLowerCase().trim();
-      const mrpVal =
-        tag === "offline" ? Number(r.offline_mrp) : Number(r.online_mrp);
-      if (!mrpVal || mrpVal <= 0) {
-        const label = `${r.color} ${r.size} (${tag})`;
-        (zeroMrpByArticle[r.name] = zeroMrpByArticle[r.name] || []).push(label);
-      }
-    });
-    Object.entries(zeroMrpByArticle).forEach(([name, labels]) => {
-      conflicts.push({
-        key: `⚠zero:${name}`,
-        name,
-        type: "zero-mrp",
-        detail: `"${name}" — ${
-          labels.length
-        } row(s) have MRP = 0: ${labels.join(
-          ", "
-        )}. Check online_mrp / offline_mrp columns.`,
-        resolution: "info",
-      });
-    });
-
-    // ── D3: Duplicate sku_ctn across different articles → info warning ──────
-    const skuToNames: Record<string, Set<string>> = {};
-    processedRows.forEach((r) => {
-      if (!r.sku_ctn?.trim()) return;
-      const sku = r.sku_ctn.trim();
-      if (!skuToNames[sku]) skuToNames[sku] = new Set();
-      skuToNames[sku].add(r.name.trim());
-    });
-    Object.entries(skuToNames).forEach(([sku, names]) => {
-      if (names.size > 1) {
-        conflicts.push({
-          key: `⚠sku:${sku}`,
-          name: sku,
-          type: "duplicate-sku",
-          detail: `SKU "${sku}" appears in multiple articles: ${Array.from(
-            names
-          ).join(", ")}. Per-size SKUs will collide — fix the sku_ctn column.`,
-          resolution: "info",
-        });
-      }
-    });
-
-    // ── A4: Duplicate CSV rows within same group → info warning ───────────
-    Object.entries(groups).forEach(([key, groupRows]) => {
-      const [name] = key.split("|||");
-      const seen = new Set<string>();
-      const dups: string[] = [];
-      groupRows.forEach((r) => {
-        const vk = `${(r.color || "").toLowerCase()}|||${(
-          r.size || ""
-        ).trim()}|||${assortFp(extractSizeQty(r))}|||${(
-          r.tag || "online"
-        ).toLowerCase()}`;
-        if (seen.has(vk))
-          dups.push(`${r.color} ${r.size} (${r.tag || "online"})`);
-        else seen.add(vk);
-      });
-      if (dups.length > 0) {
-        conflicts.push({
-          key: `⚠dup:${key}`,
-          name,
-          type: "csv-duplicate-row",
-          detail: `"${name}" has ${
-            dups.length
-          } duplicate row(s) in CSV — auto-merged on import: ${Array.from(
-            new Set(dups)
-          ).join(", ")}.`,
-          resolution: "info",
-        });
-      }
-    });
-
-    setCsvConflicts(conflicts);
-    setCsvRows(processedRows);
-    setCsvStep(2);
   };
 
   const handleCsvFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -702,15 +566,39 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     e.target.value = "";
   };
 
+  // Single direct action: paste/upload → import. No preview step, no skip/
+  // conflict decisions — everything importable imports immediately. Rows
+  // that are true duplicates (same sku_ctn + identical size assortment, or
+  // variants already existing in the DB) are silently dropped rather than
+  // surfaced for a manual choice.
   const handleCsvImport = async () => {
-    const groups = groupCsvByName(csvRows);
-    // Build set of group keys the user chose to SKIP
-    const skippedKeys = new Set(
-      csvConflicts.filter((c) => c.resolution === "skip").map((c) => c.key)
-    );
-    const keys = Object.keys(groups).filter((k) => !skippedKeys.has(k));
+    const firstLine = csvText.trim().split(/\r?\n/).find(Boolean) || "";
+    const missing = getMissingColumns(firstLine);
+    if (missing.length > 0) {
+      setCsvMissingCols(missing);
+      return;
+    }
+    setCsvMissingCols([]);
+
+    const rawRows = parseCsv(csvText);
+    if (!rawRows.length) {
+      toast.error(
+        "No valid rows found. Check CSV format: name,sku,color,size,online_mrp,offline_mrp,tag,..."
+      );
+      return;
+    }
+
+    // Silent SKU-based dedup — same sku_ctn + identical size assortment is a
+    // true duplicate (dropped); same sku_ctn with a different assortment is
+    // kept (not a duplicate).
+    const { kept: dedupedRows } = dedupeBySku(rawRows);
+
+    // Groups by name+gender; also auto-splits a same color+size combo that
+    // carries different assortments into separate masters.
+    const groups = groupCsvByName(dedupedRows);
+    const keys = Object.keys(groups);
     if (!keys.length) {
-      toast.error("All groups skipped — nothing to import.");
+      toast.error("Nothing to import.");
       return;
     }
     setCsvLoading(true);
@@ -733,6 +621,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       const normalizeSavedArticle = (raw: any) => ({
         id: raw._id,
         name: raw.articleName,
+        category: raw.gender, // `articles` prop entries store gender under `.category` too
         variants: (raw.variants || []).map((v: any) => ({ ...v, id: v._id })),
       });
 
@@ -763,6 +652,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       let skipped = 0;
       const warnings: string[] = [];
 
+      // Groups run sequentially, on purpose — NOT a performance oversight.
+      // The existing-vs-new decision below reads `localArticles`, which is
+      // only ever up to date immediately after the previous group's
+      // create/update finished. Running groups concurrently was tried and
+      // reverted: two groups for the SAME article name (e.g. rows that
+      // disagree on gender — a CSV data issue, not code) would both read
+      // "no existing article yet" at the same instant and each independently
+      // create one, producing duplicate/fragmented articles. Speed instead
+      // comes from each save being `silent` (see fd.append below) — no
+      // per-master toast/refetch storm slowing things down between saves.
       for (const groupKey of keys) {
         // groupKey = "ArticleName|||MEN" (etc.)
         const [name] = groupKey.split("|||");
@@ -885,25 +784,43 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         };
 
         // Deduplicate CSV rows before building variants (prevents duplicate variants in DB on new article create)
+        // sku_ctn is mandatory — a row without one is never imported.
         const seenVariantKeys = new Set<string>();
-        const variants = rows
-          .filter((r) => {
-            if (!r.color || !r.size) return false;
-            const vk = makeVariantKey(r);
-            if (seenVariantKeys.has(vk)) return false;
-            seenVariantKeys.add(vk);
-            return true;
-          })
-          .map(buildVariant);
+        const dedupedGroupRows = rows.filter((r) => {
+          if (!r.color || !r.size || !r.sku_ctn?.trim()) return false;
+          const vk = makeVariantKey(r);
+          if (seenVariantKeys.has(vk)) return false;
+          seenVariantKeys.add(vk);
+          return true;
+        });
+        // Reject rows whose sku_ctn is reused across a different color/size
+        // slot within this same batch (e.g. a copy-pasted SKU) — corrupt
+        // data, not a legitimate new variant.
+        const { valid: skuValidRows, rejected: skuConflictRows } =
+          findSkuSlotConflicts(dedupedGroupRows);
+        if (skuConflictRows.length > 0) {
+          skuConflictRows.forEach(({ row, conflictSlot }) => {
+            warnings.push(
+              `"${name}" — skipped ${row.color} (${row.size}): SKU "${row.sku_ctn}" is already used for ${conflictSlot.replace("|||", " (")}) — fix the CSV and re-import.`
+            );
+          });
+        }
+        const variants = skuValidRows.map(buildVariant);
+        disambiguateItemNames(variants);
 
         const soleColor = firstRow.sole_color?.trim() || "";
 
-        // Match existing master by name — reads localArticles (kept in sync
-        // below after every create/update), not the `articles` prop, so a
-        // later group in this SAME run correctly finds an article created by
-        // an EARLIER group instead of creating a duplicate.
+        // Match existing master by name + gender (article identity is both,
+        // not name alone — two rows for the same name but different gender
+        // are legitimately different articles, not a merge target for each
+        // other). Reads localArticles (kept in sync below after every
+        // create/update), not the `articles` prop, so a later group in this
+        // SAME run correctly finds an article created by an EARLIER group
+        // instead of creating a duplicate.
         const existingMaster = localArticles.find(
-          (a) => a.name.trim().toLowerCase() === name.trim().toLowerCase()
+          (a) =>
+            a.name.trim().toLowerCase() === name.trim().toLowerCase() &&
+            resolveGender(a.category) === gender
         );
 
         const fd = new FormData();
@@ -914,27 +831,37 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         fd.append("brandId", brandDoc._id);
         fd.append("manufacturerCompanyId", manDoc._id);
         fd.append("unitId", unitDoc._id);
+        // Suppresses the per-master realtime toast + full article/order
+        // refetch on every client — a bulk import of N masters would
+        // otherwise stack N toasts and N heavy refetches. One manual
+        // refresh happens after the whole batch completes instead.
+        fd.append("silent", "true");
         if (soleColor) fd.append("soleColor", soleColor);
         if (Object.keys(colorImageUrls).length > 0) {
           fd.append("colorImageUrls", JSON.stringify(colorImageUrls));
         }
 
         if (existingMaster) {
-          // ── Duplicate check: color + sizeRange + assortment + tag composite key ─
-          // Same color + DIFFERENT sizeRange → new variant (OK)
-          // Same color + same sizeRange + DIFFERENT assortment → new variant (OK, different product)
-          // Same color + same sizeRange + same assortment + DIFFERENT tag → new variant (OK, online vs offline)
-          // Same color + same sizeRange + same assortment + same tag → true duplicate (skip)
+          // ── Duplicate check: sku_ctn + size assortment ONLY ──────────
+          // Same sku_ctn + same assortment → true duplicate (skip).
+          // Same sku_ctn + different assortment → new variant (OK).
+          // sku_ctn is mandatory — rows without one are never imported.
           const existingVariantKeys = new Set(
             (existingMaster.variants || []).map(existingVariantKey)
           );
 
           const duplicateRows = rows.filter(
-            (r) => r.color && existingVariantKeys.has(makeVariantKey(r))
+            (r) =>
+              r.color &&
+              r.sku_ctn?.trim() &&
+              existingVariantKeys.has(makeVariantKey(r))
           );
           const newRows = rows.filter(
             (r) =>
-              r.color && r.size && !existingVariantKeys.has(makeVariantKey(r))
+              r.color &&
+              r.size &&
+              r.sku_ctn?.trim() &&
+              !existingVariantKeys.has(makeVariantKey(r))
           );
 
           const duplicateLabels = Array.from(
@@ -969,38 +896,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             );
           }
 
-          // ── Build variants ONLY for new color+sizeRange combos ──────
-          // A new row can share color+sizeRange with an existing variant while having a
-          // DIFFERENT assortment — that's not a duplicate (handled above), but its default
-          // itemName (`${name}-${color}-${size}`) would collide with the existing variant's.
-          // Disambiguate by suffixing -A, -B, -C... based on how many variants already
-          // occupy that color+sizeRange slot (existing DB variants + earlier rows in this batch).
-          const colorSizeOccurrences: Record<string, number> = {};
-          (existingMaster.variants || []).forEach((v) => {
-            const csKey = `${(v.color || "").toLowerCase().trim()}|||${(
-              v.sizeRange || ""
-            ).trim()}`;
-            colorSizeOccurrences[csKey] =
-              (colorSizeOccurrences[csKey] || 0) + 1;
-          });
-          const SUFFIX_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-          const newVariantsOnly = newRows
-            .filter((r) => r.color && r.size)
-            .map((r) => {
-              const variant = buildVariant(r);
-              const csKey = `${(r.color || "").toLowerCase().trim()}|||${(
-                r.size || ""
-              ).trim()}`;
-              const priorCount = colorSizeOccurrences[csKey] || 0;
-              if (priorCount > 0) {
-                variant.itemName = `${variant.itemName}-${
-                  SUFFIX_LETTERS[priorCount - 1] || priorCount
-                }`;
-              }
-              colorSizeOccurrences[csKey] = priorCount + 1;
-              return variant;
-            });
-
           // ── Merge: preserve existing variants with their inventory ───
           const existingVariants = (existingMaster.variants || []).map((v) => ({
             _id: v.id,
@@ -1020,6 +915,35 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             offlineMrp: v.offlineMrp || 0,
             sku: v.sku || "",
           }));
+
+          // ── Build variants for new (non-duplicate) rows only ────────
+          // Duplicate = same sku_ctn + same size assortment (handled above).
+          // A new row whose color+sizeRange matches an existing variant's
+          // (e.g. same slot, different assortment or a different sku_ctn —
+          // online vs offline) gets -A/-B/-C appended to its itemName so
+          // the two are distinguishable in the UI.
+          const colorSizeRows = newRows.filter((r) => r.color && r.size);
+          // Reject rows whose sku_ctn is already bound to a DIFFERENT
+          // color/sizeRange slot — either an existing DB variant of this
+          // article, or an earlier row in this same batch.
+          const { valid: skuValidNewRows, rejected: skuConflictNewRows } =
+            findSkuSlotConflicts(colorSizeRows, existingVariants);
+          if (skuConflictNewRows.length > 0) {
+            skuConflictNewRows.forEach(({ row, conflictSlot }) => {
+              warnings.push(
+                `"${name}" — skipped ${row.color} (${row.size}): SKU "${row.sku_ctn}" is already used for ${conflictSlot.replace("|||", " (")}) — fix the CSV and re-import.`
+              );
+            });
+          }
+          // Every new row was rejected for a SKU/slot conflict — nothing
+          // left to add, don't fire a no-op update.
+          if (colorSizeRows.length > 0 && skuValidNewRows.length === 0) {
+            skipped++;
+            continue;
+          }
+
+          const newVariantsOnly = skuValidNewRows.map((r) => buildVariant(r));
+          disambiguateItemNames(newVariantsOnly, existingVariants);
 
           const allVariants = [...existingVariants, ...newVariantsOnly];
           const allColors = Array.from(
@@ -1069,27 +993,18 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     toast.promise(
       importPromise().finally(() => setCsvLoading(false)),
       {
-        loading: `Importing ${keys.length} group(s)...`,
+        loading: `Importing ${keys.length} article(s)...`,
         success: (result: any) => {
           closeCsvModal();
           onSuccess?.();
           loadTaxonomy();
-          // Show all warnings in a single consolidated toast
-          if (result.warnings?.length) {
-            setTimeout(() => {
-              const summary =
-                result.warnings.length === 1
-                  ? result.warnings[0]
-                  : `${
-                      result.warnings.length
-                    } warnings:\n${result.warnings.join("\n")}`;
-              toast.warning(summary, { duration: 5000 });
-            }, 500);
-          }
+          // One manual refresh for the whole batch — each individual
+          // create/update call ran silent (see fd.append("silent", ...)).
+          window.dispatchEvent(new CustomEvent("catalogRefetch"));
           const parts = [];
           if (result.created > 0) parts.push(`${result.created} imported`);
           if (result.skipped > 0)
-            parts.push(`${result.skipped} skipped (duplicate)`);
+            parts.push(`${result.skipped} already existed (skipped)`);
           return parts.join(" · ") || "Done";
         },
         error: (err: any) => err.message || "Import failed",
@@ -1264,7 +1179,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       assortmentId: item.assortmentId || "",
       productCategory: item.categoryId?.name,
       brand: item.brandId?.name,
-      pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+      pricePerPair:
+        item.variants?.[0]?.onlineMrp ||
+        item.variants?.[0]?.sellingPrice ||
+        item.mrp,
       mrp: item.mrp,
       soleColor: item.soleColor,
       manufacturer: item.manufacturerCompanyId?.name,
@@ -1284,7 +1202,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     async (
       page: number,
       q: string,
-      tab: CatalogTab,
       append = false,
       gender = genderFilter,
       sort = sortOption
@@ -1296,9 +1213,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           page,
           limit: BATCH_SIZE,
           q: q || undefined,
-          // An active search is global across every tab. Without a search,
-          // preserve the selected tab as the RFD/PreOrder filter.
-          filter: q.trim() ? undefined : tab,
           gender: gender !== "ALL" ? gender : undefined,
           sort,
         });
@@ -1323,19 +1237,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     [genderFilter, sortOption]
   );
 
-  // Trigger fresh fetch when tab / gender / sort changes
+  // Trigger fresh fetch when gender / sort changes
   useEffect(() => {
     setCurrentPage(1);
-    fetchLocalArticles(
-      1,
-      debouncedSearch.current,
-      activeTab,
-      false,
-      genderFilter,
-      sortOption
-    );
+    fetchLocalArticles(1, debouncedSearch.current, false, genderFilter, sortOption);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, genderFilter, sortOption]);
+  }, [genderFilter, sortOption]);
 
   // Debounced search: 400ms delay, resets to page 1
   useEffect(() => {
@@ -1345,14 +1252,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       debouncedSearch.current = nextSearchTerm;
       setAppliedSearchTerm(nextSearchTerm);
       setCurrentPage(1);
-      fetchLocalArticles(
-        1,
-        nextSearchTerm,
-        activeTab,
-        false,
-        genderFilter,
-        sortOption
-      );
+      fetchLocalArticles(1, nextSearchTerm, false, genderFilter, sortOption);
     }, 400);
     return () => {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -1363,18 +1263,11 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   // Real-time refresh on catalogRefetch socket event
   useEffect(() => {
     const handler = () =>
-      fetchLocalArticles(
-        1,
-        debouncedSearch.current,
-        activeTab,
-        false,
-        genderFilter,
-        sortOption
-      );
+      fetchLocalArticles(1, debouncedSearch.current, false, genderFilter, sortOption);
     window.addEventListener("catalogRefetch", handler);
     return () => window.removeEventListener("catalogRefetch", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, genderFilter, sortOption]);
+  }, [genderFilter, sortOption]);
 
   // Load Next Page for Infinite Scroll (reactive pattern matching Shop.tsx)
   const loadNextPage = useCallback(() => {
@@ -1385,7 +1278,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     fetchLocalArticles(
       nextPage,
       debouncedSearch.current,
-      activeTab,
       true,
       genderFilter,
       sortOption
@@ -1395,7 +1287,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     hasMorePages,
     loadingMore,
     pageLoading,
-    activeTab,
     genderFilter,
     sortOption,
     fetchLocalArticles,
@@ -1424,15 +1315,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const isGlobalSearchActive = appliedSearchTerm.length > 0;
 
   // ---------- Detailed Excel export ----------
-  const exportCatalogueExcel = async (
-    exportScope: "CURRENT" | "COMBINED" = "CURRENT"
-  ) => {
+  const exportCatalogueExcel = async () => {
     setExportingExcel(true);
     try {
       const exportSearch = appliedSearchTerm.trim();
-      const isCombinedExport = exportScope === "COMBINED";
-      const exportFilter =
-        isCombinedExport || exportSearch ? undefined : activeTab;
       const exportGender = genderFilter !== "ALL" ? genderFilter : undefined;
       const exportLimit = 1000;
       const allItems: any[] = [];
@@ -1440,13 +1326,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       let totalPages = 1;
 
       // The API accepts up to 1,000 records per page, so walk every page to
-      // export the complete filtered dataset rather than only loaded rows.
+      // export the complete dataset rather than only loaded rows.
       do {
         const res = await masterCatalogService.listMasterItems({
           page,
           limit: exportLimit,
           q: exportSearch || undefined,
-          filter: exportFilter,
           gender: exportGender,
           sort: sortOption,
         });
@@ -1462,31 +1347,16 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       let serialNumber = 0;
 
       allItems.forEach((item: any) => {
-        const variants = (item.variants || []).filter((variant: any) => {
-          if (isCombinedExport || exportSearch || activeTab === "ALL") return true;
-          return getVariantAvailability(variant) === activeTab;
-        });
+        const variants = item.variants || [];
 
         variants.forEach((variant: any) => {
-          const availability = getVariantAvailability(variant);
           const sizeMap = variant.sizeMap || {};
           const livePairs: number = Object.values(sizeMap).reduce<number>(
             (sum: number, cell: any) => sum + (Number(cell?.qty) || 0),
             0
           );
-          const poPlannedQty = variant.poPlannedQty || {};
-          const plannedPairs: number =
-            Number(variant.plannedPairs) ||
-            Object.values(poPlannedQty).reduce<number>(
-              (sum: number, qty: any) => sum + (Number(qty) || 0),
-              0
-            );
-          const quantityPairs =
-            availability === "PREORDER" ? plannedPairs : livePairs;
-          const bookedPairs =
-            availability === "PREORDER"
-              ? Number(variant.preBookedPairs || 0)
-              : Number(bookedPairsByVariant[String(variant._id)] || 0);
+          const quantityPairs = livePairs;
+          const bookedPairs = Number(bookedPairsByVariant[String(variant._id)] || 0);
           const poPendingPairs = Number(variant.poPendingPairs || 0);
           const sizeQuantities =
             variant.sizeQuantities &&
@@ -1513,18 +1383,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             color: variant.color || "",
             sizeRange: variant.sizeRange || "",
             assortment: formatAssortment(sizeQuantities),
-            status:
-              availability === "PREORDER"
-                ? "PRE-ORDER"
-                : availability === "RFD"
-                ? "RFD"
-                : "UNAVAILABLE",
             onlineMrp: Number(variant.onlineMrp ?? item.onlineMrp ?? 0),
             offlineMrp: Number(variant.offlineMrp ?? item.offlineMrp ?? 0),
             costPerPair: Number(variant.costPrice || 0),
             mrpPerPair: Number(variant.mrp || item.mrp || 0),
-            quantityBasis:
-              availability === "PREORDER" ? "PO Planned" : "Available Stock",
             quantityPairs,
             quantityCartons: Math.floor(quantityPairs / 24),
             bookedPairs,
@@ -1541,13 +1403,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         return;
       }
 
-      const availableCount = exportRows.filter(
-        (row) => row.status === "RFD"
-      ).length;
-      const preOrderCount = exportRows.filter(
-        (row) => row.status === "PRE-ORDER"
-      ).length;
-
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet("Catalogue");
       const columns = [
@@ -1563,14 +1418,12 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         ["Color", "color", 16],
         ["Size Range", "sizeRange", 14],
         ["Size Assortment", "assortment", 28],
-        ["Status", "status", 16],
         ["Online MRP / Pair", "onlineMrp", 16],
         ["Offline MRP / Pair", "offlineMrp", 16],
         ["Cost / Pair", "costPerPair", 14],
         ["MRP / Pair", "mrpPerPair", 14],
-        ["Quantity Basis", "quantityBasis", 18],
-        ["Quantity / Planned Pairs", "quantityPairs", 22],
-        ["Quantity / Planned Cartons", "quantityCartons", 24],
+        ["Live Stock Pairs", "quantityPairs", 18],
+        ["Live Stock Cartons", "quantityCartons", 20],
         ["Booked Pairs", "bookedPairs", 14],
         ["Booked Cartons", "bookedCartons", 16],
         ["PO Pending Pairs", "poPendingPairs", 18],
@@ -1580,15 +1433,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       const headers = columns.map((column) => column[0]);
 
       worksheet.columns = columns.map(([, key, width]) => ({ key, width }));
-      const reportScope = isCombinedExport
-        ? "All"
-        : exportSearch
-        ? "Global Search"
-        : activeTab === "ALL"
-        ? "All"
-        : activeTab === "RFD"
-        ? "RFD"
-        : "Pre-Order";
+      const reportScope = exportSearch ? "Global Search" : "All";
       worksheet.insertRow(1, [COMPANY_CONFIG.name.toUpperCase()]);
       worksheet.insertRow(2, [
         `${COMPANY_CONFIG.brand} | MASTER CATALOGUE REPORT`,
@@ -1603,7 +1448,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         `Generated On: ${new Date().toLocaleString("en-IN")} | Report Scope: ${reportScope}`,
       ]);
       worksheet.insertRow(6, [
-        `Search: ${exportSearch || "All items"} | Gender: ${exportGender || "All"} | Total Variants: ${exportRows.length} | Available: ${availableCount} | Pre-Order: ${preOrderCount}`,
+        `Search: ${exportSearch || "All items"} | Gender: ${exportGender || "All"} | Total Variants: ${exportRows.length}`,
       ]);
       worksheet.insertRow(7, []);
       worksheet.getRow(8).values = headers;
@@ -1665,8 +1510,8 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       });
 
       exportRows.forEach((row) => worksheet.addRow(row));
-      const currencyColumns = new Set([15, 16, 17, 18]);
-      const numericColumns = new Set([1, 20, 21, 22, 23, 24, 25]);
+      const currencyColumns = new Set([13, 14, 15, 16]);
+      const numericColumns = new Set([1, 17, 18, 19, 20, 21, 22]);
 
       worksheet.eachRow((row, rowNumber) => {
         if (rowNumber <= 8) return;
@@ -1693,22 +1538,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             cell.numFmt = '₹#,##0.00';
           }
         });
-
-        const statusCell = row.getCell(13);
-        statusCell.font = { bold: true, color: { argb: "FF166534" } };
-        statusCell.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFDCFCE7" },
-        };
-        if (statusCell.value === "PRE-ORDER") {
-          statusCell.font = { bold: true, color: { argb: "FFB45309" } };
-          statusCell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFFFEDD5" },
-          };
-        }
       });
 
       worksheet.views = [{ state: "frozen", ySplit: 8 }];
@@ -1735,15 +1564,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
       worksheet.headerFooter.oddFooter = `&L${COMPANY_CONFIG.name}&CPage &P of &N&RGenerated ${new Date().toLocaleDateString("en-IN")}`;
 
       const buffer = await workbook.xlsx.writeBuffer();
-      const scopeName = isCombinedExport
-        ? "combined"
-        : exportSearch
-        ? "global-search"
-        : activeTab === "ALL"
-        ? "all"
-        : activeTab === "RFD"
-        ? "rfd"
-        : "pre-order";
+      const scopeName = exportSearch ? "global-search" : "all";
       const date = new Date().toISOString().split("T")[0];
       saveAs(
         new Blob([buffer], {
@@ -1915,15 +1736,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             <p className="text-sm text-slate-500">
               {pageLoading
                 ? "Loading…"
-                : `${totalItems} Master${totalItems !== 1 ? "s" : ""}`}{" "}
-              •{" "}
-              <b>
-                {activeTab === "ALL"
-                  ? "All"
-                  : activeTab === "RFD"
-                  ? "RFD"
-                  : "Pre-Order"}
-              </b>
+                : `${totalItems} Master${totalItems !== 1 ? "s" : ""}`}
             </p>
           </div>
         </div>
@@ -1935,70 +1748,18 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           >
             <FileSpreadsheet size={16} /> Import CSV
           </button>
-          <div className="relative flex">
-            <button
-              onClick={() => {
-                setExportMenuOpen(false);
-                exportCatalogueExcel("CURRENT");
-              }}
-              disabled={exportingExcel || pageLoading || loadingMore}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-l-xl font-semibold text-sm hover:bg-indigo-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {exportingExcel ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : (
-                <Download size={16} />
-              )}
-              {exportingExcel ? "Exporting..." : "Export Excel"}
-            </button>
-            <button
-              type="button"
-              aria-label="More export options"
-              aria-haspopup="menu"
-              aria-expanded={exportMenuOpen}
-              onClick={() => setExportMenuOpen((open) => !open)}
-              disabled={exportingExcel || pageLoading || loadingMore}
-              className="px-2.5 py-2 bg-indigo-50 border border-l-0 border-indigo-200 text-indigo-700 rounded-r-xl hover:bg-indigo-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <ChevronDown size={15} />
-            </button>
-            {exportMenuOpen && (
-              <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setExportMenuOpen(false);
-                    exportCatalogueExcel("CURRENT");
-                  }}
-                  className="w-full rounded-lg px-3 py-2 text-left text-xs font-bold text-slate-700 hover:bg-slate-50"
-                >
-                  Export Current View
-                  <span className="mt-0.5 block text-[10px] font-medium text-slate-400">
-                    {isGlobalSearchActive
-                      ? "Current global search results"
-                      : activeTab === "ALL"
-                      ? "All catalogue"
-                      : activeTab === "RFD"
-                      ? "RFD catalogue"
-                      : "Pre-Order catalogue"}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setExportMenuOpen(false);
-                    exportCatalogueExcel("COMBINED");
-                  }}
-                  className="w-full rounded-lg px-3 py-2 text-left text-xs font-bold text-slate-700 hover:bg-slate-50"
-                >
-                  Export Combined Catalogue
-                  <span className="mt-0.5 block text-[10px] font-medium text-slate-400">
-                    Every item, RFD + Pre-Order, in one file
-                  </span>
-                </button>
-              </div>
+          <button
+            onClick={() => exportCatalogueExcel()}
+            disabled={exportingExcel || pageLoading || loadingMore}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl font-semibold text-sm hover:bg-indigo-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {exportingExcel ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Download size={16} />
             )}
-          </div>
+            {exportingExcel ? "Exporting..." : "Export Excel"}
+          </button>
           {onAddNewMaster && (
             <button
               onClick={onAddNewMaster}
@@ -2008,55 +1769,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             </button>
           )}
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-2 shadow-sm flex gap-2">
-        <button
-          onClick={() => {
-            setActiveTab("ALL");
-            setCurrentPage(1);
-            onActiveTabChange?.("ALL");
-          }}
-          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "ALL"
-              ? "bg-slate-800 text-white shadow"
-              : "text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          <Layers size={16} />
-          All
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab("RFD");
-            setCurrentPage(1);
-            onActiveTabChange?.("RFD");
-          }}
-          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "RFD"
-              ? "bg-emerald-600 text-white shadow"
-              : "text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          <CheckCircle2 size={16} />
-          RFD
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab("PREORDER");
-            setCurrentPage(1);
-            onActiveTabChange?.("PREORDER");
-          }}
-          className={`flex-1 px-4 py-2 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 ${
-            activeTab === "PREORDER"
-              ? "bg-amber-500 text-white shadow"
-              : "text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          <Clock size={16} />
-          Pre-Order
-        </button>
       </div>
 
       {/* Search + filters bar (same as distributor Shop) */}
@@ -2128,25 +1840,14 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             <p className="text-slate-400 font-medium">
               {isGlobalSearchActive
                 ? "No matching catalogue items found."
-                : "No items in this tab."}
+                : "No catalogue items found."}
             </p>
           </div>
         )}
 
         {filteredMasters.map((article) => {
-          // Global searches include matching articles regardless of RFD/
-          // PreOrder classification. The API query omits `filter` while a
-          // search is active. Empty searches keep the selected tab's
-          // computed-availability variant view — "ALL" shows everything.
-          const tabVariants = isGlobalSearchActive || activeTab === "ALL"
-            ? article.variants || []
-            : (article.variants || []).filter(
-                (v) => getVariantAvailability(v) === activeTab
-              );
+          const tabVariants = article.variants || [];
           if (tabVariants.length === 0) return null;
-          const visibleStatuses = Array.from(
-            new Set(tabVariants.map((variant) => getVariantAvailability(variant)))
-          );
 
           const isExpanded = expandedIds.has(article.id);
           const variantCount = tabVariants.length;
@@ -2185,19 +1886,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             new Set(tabVariants.map((v) => v.color).filter(Boolean))
           );
 
-          // Master-level total stock
-          const masterTotalPairs =
-            tabVariants.reduce(
-              (s, v) =>
-                s +
-                Object.values(v.sizeMap || {}).reduce(
-                  (ss: number, c: any) => ss + (Number(c?.qty) || 0),
-                  0
-                ),
-              0
-            ) || 0;
-          const masterTotalCtns = Math.floor(masterTotalPairs / 24);
-
           return (
             <div
               key={article.id}
@@ -2234,30 +1922,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                         {article.productCategory}
                       </span>
                     )}
-                    {isGlobalSearchActive &&
-                      visibleStatuses.map((catalogStatus) => (
-                        <span
-                          key={catalogStatus}
-                          className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border ${
-                            catalogStatus === "RFD"
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : catalogStatus === "PREORDER"
-                              ? "bg-amber-50 text-amber-700 border-amber-200"
-                              : "bg-slate-100 text-slate-500 border-slate-200"
-                          }`}
-                        >
-                          {catalogStatus === "RFD" ? (
-                            <CheckCircle2 size={9} />
-                          ) : (
-                            <Clock size={9} />
-                          )}
-                          {catalogStatus === "RFD"
-                            ? "RFD"
-                            : catalogStatus === "PREORDER"
-                            ? "PRE-ORDER"
-                            : "UNAVAILABLE"}
-                        </span>
-                      ))}
                   </div>
 
                   {/* Compact Stats Row */}
@@ -2308,21 +1972,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   )}
                 </div>
 
-                {/* Variant count badge */}
-                <div className="hidden lg:block shrink-0 px-4 border-l border-slate-100">
-                  <div className="text-center">
-                    <span className="text-xl font-black text-green-600 block leading-tight">
-                      {masterTotalCtns}
-                    </span>
-                    <span className="text-[10px] text-slate-400 uppercase font-black tracking-widest">
-                      ctn
-                    </span>
-
-                    <span className="block text-[9px] text-slate-400">
-                      {masterTotalPairs.toLocaleString()} pairs
-                    </span>
-                  </div>
-                </div>
                 {/* Variant count badge */}
                 <div className="hidden lg:block shrink-0 px-4 border-l border-slate-100">
                   <div className="text-center">
@@ -2406,13 +2055,13 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                   Color
                                 </th>
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                  Stock
-                                </th>
-                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                                   Cost
                                 </th>
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                  MRP
+                                  Online MRP
+                                </th>
+                                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                  Offline MRP
                                 </th>
                                 <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">
                                   Status
@@ -2474,7 +2123,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                         {vName}
                                       </p>
                                       <p className="text-[10px] font-mono text-slate-400 tracking-wider mt-0.5">
-                                        {v.sku || article.sku || ""} ·{" "}
+                                        {v.sku || article.sku || ""}
+                                      </p>
+                                      <p className="text-[10px] font-mono text-slate-400 tracking-wider">
                                         {formatAssortment(v.sizeQuantities)}
                                       </p>
                                     </td>
@@ -2489,31 +2140,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                         /> */}
                                         {v.color || "—"}
                                       </span>
-                                    </td>
-                                    <td className="px-6 py-3">
-                                      {(() => {
-                                        const vPairs = Object.values(
-                                          v.sizeMap || {}
-                                        ).reduce(
-                                          (s: number, c: any) =>
-                                            s + (Number(c?.qty) || 0),
-                                          0
-                                        );
-                                        const vCtns = Math.floor(vPairs / 24);
-                                        return (
-                                          <>
-                                            <p className="text-sm font-bold text-emerald-600">
-                                              {vCtns}{" "}
-                                              <span className="text-[10px] font-normal text-slate-400">
-                                                ctn
-                                              </span>
-                                            </p>
-                                            <p className="text-[10px] text-slate-400">
-                                              {vPairs.toLocaleString()} pairs
-                                            </p>
-                                          </>
-                                        );
-                                      })()}
                                     </td>
                                     <td className="px-6 py-3">
                                       <p className="text-sm font-bold text-slate-700">
@@ -2533,14 +2159,36 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                     </td>
                                     <td className="px-6 py-3">
                                       <p className="text-sm font-bold text-indigo-700">
-                                        ₹{((v.mrp || 0) * 24).toLocaleString()}
+                                        ₹
+                                        {(
+                                          (v.onlineMrp || v.mrp || 0) * 24
+                                        ).toLocaleString()}
                                         <span className="text-[10px] font-normal text-slate-400">
                                           {" "}
                                           /ctn
                                         </span>
                                       </p>
                                       <p className="text-[10px] text-slate-400">
-                                        ₹{(v.mrp || 0).toLocaleString()}/pr
+                                        ₹
+                                        {(v.onlineMrp || v.mrp || 0).toLocaleString()}
+                                        /pr
+                                      </p>
+                                    </td>
+                                    <td className="px-6 py-3">
+                                      <p className="text-sm font-bold text-emerald-700">
+                                        ₹
+                                        {(
+                                          (v.offlineMrp || v.mrp || 0) * 24
+                                        ).toLocaleString()}
+                                        <span className="text-[10px] font-normal text-slate-400">
+                                          {" "}
+                                          /ctn
+                                        </span>
+                                      </p>
+                                      <p className="text-[10px] text-slate-400">
+                                        ₹
+                                        {(v.offlineMrp || v.mrp || 0).toLocaleString()}
+                                        /pr
                                       </p>
                                     </td>
                                     <td className="px-6 py-3 text-center">
@@ -2615,7 +2263,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                           {vName}
                                         </p>
                                         <p className="text-[10px] font-mono text-slate-400 tracking-wider mt-0.5">
-                                          {v.sku || article.sku || ""} ·{" "}
+                                          {v.sku || article.sku || ""}
+                                        </p>
+                                        <p className="text-[10px] font-mono text-slate-400 tracking-wider">
                                           {formatAssortment(v.sizeQuantities)}
                                         </p>
                                       </div>
@@ -2635,26 +2285,23 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                                         {v.color || "—"}
                                       </span>
                                       <span className="text-xs font-bold text-indigo-600">
-                                        ₹{((v.mrp || 0) * 24).toLocaleString()}
+                                        ₹
+                                        {(
+                                          (v.onlineMrp || v.mrp || 0) * 24
+                                        ).toLocaleString()}
                                         <span className="text-[9px] font-normal text-slate-400">
-                                          /ctn
+                                          /ctn online
                                         </span>
                                       </span>
-                                      {(() => {
-                                        const vPairs = Object.values(
-                                          v.sizeMap || {}
-                                        ).reduce(
-                                          (s: number, c: any) =>
-                                            s + (Number(c?.qty) || 0),
-                                          0
-                                        );
-                                        const vCtns = Math.floor(vPairs / 24);
-                                        return (
-                                          <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
-                                            {vCtns} ctn · {vPairs} prs
-                                          </span>
-                                        );
-                                      })()}
+                                      <span className="text-xs font-bold text-emerald-600">
+                                        ₹
+                                        {(
+                                          (v.offlineMrp || v.mrp || 0) * 24
+                                        ).toLocaleString()}
+                                        <span className="text-[9px] font-normal text-slate-400">
+                                          /ctn offline
+                                        </span>
+                                      </span>
                                     </div>
                                   </div>
                                   <div
@@ -2730,8 +2377,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             </div>
 
             <div className="p-6 max-h-[75vh] overflow-y-auto space-y-5">
-              {/* Step 1: Upload */}
-              {csvStep === 1 && (
                 <div className="space-y-4">
                   <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-5 text-center">
                     <FileSpreadsheet
@@ -2816,388 +2461,19 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                   )}
 
                   <button
-                    onClick={handleCsvParse}
-                    disabled={!csvText.trim()}
-                    className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all disabled:opacity-50"
-                  >
-                    Parse & Continue →
-                  </button>
-                </div>
-              )}
-
-              {/* Step 2: Preview + Import */}
-              {csvStep === 2 && (
-                <div className="space-y-5">
-                  <button
-                    onClick={() => setCsvStep(1)}
-                    className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1"
-                  >
-                    ← Back
-                  </button>
-
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-800">
-                    {(() => {
-                      const groups = groupCsvByName(csvRows);
-                      const names = Object.keys(groups).map(
-                        (k) => k.split("|||")[0]
-                      );
-                      const autoRenamed = csvRows.filter(
-                        (r) => r._isAutoRenamed
-                      ).length;
-                      const addon = names.filter((n) =>
-                        articles.some(
-                          (a) =>
-                            a.name.trim().toLowerCase() ===
-                            n.trim().toLowerCase()
-                        )
-                      ).length;
-                      const newCount = names.length - addon;
-                      return (
-                        <>
-                          <b>{names.length} article(s)</b> ready to import (
-                          {csvRows.length} variant rows).
-                          {addon > 0 && (
-                            <span className="ml-1 text-amber-700 font-bold">
-                              {addon} existing will get new variants added.
-                            </span>
-                          )}
-                          {newCount > 0 && (
-                            <span className="ml-1 text-emerald-700 font-bold">
-                              {newCount} will be created new.
-                            </span>
-                          )}
-                          {autoRenamed > 0 && (
-                            <span className="ml-1 text-purple-700 font-bold">
-                              {autoRenamed} row(s) auto-renamed (different
-                              assortment).
-                            </span>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-
-                  {/* ── Conflict Warnings ── */}
-                  {csvConflicts.length > 0 && (
-                    <div className="space-y-3">
-                      {/* Blocking conflicts — user must decide skip or import */}
-                      {(() => {
-                        const blocking = Array.from(
-                          new Map(
-                            csvConflicts
-                              .filter((c) => c.resolution !== "info")
-                              .map((c) => [c.key, c])
-                          ).values()
-                        );
-                        if (!blocking.length) return null;
-                        return (
-                          <div className="space-y-2">
-                            <p className="text-xs font-black text-rose-500 uppercase tracking-wider flex items-center gap-1.5">
-                              ⚠ Conflicts — Decide per group
-                            </p>
-                            {blocking.map((conflict) => (
-                              <div
-                                key={conflict.key}
-                                className={`rounded-xl border p-3 text-xs flex items-start justify-between gap-3 ${
-                                  conflict.type === "auto-rename"
-                                    ? "bg-purple-50 border-purple-200 text-purple-800"
-                                    : "bg-slate-100 border-slate-300 text-slate-700"
-                                }`}
-                              >
-                                <div className="flex-1">
-                                  <p className="font-black text-[10px] uppercase tracking-wider mb-0.5 opacity-60">
-                                    {conflict.type === "auto-rename"
-                                      ? "Auto Renamed"
-                                      : "100% Duplicate"}
-                                  </p>
-                                  <p className="leading-relaxed">
-                                    {conflict.detail}
-                                  </p>
-                                </div>
-                                <div className="flex gap-1.5 shrink-0">
-                                  <button
-                                    onClick={() =>
-                                      setCsvConflicts((prev) =>
-                                        prev.map((c) =>
-                                          c.key === conflict.key
-                                            ? { ...c, resolution: "skip" }
-                                            : c
-                                        )
-                                      )
-                                    }
-                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all ${
-                                      conflict.resolution === "skip"
-                                        ? "bg-rose-500 text-white"
-                                        : "bg-white border border-rose-300 text-rose-600 hover:bg-rose-50"
-                                    }`}
-                                  >
-                                    Skip
-                                  </button>
-                                  <button
-                                    onClick={() =>
-                                      setCsvConflicts((prev) =>
-                                        prev.map((c) =>
-                                          c.key === conflict.key
-                                            ? { ...c, resolution: "import" }
-                                            : c
-                                        )
-                                      )
-                                    }
-                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all ${
-                                      conflict.resolution === "import"
-                                        ? "bg-emerald-500 text-white"
-                                        : "bg-white border border-emerald-300 text-emerald-600 hover:bg-emerald-50"
-                                    }`}
-                                  >
-                                    Import
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      })()}
-
-                      {/* Info-only warnings — always import, just informational */}
-                      {(() => {
-                        const infoItems = csvConflicts.filter(
-                          (c) => c.resolution === "info"
-                        );
-                        if (!infoItems.length) return null;
-                        return (
-                          <div className="space-y-2">
-                            <p className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                              ℹ Warnings (import continues)
-                            </p>
-                            {infoItems.map((conflict) => (
-                              <div
-                                key={conflict.key}
-                                className={`rounded-xl border p-3 text-xs ${
-                                  conflict.type === "duplicate-sku"
-                                    ? "bg-orange-50 border-orange-200 text-orange-800"
-                                    : conflict.type === "zero-mrp"
-                                    ? "bg-yellow-50 border-yellow-200 text-yellow-800"
-                                    : conflict.type === "db-partial-duplicate"
-                                    ? "bg-slate-50 border-slate-200 text-slate-600"
-                                    : "bg-slate-50 border-slate-200 text-slate-500"
-                                }`}
-                              >
-                                <p className="font-black text-[10px] uppercase tracking-wider mb-0.5 opacity-50">
-                                  {conflict.type === "duplicate-sku"
-                                    ? "Duplicate SKU"
-                                    : conflict.type === "zero-mrp"
-                                    ? "Zero MRP"
-                                    : conflict.type === "db-partial-duplicate"
-                                    ? "Partial Duplicate"
-                                    : "Duplicate Row (auto-merged)"}
-                                </p>
-                                <p className="leading-relaxed">
-                                  {conflict.detail}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  )}
-
-                  {/* Preview Table */}
-                  <div>
-                    <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2">
-                      Preview
-                    </p>
-                    <div className="border border-slate-200 rounded-xl overflow-hidden overflow-x-auto">
-                      <table className="w-full text-left text-xs whitespace-nowrap">
-                        <thead className="bg-slate-50">
-                          <tr>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Name
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              SKU (Ctn)
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Color
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Size
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Tag
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Online MRP
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Offline MRP
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Cost ₹
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              HSN
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Size Qty
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Gender
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Brand
-                            </th>
-                            <th className="px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider">
-                              Image
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {csvRows.slice(0, 20).map((r, i) => {
-                            const groupKey = `${r.name}|||${resolveGender(
-                              r.gender as string | undefined
-                            )}`;
-                            const conflict = csvConflicts.find(
-                              (c) => c.key === groupKey
-                            );
-                            const isSkipped = conflict?.resolution === "skip";
-                            return (
-                              <tr
-                                key={i}
-                                className={`hover:bg-slate-50 ${
-                                  isSkipped ? "opacity-40" : ""
-                                }`}
-                              >
-                                <td className="px-3 py-2 font-semibold text-slate-800">
-                                  {isSkipped && (
-                                    <span className="text-[9px] font-black text-rose-500 mr-1">
-                                      SKIP
-                                    </span>
-                                  )}
-                                  {r._isAutoRenamed && (
-                                    <span
-                                      className="text-[9px] font-black text-purple-600 bg-purple-50 border border-purple-200 rounded px-1 mr-1"
-                                      title="Name auto-suffixed: same name had different assortment"
-                                    >
-                                      AUTO
-                                    </span>
-                                  )}
-                                  {r.name}
-                                </td>
-                                <td className="px-3 py-2 font-mono text-[10px] text-indigo-600">
-                                  {r.sku_ctn || (
-                                    <span className="text-slate-300 italic">
-                                      —
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="px-3 py-2 text-slate-600">
-                                  {r.color}
-                                </td>
-                                <td className="px-3 py-2 text-slate-600 font-mono">
-                                  {r.size}
-                                </td>
-                                <td className="px-3 py-2">
-                                  {r.tag ? (
-                                    <span
-                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                        r.tag === "online"
-                                          ? "bg-blue-100 text-blue-700"
-                                          : "bg-amber-100 text-amber-700"
-                                      }`}
-                                    >
-                                      {r.tag}
-                                    </span>
-                                  ) : (
-                                    <span className="text-slate-300 text-[10px]">
-                                      —
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="px-3 py-2 font-bold text-blue-600">
-                                  {r.online_mrp ? `₹${r.online_mrp}` : "—"}
-                                </td>
-                                <td className="px-3 py-2 font-bold text-amber-600">
-                                  {r.offline_mrp ? `₹${r.offline_mrp}` : "—"}
-                                </td>
-                                <td className="px-3 py-2 text-slate-600">
-                                  ₹{r.cost_price || "—"}
-                                </td>
-                                <td className="px-3 py-2 font-mono text-slate-500">
-                                  {r.hsn || "—"}
-                                </td>
-                                <td className="px-3 py-2 font-mono text-xs text-slate-600">
-                                  {formatSizeQtyDisplay(r)}
-                                </td>
-                                <td className="px-3 py-2 text-slate-500">
-                                  {r.gender || "—"}
-                                </td>
-                                <td className="px-3 py-2 text-slate-500">
-                                  {r.brand || "—"}
-                                </td>
-                                <td className="px-3 py-2">
-                                  {r.image ? (
-                                    <img
-                                      src={r.image}
-                                      alt=""
-                                      className="w-8 h-8 rounded object-cover border border-slate-200"
-                                      onError={(e) => {
-                                        (
-                                          e.target as HTMLImageElement
-                                        ).style.display = "none";
-                                      }}
-                                    />
-                                  ) : (
-                                    <span className="text-slate-300 italic">
-                                      —
-                                    </span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                          {csvRows.length > 20 && (
-                            <tr>
-                              <td
-                                colSpan={14}
-                                className="px-3 py-2 text-slate-400 italic text-center"
-                              >
-                                ...and {csvRows.length - 20} more rows
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <button
                     onClick={handleCsvImport}
-                    disabled={csvLoading}
+                    disabled={!csvText.trim() || csvLoading}
                     className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     {csvLoading ? (
                       <>
-                        <Loader2 size={16} className="animate-spin" />{" "}
-                        Importing...
+                        <Loader2 size={16} className="animate-spin" /> Importing...
                       </>
                     ) : (
-                      <>
-                        Import{" "}
-                        {
-                          Object.keys(groupCsvByName(csvRows)).filter(
-                            (k) =>
-                              !csvConflicts.find(
-                                (c) => c.key === k && c.resolution === "skip"
-                              )
-                          ).length
-                        }{" "}
-                        Group(s)
-                      </>
+                      "Import Now"
                     )}
                   </button>
                 </div>
-              )}
             </div>
           </div>
         </div>
@@ -3464,15 +2740,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     </div>
                     <p className="mt-3 text-[11px] text-slate-500">
                       You can select multiple images (JPG, PNG, WebP).
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                    <p className="font-bold text-slate-900 mb-1">Note</p>
-                    <p className="text-slate-600 text-sm">
-                      RFD vs Pre-Order isn't set manually — it's computed
-                      automatically from live stock and any pending Purchase
-                      Order for each variant.
                     </p>
                   </div>
                 </div>

@@ -40,6 +40,34 @@ type SizeRangeEntry = {
   label: string;
 };
 
+// Kids wrap-around ranges (e.g. "11-1": 11→13, then wraps to 1→1) always
+// key the post-13 segment as a plain unpadded number ("1", not "01") — same
+// as every other size. Older data that got zero-padded is remapped back to
+// the plain form here so it matches the columns this page renders.
+function remapToCanonicalSizeKeys<T>(
+  data: Record<string, T> | undefined,
+  sizeRange: string
+): Record<string, T> {
+  if (!data) return {};
+  const parts = (sizeRange || "").split("-").map((s) => s.trim());
+  if (parts.length !== 2) return data;
+  const start = parseInt(parts[0]);
+  const end = parseInt(parts[1]);
+  if (isNaN(start) || isNaN(end) || start <= end) return data;
+  if (!(start >= 1 && start <= 13 && end >= 1 && end <= 13)) return data;
+
+  const canonicalKeys: string[] = [];
+  for (let i = start; i <= 13; i++) canonicalKeys.push(String(i));
+  for (let i = 1; i <= end; i++) canonicalKeys.push(String(i));
+  const byNumber = new Map(canonicalKeys.map((k) => [Number(k), k]));
+
+  const remapped: Record<string, T> = {};
+  Object.entries(data).forEach(([k, v]) => {
+    remapped[byNumber.get(Number(k)) ?? k] = v;
+  });
+  return remapped;
+}
+
 const ProductMaster: React.FC<ProductMasterProps> = ({
   addArticle,
   updateArticle,
@@ -53,7 +81,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   const [formData, setFormData] = useState({
     artname: "",
     soleColor: "",
-    mrp: 0,
+    onlineMrp: 0,
+    offlineMrp: 0,
+    costPrice: 0,
     hsnCode: "",
     gender: AssortmentType.MEN,
     assortmentId: ASSORTMENTS[0].id,
@@ -126,7 +156,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       setFormData({
         artname: item.name || "",
         soleColor: item.soleColor || "",
-        mrp: item.mrp || 0,
+        onlineMrp: item.variants?.[0]?.onlineMrp || 0,
+        offlineMrp: item.variants?.[0]?.offlineMrp || 0,
+        costPrice: item.variants?.[0]?.costPrice || 0,
         hsnCode: item.variants?.[0]?.hsnCode || "",
         gender: item.category as AssortmentType || AssortmentType.MEN,
         assortmentId: item.assortmentId || ASSORTMENTS[0].id,
@@ -153,6 +185,8 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         const mappedVariants = item.variants.map((v: any) => ({
           ...v,
           id: v.id || v._id,
+          sizeQuantities: remapToCanonicalSizeKeys(v.sizeQuantities, v.sizeRange),
+          sizeSkus: remapToCanonicalSizeKeys(v.sizeSkus, v.sizeRange),
         }));
         setVariants(mappedVariants);
 
@@ -185,7 +219,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         setFormData({
           artname: item.articleName || "",
           soleColor: item.soleColor || "",
-          mrp: item.mrp || 0,
+          onlineMrp: item.variants?.[0]?.onlineMrp || 0,
+          offlineMrp: item.variants?.[0]?.offlineMrp || 0,
+          costPrice: item.variants?.[0]?.costPrice || 0,
           hsnCode: item.variants?.[0]?.hsnCode || "",
           gender: item.gender || AssortmentType.MEN,
           assortmentId: ASSORTMENTS[0].id,
@@ -220,8 +256,12 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           item.colorMedia.forEach((cm: any) => {
             mediaMap[cm.color] = {
               images: [],
-              previews:
-                cm.images?.map((img: any) => getImageUrl(img.url || img)) || [],
+              // Keep the raw (server-relative) URL here, not the resolved
+              // absolute one — this is what gets sent back on submit to tell
+              // the backend which existing images the user kept vs removed,
+              // so it has to match what's actually stored in colorMedia.url.
+              // getImageUrl() is applied only at render time for the <img> tag.
+              previews: cm.images?.map((img: any) => img.url || img) || [],
             };
           });
           setColorMedia(mediaMap);
@@ -231,16 +271,21 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           const rangeUsageCount: Record<string, number> = {};
 
           const mappedVariants = item.variants.map((v: any) => {
-            const sizeQuantities: Record<string, number> = v.sizeQuantities || {};
-            const sizeSkus: Record<string, string> = v.sizeSkus || {};
+            let sizeQuantities: Record<string, number> = v.sizeQuantities || {};
+            let sizeSkus: Record<string, string> = v.sizeSkus || {};
 
             // Legacy Fallback: If new dedicated fields are missing, try to restore from sizeMap
             if (Object.keys(sizeQuantities).length === 0 && v.sizeMap) {
+              sizeQuantities = {};
+              sizeSkus = {};
               Object.entries(v.sizeMap).forEach(([size, data]: [string, any]) => {
                 sizeQuantities[size] = data.qty || 0;
                 sizeSkus[size] = data.sku || "";
               });
             }
+
+            sizeQuantities = remapToCanonicalSizeKeys(sizeQuantities, v.sizeRange);
+            sizeSkus = remapToCanonicalSizeKeys(sizeSkus, v.sizeRange);
 
             const label = v.sizeRange || "";
             const currentIndex = rangeUsageCount[label] || 0;
@@ -263,6 +308,8 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
               costPrice: v.costPrice || 0,
               sellingPrice: v.sellingPrice || 0,
               mrp: v.mrp || 0,
+              onlineMrp: v.onlineMrp || 0,
+              offlineMrp: v.offlineMrp || 0,
               hsnCode: v.hsnCode || "",
               sizeQuantities,
               sizeSkus,
@@ -308,12 +355,12 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     }
 
     // Kids wrap-around range, e.g. "11-1" or "13-4": sizes run start → 13
-    // (child sizing), then wrap to 01 → end (junior sizing, zero-padded so
-    // they sort after 13 and don't collide with adult sizes 1-13).
+    // (child sizing), then wrap to 1 → end (junior sizing, plain unpadded
+    // number — same as every other size).
     if (start >= 1 && start <= 13 && end >= 1 && end <= 13) {
       const sizes: string[] = [];
       for (let i = start; i <= 13; i++) sizes.push(String(i));
-      for (let i = 1; i <= end; i++) sizes.push(String(i).padStart(2, "0"));
+      for (let i = 1; i <= end; i++) sizes.push(String(i));
       return sizes;
     }
 
@@ -359,7 +406,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       const claimed = new Set<string>();
 
       selectedColors.forEach((color) => {
-        sizeRanges.forEach((rangeEntry, idx) => {
+        sizeRanges.forEach((rangeEntry) => {
           // Match by color + sizeRange label only — sizeRangeId is a
           // client-generated id re-created on every load/edit and isn't
           // stable, so requiring it here caused existing variants (with
@@ -382,15 +429,17 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
               id: `var-${color}-${rangeEntry.id}`,
               sizeRangeId: rangeEntry.id,
               itemName: formData.artname
-                ? `${formData.artname}-${color}-${rangeEntry.label}-${idx + 1}`
-                : `${color}-${rangeEntry.label}-${idx + 1}`,
+                ? `${formData.artname}-${color}-${rangeEntry.label}`
+                : `${color}-${rangeEntry.label}`,
               sku: "",
               sizeSkus: {},
               color,
               sizeRange: rangeEntry.label,
-              costPrice: 0,
+              costPrice: formData.costPrice || 0,
               sellingPrice: 0,
-              mrp: formData.mrp || 0,
+              mrp: formData.onlineMrp || 0,
+              onlineMrp: formData.onlineMrp || 0,
+              offlineMrp: formData.offlineMrp || 0,
               hsnCode: formData.hsnCode || "",
               sizeQuantities: {},
             });
@@ -398,9 +447,29 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         });
       });
 
+      // A (color, sizeRange label) combo can legitimately hold more than one
+      // variant — e.g. same size-range, different SKU/assortment (see
+      // CatalogueManager's makeVariantKey, which dedupes by SKU+assortment
+      // only, not by color/sizeRange). The loop above claims at most one
+      // variant per label since sizeRanges holds each label once; sweep any
+      // leftover existing variants here so a second same-labeled variant
+      // isn't silently dropped from the form (and deleted on save).
+      const knownCombos = new Set(
+        selectedColors.flatMap((color) =>
+          sizeRanges.map((r) => `${color}|||${r.label}`)
+        )
+      );
+      prev.forEach((v: any) => {
+        if (claimed.has(v.id)) return;
+        const comboKey = `${v.color}|||${v.sizeRange}`;
+        if (!knownCombos.has(comboKey)) return; // its color/size-range was actually removed
+        claimed.add(v.id);
+        newVariants.push({ ...v });
+      });
+
       return newVariants;
     });
-    // Deliberately NOT depending on formData.artname/mrp/hsnCode — those are
+    // Deliberately NOT depending on formData.artname/onlineMrp/offlineMrp/hsnCode — those are
     // only used as defaults for brand-new variants (read fresh via closure
     // whenever this does run); depending on them made routine edits to the
     // article's name/MRP/HSN rebuild the entire variants array and risk
@@ -414,7 +483,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     );
   };
 
-  const copyToAll = (field: "costPrice" | "mrp", color: string) => {
+  const copyToAll = (field: "costPrice" | "onlineMrp" | "offlineMrp", color: string) => {
     if (variants.length === 0) return;
 
     const targetVariants = variants.filter((v) => v.color === color);
@@ -450,19 +519,6 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           ...v,
           sizeQuantities: { ...v.sizeQuantities, [size]: val },
         };
-      })
-    );
-  };
-
-  const copyHsnToAll = (color: string) => {
-    const targetVariants = variants.filter((v) => v.color === color);
-    if (targetVariants.length === 0) return;
-    const firstVal = targetVariants[0].hsnCode || "";
-
-    setVariants((prev) =>
-      prev.map((v) => {
-        if (v.color !== color) return v;
-        return { ...v, hsnCode: firstVal };
       })
     );
   };
@@ -779,7 +835,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           `Total quantity for variant "${v.itemName}" must be a multiple of 24 (Current: ${total})`
         );
       }
-      if (total > 0 && !v.sku?.trim()) {
+      // Carton SKU is mandatory for every variant, not just ones with
+      // stock — a blank SKU is never allowed to save.
+      if (!v.sku?.trim()) {
         return toast.error(
           `Carton SKU is required for variant "${v.itemName}" before it can be saved.`
         );
@@ -789,7 +847,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     const data = new FormData();
     data.append("articleName", formData.artname);
     data.append("soleColor", formData.soleColor);
-    data.append("mrp", formData.mrp.toString());
+    data.append("mrp", String(formData.onlineMrp || formData.offlineMrp || 0));
     data.append("gender", formData.gender);
     data.append("categoryId", categoryId);
     data.append("brandId", brandId);
@@ -799,13 +857,19 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     data.append("productColors", JSON.stringify(selectedColors));
     data.append("sizeRanges", JSON.stringify(sizeRanges.map((r) => r.label)));
 
+    // HSN is a single product-wide value (edited once, at the top) — every
+    // variant gets it applied uniformly at submit time, regardless of
+    // whatever stale per-variant value it may still be carrying in state.
     const normalizedVariants = variants.map((v: any) => ({
       _id: v.id?.startsWith("var-") ? undefined : v.id,
       itemName: v.itemName,
+      sku: v.sku || "",
       costPrice: v.costPrice,
       sellingPrice: v.sellingPrice || 0,
-      mrp: v.mrp,
-      hsnCode: v.hsnCode,
+      mrp: v.onlineMrp || v.mrp || 0,
+      onlineMrp: v.onlineMrp || 0,
+      offlineMrp: v.offlineMrp || 0,
+      hsnCode: formData.hsnCode || "",
       color: v.color,
       sizeRange: v.sizeRange,
       sizeRangeId: v.sizeRangeId || "",
@@ -822,8 +886,19 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
       });
     });
 
-    if (editingId && Object.values(colorMedia).some((m) => m.images.length > 0)) {
-      data.append("replaceColorMedia", "true");
+    if (editingId) {
+      // Tell the backend exactly which pre-existing images survive this edit
+      // (per color, in whatever order the user left them in) — this is what
+      // lets a plain removal (no new file added) actually persist as blank,
+      // instead of the backend silently keeping whatever was already there
+      // because it only ever saw new uploads before.
+      const existingImagesByColor: Record<string, string[]> = {};
+      Object.entries(colorMedia).forEach(([color, media]) => {
+        existingImagesByColor[color] = media.previews.filter(
+          (p) => !p.startsWith("blob:")
+        );
+      });
+      data.append("existingImagesByColor", JSON.stringify(existingImagesByColor));
     }
 
     const savePromise = async () => {
@@ -859,7 +934,10 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           assortmentId: item.assortmentId || "",
           productCategory: item.categoryId?.name,
           brand: item.brandId?.name,
-          pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+          pricePerPair:
+            item.variants?.[0]?.onlineMrp ||
+            item.variants?.[0]?.sellingPrice ||
+            item.mrp,
           mrp: item.mrp,
           soleColor: item.soleColor,
           manufacturer: item.manufacturerCompanyId?.name,
@@ -896,7 +974,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
           artname: "",
           soleColor: "",
           hsnCode: "",
-          mrp: 0,
+          onlineMrp: 0,
+          offlineMrp: 0,
+          costPrice: 0,
           gender: AssortmentType.MEN,
           assortmentId: ASSORTMENTS[0].id,
           manufacturer: "",
@@ -1016,20 +1096,74 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                        MRP (₹) <span className="text-rose-500">*</span>
+                        HSN Code
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 64029990"
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-medium text-slate-800"
+                        value={formData.hsnCode}
+                        onChange={(e) =>
+                          setFormData({ ...formData, hsnCode: e.target.value })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                        Online MRP <span className="text-rose-500">*</span>
                       </label>
                       <input
                         type="number"
                         required
                         placeholder="e.g. 1999"
                         className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-bold text-indigo-700"
-                        value={formData.mrp || ""}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            mrp: Number(e.target.value),
-                          })
-                        }
+                        value={formData.onlineMrp || ""}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setFormData({ ...formData, onlineMrp: val });
+                          setVariants((prev) =>
+                            prev.map((v) => ({ ...v, onlineMrp: val, mrp: val }))
+                          );
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                        Offline MRP
+                      </label>
+                      <input
+                        type="number"
+                        placeholder="e.g. 1999"
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-bold text-indigo-700"
+                        value={formData.offlineMrp || ""}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setFormData({ ...formData, offlineMrp: val });
+                          setVariants((prev) =>
+                            prev.map((v) => ({ ...v, offlineMrp: val }))
+                          );
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                        Cost Price 
+                      </label>
+                      <input
+                        type="number"
+                        placeholder="e.g. 999"
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-bold text-indigo-700"
+                        value={formData.costPrice || ""}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setFormData({ ...formData, costPrice: val });
+                          setVariants((prev) =>
+                            prev.map((v) => ({ ...v, costPrice: val }))
+                          );
+                        }}
                       />
                     </div>
                   </div>
@@ -1301,10 +1435,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
 
                   const isCollapsed = collapsedColors.has(color);
                   const imageCount = colorMedia[color]?.previews.length || 0;
-                  const missingSku = colorVariants.some((v) => {
-                    const total = Object.values(v.sizeQuantities).reduce((s, q) => s + (q || 0), 0);
-                    return total > 0 && !v.sku?.trim();
-                  });
+                  const missingSku = colorVariants.some((v) => !v.sku?.trim());
 
                   return (
                     <div key={color} className="rounded-2xl border border-slate-200 overflow-hidden">
@@ -1394,7 +1525,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                 }`}
                               >
                                 <img
-                                  src={src}
+                                  src={getImageUrl(src)}
                                   className="w-full aspect-square object-cover"
                                   alt={`Preview ${idx + 1}`}
                                   draggable={false}
@@ -1458,26 +1589,26 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                         )}
                       </div>
 
-                      <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
-                        <table className="w-full text-left border-collapse min-w-[1140px]">
+                      <div className="overflow-x-auto rounded-lg border border-slate-300 bg-white">
+                        <table className="w-full text-left border-collapse min-w-[900px]">
                           <thead>
-                            <tr className="bg-slate-50 border-b border-slate-200">
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-12 text-center">
+                            <tr className="bg-slate-100">
+                              <th className="border border-slate-300 px-1.5 py-1.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider w-10 text-center">
                                 #
                               </th>
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[220px]">
+                              <th className="border border-slate-300 px-2 py-1.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider min-w-[180px]">
                                 <div className="flex flex-col gap-0.5">
                                   <span>Item Variation Name</span>
                                   <span className="text-indigo-500 normal-case font-semibold">Carton SKU <span className="text-rose-500">*</span></span>
                                 </div>
                               </th>
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32">
+                              <th className="border border-slate-300 px-2 py-1.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider w-24">
                                 <div className="flex flex-col gap-1 text-indigo-600">
-                                  <span>Cost Price (₹)</span>
+                                  <span>Cost Price</span>
                                   <button
                                     type="button"
                                     onClick={() => copyToAll("costPrice", color)}
-                                    className="flex items-center gap-1 text-[9px] hover:text-indigo-800 transition-colors uppercase"
+                                    className="flex items-center gap-1 text-[8px] hover:text-indigo-800 transition-colors uppercase"
                                   >
                                     <ArrowUp
                                       size={10}
@@ -1487,13 +1618,13 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                   </button>
                                 </div>
                               </th>
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32">
+                              <th className="border border-slate-300 px-2 py-1.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider w-24">
                                 <div className="flex flex-col gap-1 text-indigo-600">
-                                  <span>MRP (₹)</span>
+                                  <span>Online MRP</span>
                                   <button
                                     type="button"
-                                    onClick={() => copyToAll("mrp", color)}
-                                    className="flex items-center gap-1 text-[9px] hover:text-indigo-800 transition-colors uppercase"
+                                    onClick={() => copyToAll("onlineMrp", color)}
+                                    className="flex items-center gap-1 text-[8px] hover:text-indigo-800 transition-colors uppercase"
                                   >
                                     <ArrowUp
                                       size={10}
@@ -1503,19 +1634,19 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                   </button>
                                 </div>
                               </th>
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-32 text-center">
+                              <th className="border border-slate-300 px-2 py-1.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider w-24">
                                 <div className="flex flex-col gap-1 text-indigo-600">
-                                  <span>HSN</span>
+                                  <span>Offline MRP</span>
                                   <button
                                     type="button"
-                                    onClick={() => copyHsnToAll(color)}
-                                    className="flex items-center gap-1 text-[9px] hover:text-indigo-800 transition-colors uppercase justify-center"
+                                    onClick={() => copyToAll("offlineMrp", color)}
+                                    className="flex items-center gap-1 text-[8px] hover:text-indigo-800 transition-colors uppercase"
                                   >
                                     <ArrowUp
                                       size={10}
                                       className="rotate-180"
                                     />{" "}
-                                    Apply
+                                    Copy All
                                   </button>
                                 </div>
                               </th>
@@ -1523,14 +1654,14 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                               {colorSizes.map((size) => (
                                 <th
                                   key={size}
-                                  className="px-3 py-4 text-[11px] font-bold text-indigo-700 uppercase tracking-wider w-20 text-center border-l border-slate-100 bg-indigo-50/30"
+                                  className="border border-slate-300 px-1.5 py-1.5 text-[10px] font-bold text-indigo-700 uppercase tracking-wider w-16 text-center bg-indigo-50/40"
                                 >
                                   <div className="flex flex-col gap-1">
                                     <span>Size {size}</span>
                                     <button
                                       type="button"
                                       onClick={() => copySizeToAll(color, size)}
-                                      className="flex items-center gap-1 text-[9px] text-indigo-600 hover:text-indigo-800 transition-colors uppercase justify-center"
+                                      className="flex items-center gap-1 text-[8px] text-indigo-600 hover:text-indigo-800 transition-colors uppercase justify-center"
                                     >
                                       <ArrowUp
                                         size={10}
@@ -1542,10 +1673,10 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                 </th>
                               ))}
 
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-24 text-center">
+                              <th className="border border-slate-300 px-1.5 py-1.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider w-20 text-center">
                                 Total Pairs
                               </th>
-                              <th className="px-4 py-4 text-[11px] font-bold text-slate-500 uppercase tracking-wider w-16 text-center">
+                              <th className="border border-slate-300 px-1.5 py-1.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider w-12 text-center">
                                 Actions
                               </th>
                             </tr>
@@ -1560,18 +1691,18 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                               return (
                                 <tr
                                   key={v.id}
-                                  className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors group"
+                                  className="hover:bg-blue-50/40 transition-colors group"
                                 >
-                                  <td className="px-4 py-4 text-xs font-bold text-slate-400 text-center">
+                                  <td className="border border-slate-200 px-1.5 py-1 text-[10px] font-bold text-slate-400 text-center">
                                     {idx + 1}
                                   </td>
 
-                                  <td className="px-4 py-4">
-                                    <div className="flex flex-col gap-1">
+                                  <td className="border border-slate-200 p-0">
+                                    <div className="flex flex-col">
                                       <input
                                         type="text"
                                         disabled={loading}
-                                        className="w-full text-xs font-bold text-slate-700 bg-transparent border-none outline-none focus:ring-1 focus:ring-indigo-500/50 rounded p-1"
+                                        className="w-full text-[10px] font-bold text-slate-700 bg-transparent border-none outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 px-1.5 py-1"
                                         value={v.itemName}
                                         onChange={(e) =>
                                           updateVariantField(
@@ -1581,21 +1712,20 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                           )
                                         }
                                       />
-                                      <span className="text-[10px] text-slate-400 font-medium px-1 italic">
+                                      <span className="text-[9px] text-slate-400 font-medium px-1.5 italic">
                                         Range: {v.sizeRange}
                                       </span>
                                       {(() => {
-                                        const total = Object.values(v.sizeQuantities).reduce((s, q) => s + (q || 0), 0);
-                                        const skuMissing = total > 0 && !v.sku?.trim();
+                                        const skuMissing = !v.sku?.trim();
                                         return (
                                           <input
                                             type="text"
                                             disabled={loading}
                                             placeholder="Carton SKU e.g. ECH-BLK-M-5-8"
-                                            className={`w-full p-1.5 text-xs font-bold bg-slate-50 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20 ${
+                                            className={`w-full text-[10px] font-bold bg-transparent border-none outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 px-1.5 py-1 ${
                                               skuMissing
-                                                ? "border-rose-300 text-rose-600 placeholder:text-rose-300"
-                                                : "border-slate-200 text-slate-700"
+                                                ? "text-rose-600 placeholder:text-rose-300"
+                                                : "text-slate-700"
                                             }`}
                                             value={v.sku || ""}
                                             onChange={(e) =>
@@ -1607,10 +1737,10 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                     </div>
                                   </td>
 
-                                  <td className="px-4 py-4">
+                                  <td className="border border-slate-200 p-0">
                                     <input
                                       type="number"
-                                      className="w-full p-2 text-xs font-bold text-indigo-600 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                      className="w-full h-full text-[10px] font-bold text-indigo-600 bg-transparent border-none outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 px-1.5 py-1.5"
                                       value={v.costPrice || ""}
                                       onChange={(e) =>
                                         updateVariantField(
@@ -1622,31 +1752,31 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                     />
                                   </td>
 
-                                  <td className="px-4 py-4">
+                                  <td className="border border-slate-200 p-0">
                                     <input
                                       type="number"
-                                      className="w-full p-2 text-xs font-bold text-indigo-600 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
-                                      value={v.mrp || ""}
+                                      className="w-full h-full text-[10px] font-bold text-indigo-600 bg-transparent border-none outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 px-1.5 py-1.5"
+                                      value={v.onlineMrp || ""}
                                       onChange={(e) =>
                                         updateVariantField(
                                           v.id,
-                                          "mrp",
+                                          "onlineMrp",
                                           Number(e.target.value)
                                         )
                                       }
                                     />
                                   </td>
 
-                                  <td className="px-4 py-4">
+                                  <td className="border border-slate-200 p-0">
                                     <input
-                                      type="text"
-                                      className="w-full p-2 text-xs font-medium text-slate-600 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
-                                      value={v.hsnCode}
+                                      type="number"
+                                      className="w-full h-full text-[10px] font-bold text-indigo-600 bg-transparent border-none outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 px-1.5 py-1.5"
+                                      value={v.offlineMrp || ""}
                                       onChange={(e) =>
                                         updateVariantField(
                                           v.id,
-                                          "hsnCode",
-                                          e.target.value
+                                          "offlineMrp",
+                                          Number(e.target.value)
                                         )
                                       }
                                     />
@@ -1659,15 +1789,15 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                     return (
                                       <td
                                         key={size}
-                                        className={`px-2 py-4 border-l border-slate-100 ${
-                                          !isAvailable ? "bg-slate-50/50" : ""
+                                        className={`border border-slate-200 p-0 ${
+                                          !isAvailable ? "bg-slate-50" : ""
                                         }`}
                                       >
                                         {isAvailable ? (
                                           <input
                                             type="number"
                                             placeholder="Qty"
-                                            className="w-full p-2 text-center text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                            className="w-full h-full text-center text-[10px] font-bold text-slate-700 bg-transparent border-none outline-none focus:bg-blue-50 focus:ring-1 focus:ring-inset focus:ring-blue-500 px-1.5 py-1.5"
                                             value={v.sizeQuantities[size] || ""}
                                             onChange={(e) => {
                                               const newQtys = {
@@ -1682,7 +1812,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                             }}
                                           />
                                         ) : (
-                                          <div className="flex items-center justify-center">
+                                          <div className="flex items-center justify-center py-1.5">
                                             <div className="w-1.5 h-1.5 rounded-full bg-slate-200" />
                                           </div>
                                         )}
@@ -1690,7 +1820,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                     );
                                   })}
 
-                                  <td className="px-4 py-4 text-center">
+                                  <td className="border border-slate-200 px-1.5 py-1 text-center">
                                     {(() => {
                                       const total = Object.values(
                                         v.sizeQuantities
@@ -1699,7 +1829,7 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                         total === 0 || total % 24 === 0;
                                       return (
                                         <div
-                                          className={`text-xs font-black ${
+                                          className={`text-[10px] font-black ${
                                             isGood
                                               ? "text-emerald-500"
                                               : "text-rose-500"
@@ -1716,13 +1846,13 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                                     })()}
                                   </td>
 
-                                  <td className="px-4 py-4 text-center">
+                                  <td className="border border-slate-200 px-1.5 py-1 text-center">
                                     <button
                                       type="button"
                                       onClick={() => removeVariant(v.id)}
-                                      className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                                      className="p-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded transition-all opacity-0 group-hover:opacity-100"
                                     >
-                                      <Trash2 size={16} />
+                                      <Trash2 size={14} />
                                     </button>
                                   </td>
                                 </tr>

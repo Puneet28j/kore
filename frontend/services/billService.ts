@@ -76,6 +76,22 @@ class BillService {
     });
   }
 
+  // Vendor payable — log one of (possibly several) vendor invoices against this bill
+  async addInvoice(id: string, invoiceNumber: string, invoiceAmount: number): Promise<{ data: Bill }> {
+    return apiFetch(`/purchase-orders/${id}/invoice`, {
+      method: "POST",
+      body: JSON.stringify({ invoiceNumber, invoiceAmount }),
+    });
+  }
+
+  // Vendor payable — record one payment against this bill's invoice
+  async recordPayment(id: string, amount: number, note?: string): Promise<{ data: Bill }> {
+    return apiFetch(`/purchase-orders/${id}/record-payment`, {
+      method: "POST",
+      body: JSON.stringify({ amount, note }),
+    });
+  }
+
   // Legacy methods for backward compatibility (can be removed later)
   convertPOToBill(po: PurchaseOrder): Bill {
     return po as Bill;

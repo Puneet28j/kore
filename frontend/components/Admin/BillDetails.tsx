@@ -15,6 +15,8 @@ import { type Bill } from "../../services/billService";
 import { billService } from "../../services/billService";
 import { vendorService } from "../../services/vendorService";
 import { getImageUrl } from "../../utils/imageUtils";
+import { enrichItemsWithCatalogMrp } from "../../utils/poItemEnrichment";
+import { Article } from "../../types";
 
 const labelClass =
   "block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2";
@@ -23,12 +25,14 @@ const inputClass =
 
 interface BillDetailsProps {
   bill: Bill;
+  articles: Article[];
   onBack: () => void;
   onStatusChange: () => void;
 }
 
 const BillDetails: React.FC<BillDetailsProps> = ({
   bill,
+  articles,
   onBack,
   onStatusChange,
 }) => {
@@ -36,7 +40,11 @@ const BillDetails: React.FC<BillDetailsProps> = ({
   const [remarks, setRemarks] = useState("");
   const [actionType, setActionType] = useState<"approve" | "reject" | "">("");
   const [actionLoading, setActionLoading] = useState(false);
-  const po = bill; // bill is now the PO itself
+  // Backfills gender/assortment/onlineMrp/offlineMrp from the live catalog
+  // for items saved before those fields existed on the PO/Bill schema —
+  // same fix as POPage.tsx, applied once here so every downstream read of
+  // po.items (on-screen table, PDF, Excel) gets the enriched values.
+  const po = { ...bill, items: enrichItemsWithCatalogMrp(bill.items, articles) };
 
   // Recalculate totals based on the new logic (Cartons * 24)
   let recalculatedSubTotal = 0;
@@ -152,7 +160,7 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                 } catch {
                   v = undefined;
                 }
-                await exportPOToPDF(bill, v, { isBill: true });
+                await exportPOToPDF(po, v, { isBill: true });
               }}
               className="flex items-center gap-1 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-xl text-xs font-semibold hover:bg-emerald-100 transition-all"
             >
@@ -167,7 +175,7 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                 } catch {
                   v = undefined;
                 }
-                await exportOrderToExcel(bill, v);
+                await exportOrderToExcel(po, v);
               }}
               className="flex items-center gap-1 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-xl text-xs font-semibold hover:bg-emerald-100 transition-all"
             >
@@ -249,7 +257,7 @@ const BillDetails: React.FC<BillDetailsProps> = ({
           </h3>
 
           <div className="overflow-x-auto border border-slate-200 rounded-xl">
-            <table className="w-full text-left min-w-[1100px]">
+            <table className="w-full text-left min-w-[1220px]">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   <th className="px-3 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider w-[200px]">
@@ -268,7 +276,10 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                     Tax Rate %
                   </th>
                   <th className="px-2 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider text-right">
-                    MRP / Pair (₹)
+                    Online MRP / Pair (₹)
+                  </th>
+                  <th className="px-2 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider text-right">
+                    Offline MRP / Pair (₹)
                   </th>
                   <th className="px-2 py-3 text-[10px] font-bold text-emerald-600 uppercase tracking-wider text-right">
                     Unit Price / Pair (₹)
@@ -300,6 +311,11 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                             {item.itemName || "—"}
                           </p>
                           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            {item.gender && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                                {item.gender}
+                              </span>
+                            )}
                             {item.color && (
                               <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-600 uppercase tracking-wider">
                                 {item.color}
@@ -351,13 +367,23 @@ const BillDetails: React.FC<BillDetailsProps> = ({
                         </div>
                       </td>
 
-                      {/* MRP / Pair */}
+                      {/* Online MRP / Pair */}
                       <td className="px-2 py-3 text-right">
                         <div className="text-sm font-semibold text-slate-900">
-                          ₹{((item.mrp || 0) / 24).toFixed(2)}
+                          ₹{((item.onlineMrp || item.mrp || 0) / 24).toFixed(2)}
                         </div>
                         <div className="text-[10px] text-slate-400">
-                          ₹{(item.mrp || 0).toFixed(2)}/ctn
+                          ₹{(item.onlineMrp || item.mrp || 0).toFixed(2)}/ctn
+                        </div>
+                      </td>
+
+                      {/* Offline MRP / Pair */}
+                      <td className="px-2 py-3 text-right">
+                        <div className="text-sm font-semibold text-slate-900">
+                          ₹{((item.offlineMrp || item.mrp || 0) / 24).toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          ₹{(item.offlineMrp || item.mrp || 0).toFixed(2)}/ctn
                         </div>
                       </td>
 

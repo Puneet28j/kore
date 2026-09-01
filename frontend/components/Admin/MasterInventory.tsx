@@ -7,8 +7,6 @@ import React, {
 } from "react";
 import {
   Search,
-  Plus,
-  Minus,
   Database,
   ArrowUpCircle,
   ArrowDownCircle,
@@ -160,6 +158,16 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   // page on screen — mirrors the pattern used in StockReport.tsx.
   const [exporting, setExporting] = useState(false);
 
+  // ── Bulk stock update via CSV (matched by Carton SKU only) ───────────────
+  const [csvBulkOpen, setCsvBulkOpen] = useState(false);
+  const [csvBulkTemplateLoading, setCsvBulkTemplateLoading] = useState(false);
+  const [csvBulkSubmitting, setCsvBulkSubmitting] = useState(false);
+  const [csvBulkResult, setCsvBulkResult] = useState<{
+    rowCount: number;
+    totalCartons: number;
+    cartonBarcodes: string[];
+  } | null>(null);
+
   // Exact same numbers as the header stat cards — used for the export
   // TOTAL row instead of re-summing exported rows, which draw booked pairs
   // from a different backend source and would drift from what's on screen.
@@ -196,14 +204,12 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       // Same per-variant computed classification as the on-screen table —
       // a mixed article (some variants with stock, some still pending) must
       // only export the variants relevant to the tab being exported. "ALL"
-      // exports every RFD/PreOrder variant — NONE (no stock, no pending PO)
-      // has nothing to report and is excluded so exports don't carry
-      // all-zero rows.
+      // exports every variant, including NONE (no stock, no pending PO) —
+      // this is the warehouse/admin inventory export, so zero-stock items
+      // still need to appear (that's what needs restocking).
       const tabVariants =
         stockTab === "ALL"
-          ? (item.variants || []).filter(
-              (v: any) => getVariantAvailability(v) !== "NONE"
-            )
+          ? item.variants || []
           : (item.variants || []).filter(
               (v: any) => getVariantAvailability(v) === stockTab
             );
@@ -215,10 +221,13 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
         // PO Pending comes injected per variant from the list API (PO
         // planned − GRN received) — same source as the on-screen table.
         const poPairs = Number(v.poPendingPairs) || 0;
-        const isRfdVariant = getVariantAvailability(v) === "RFD";
-        const bookedPairs = isRfdVariant
-          ? (bookedPairsPerVariant[v._id] ?? 0)
-          : (Number(v.preBookedPairs) || 0);
+        // bookedPairsPerVariant (booked-map) already covers REGULAR and
+        // still-PREORDER demand uniformly — no need to branch on the
+        // variant's current RFD/PREORDER/NONE classification here. A
+        // variant can be classified NONE (0 live stock, 0 PO pending) while
+        // still having a real, undispatched REGULAR order against it — that
+        // must still show as booked.
+        const bookedPairs = bookedPairsPerVariant[v._id] ?? bookedPairsPerVariant[v.id] ?? 0;
 
         rows.push({
           article: item.articleName,
@@ -262,6 +271,189 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     } finally {
       setExporting(false);
     }
+  };
+
+  // ── Bulk stock update via CSV ────────────────────────────────────────────
+  // "Download Sample" gives every variant in the whole catalog (not just the
+  // current page/tab/search) with two blank columns — fill Inward Cartons OR
+  // Outward Cartons per row, leave the other blank, then re-upload. Carton
+  // SKU is the only match key on upload — mandatory, no fallback.
+  const downloadStockTemplate = async () => {
+    setCsvBulkTemplateLoading(true);
+    try {
+      const items: any[] = [];
+      const fetchLimit = 1000;
+      let page = 1;
+      let totalPages = 1;
+      do {
+        const res = await masterCatalogService.listMasterItems({ page, filter: "ALL", limit: fetchLimit });
+        items.push(...(res.data || []));
+        totalPages = Math.max(1, Number(res.meta?.totalPages) || 1);
+        page += 1;
+      } while (page <= totalPages);
+
+      const lines = [
+        "Article,Gender,Color,Size Range,Carton SKU,Current Stock (Ctn),Inward Cartons,Outward Cartons,Reason,Note",
+      ];
+      items.forEach((item) => {
+        (item.variants || []).forEach((v: any) => {
+          const sizeMap: Record<string, any> = v.sizeMap || {};
+          const livePairs = Object.values(sizeMap).reduce(
+            (s: number, c: any) => s + (Number(c?.qty) || 0), 0
+          );
+          lines.push(
+            `"${item.articleName}","${item.gender || ""}","${v.color || ""}","${v.sizeRange || ""}","${v.sku || ""}",${Math.floor(livePairs / 24)},,,,`
+          );
+        });
+      });
+
+      const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "stock_update_template.csv"; a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Failed to build template");
+    } finally {
+      setCsvBulkTemplateLoading(false);
+    }
+  };
+
+  // One variant's currently-available cartons, one row per physical carton —
+  // sourced straight from availableCartons, so a carton that's already been
+  // dispatched/scanned out is never in this list.
+  const downloadVariantCartons = (
+    article: { name: string; category?: string },
+    variant: { color?: string; sizeRange?: string; sku?: string; availableCartons?: string[] }
+  ) => {
+    const codes = variant.availableCartons || [];
+    if (codes.length === 0) {
+      toast.error("No cartons currently in stock for this variant");
+      return;
+    }
+
+    const lines = ["Article,Gender,Color,Size Range,Carton SKU,Carton No."];
+    codes.forEach((code) => {
+      lines.push(
+        `"${article.name}","${article.category || ""}","${variant.color || ""}","${variant.sizeRange || ""}","${variant.sku || ""}","${code}"`
+      );
+    });
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const safeName = `${article.name}_${variant.color || ""}_${variant.sizeRange || ""}`.replace(/[^a-zA-Z0-9_-]+/g, "_");
+    a.href = url;
+    a.download = `cartons_${safeName}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // RFC 4180-lite parser — handles quoted fields containing commas.
+  const parseStockCsvRow = (line: string): string[] => {
+    const fields: string[] = [];
+    let i = 0;
+    while (i <= line.length) {
+      if (line[i] === '"') {
+        i++;
+        let field = "";
+        while (i < line.length) {
+          if (line[i] === '"') {
+            if (line[i + 1] === '"') { field += '"'; i += 2; }
+            else { i++; break; }
+          } else field += line[i++];
+        }
+        fields.push(field);
+        if (line[i] === ",") i++;
+      } else {
+        const end = line.indexOf(",", i);
+        if (end === -1) { fields.push(line.slice(i).trim()); break; }
+        fields.push(line.slice(i, end).trim());
+        i = end + 1;
+      }
+    }
+    return fields;
+  };
+
+  // One-click, like the master-catalog CSV import: parse, send the whole
+  // batch in one request, one toast for the result. Matching/validation
+  // (SKU mandatory, no fallback; all-or-nothing) all happens server-side —
+  // this just parses rows and skips genuinely blank template lines.
+  const handleCsvBulkUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (csvBulkSubmitting) return;
+    setCsvBulkSubmitting(true);
+    setCsvBulkResult(null);
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const text = (ev.target?.result as string) || "";
+        const lines = text.trim().split(/\r?\n/).filter(Boolean);
+        if (lines.length < 2) {
+          toast.error("CSV has no data rows");
+          return;
+        }
+        const headers = parseStockCsvRow(lines[0]).map((h) => h.trim().toLowerCase());
+        const colIdx = (name: string) => headers.indexOf(name);
+        const idxSku = colIdx("carton sku");
+        const idxInward = colIdx("inward cartons");
+        const idxOutward = colIdx("outward cartons");
+        const idxReason = colIdx("reason");
+        const idxNote = colIdx("note");
+
+        if (idxSku === -1 || idxInward === -1 || idxOutward === -1) {
+          toast.error("CSV is missing required columns — use the downloaded template.");
+          return;
+        }
+
+        const rows: { sku: string; type: "INWARD" | "OUTWARD" | "BOTH" | "NONE"; cartons: number; reason?: string; note?: string }[] = [];
+        lines.slice(1).forEach((line) => {
+          const cells = parseStockCsvRow(line);
+          const sku = (cells[idxSku] || "").trim();
+          const inward = Number(cells[idxInward]) || 0;
+          const outward = Number(cells[idxOutward]) || 0;
+          // A fully blank leftover template row — not an error, just skip.
+          if (!sku && inward <= 0 && outward <= 0) return;
+          rows.push({
+            sku,
+            type: inward > 0 && outward > 0 ? "BOTH" : inward > 0 ? "INWARD" : outward > 0 ? "OUTWARD" : "NONE",
+            cartons: inward > 0 ? inward : outward,
+            reason: (cells[idxReason] || "").trim() || undefined,
+            note: (cells[idxNote] || "").trim() || undefined,
+          });
+        });
+
+        if (rows.length === 0) {
+          toast.error("No data rows to import.");
+          return;
+        }
+
+        const uploadPromise = masterCatalogService.bulkStockMovementBySku(rows as any);
+        toast.promise(uploadPromise, {
+          loading: `Updating stock for ${rows.length} row(s)…`,
+          success: (res: any) => {
+            const data = res?.data || {};
+            setCsvBulkResult({
+              rowCount: data.results?.length || 0,
+              totalCartons: data.totalCartons || 0,
+              cartonBarcodes: data.cartonBarcodes || [],
+            });
+            setCsvBulkOpen(true);
+            fetchLocalInventory(currentPage, pageSize, debouncedSearch.current, stageForTab);
+            fetchStockTotals(stageForTab);
+            if (onRefresh) onRefresh();
+            return res?.message || `${data.results?.length || 0} row(s) updated`;
+          },
+          error: (err: any) => err?.message || "Bulk update failed — nothing was updated",
+        });
+        await uploadPromise.catch(() => {});
+      } finally {
+        setCsvBulkSubmitting(false);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
   const exportMasterStockPdf = async () => {
@@ -400,7 +592,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             assortmentId: item.assortmentId || "",
             productCategory: item.categoryId?.name,
             brand: item.brandId?.name,
-            pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+            pricePerPair:
+              item.variants?.[0]?.onlineMrp ||
+              item.variants?.[0]?.sellingPrice ||
+              item.mrp,
             mrp: item.mrp,
             soleColor: item.soleColor,
             imageUrl: item.primaryImage?.url,
@@ -680,6 +875,24 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           >
             {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} PDF
           </button>
+          <button
+            onClick={downloadStockTemplate}
+            disabled={csvBulkTemplateLoading}
+            className="flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg text-sm font-bold hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50"
+          >
+            {csvBulkTemplateLoading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Bulk Template
+          </button>
+          <label className="flex items-center gap-2 px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 transition-all shadow-sm cursor-pointer">
+            {csvBulkSubmitting ? <Loader2 size={14} className="animate-spin" /> : <ArrowUpCircle size={14} />}
+            {csvBulkSubmitting ? "Updating…" : "Bulk Update (CSV)"}
+            <input
+              type="file"
+              accept=".csv"
+              className="hidden"
+              disabled={csvBulkSubmitting}
+              onChange={handleCsvBulkUpload}
+            />
+          </label>
           {/* <button
             onClick={() => {
               if (stockTab === 'PREORDER') {
@@ -798,14 +1011,13 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
             // PO-pending) matches this tab — a partially-received article
             // (some variants received via GRN, some not) shows up in BOTH
             // tabs, each showing only the relevant subset of its variants.
-            // "ALL" shows every RFD/PreOrder variant — NONE (no stock, no
-            // pending PO) is excluded so the list doesn't carry dead,
-            // all-zero rows that don't tally with the summary cards above.
+            // "ALL" shows every variant, including NONE (no stock, no
+            // pending PO) — this is the warehouse/admin inventory view, not
+            // the customer catalogue, so a zero-stock item still needs to
+            // be visible (it's exactly what needs restocking).
             const tabVariants =
               stockTab === "ALL"
-                ? (article.variants || []).filter(
-                    (v) => getVariantAvailability(v) !== "NONE"
-                  )
+                ? article.variants || []
                 : (article.variants || []).filter(
                     (v) => getVariantAvailability(v) === stockTab
                   );
@@ -832,15 +1044,13 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
               0
             );
 
-            // Per-variant, not per-tab — a mixed article on the "All" tab has
-            // both RFD rows (booked from the booked-map) and PreOrder rows
-            // (booked from preBookedPairs) side by side.
+            // bookedPairsPerVariant (booked-map) already covers REGULAR and
+            // still-PREORDER demand uniformly, regardless of a variant's
+            // current RFD/PREORDER/NONE classification — see the matching
+            // comment in the expanded-table computation below.
             const articleBookedPairs = tabVariants.reduce(
               (sum, v) =>
-                sum +
-                (getVariantAvailability(v) === "RFD"
-                  ? (bookedPairsPerVariant[v.id] ?? bookedPairsPerVariant[(v as any)._id] ?? 0)
-                  : (Number((v as any).preBookedPairs) || 0)),
+                sum + (bookedPairsPerVariant[v.id] ?? bookedPairsPerVariant[(v as any)._id] ?? 0),
               0
             );
 
@@ -1027,7 +1237,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                 PO Pending
                               </th>
                               <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">
-                                Actions
+                                CT No.
                               </th>
                             </tr>
                           </thead>
@@ -1042,16 +1252,14 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                               const poPairs =
                                 Number((variant as any).poPendingPairs) || 0;
                               const poCtns = Math.floor(poPairs / 24);
-                              // Per-variant, not per-tab — a mixed "All" view
-                              // needs each row's own classification, not the
-                              // page-level tab, to pick the right source.
-                              const isRfdVariant =
-                                getVariantAvailability(variant) === "RFD";
-                              const bookedPairs = isRfdVariant
-                                ? (bookedPairsPerVariant[variant.id] ??
-                                    bookedPairsPerVariant[(variant as any)._id] ??
-                                    0)
-                                : (Number((variant as any).preBookedPairs) || 0);
+                              // bookedPairsPerVariant (booked-map) already
+                              // covers REGULAR and still-PREORDER demand
+                              // uniformly — no need to branch on this row's
+                              // RFD/PREORDER/NONE classification.
+                              const bookedPairs =
+                                bookedPairsPerVariant[variant.id] ??
+                                bookedPairsPerVariant[(variant as any)._id] ??
+                                0;
                               const bookedCtns = Math.floor(bookedPairs / 24);
 
                               return (
@@ -1156,43 +1364,19 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                       {poPairs} prs
                                     </p>
                                   </td>
-                                  <td className="px-6 py-3">
-                                    <div className="flex justify-end items-center gap-2">
-                                      {isRfdVariant && (
-                                        <button
-                                          onClick={() =>
-                                            openMovementModal(
-                                              "OUTWARD",
-                                              article.id,
-                                              variant.id
-                                            )
-                                          }
-                                          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-[9px] font-bold hover:bg-rose-100 transition-all border border-rose-100"
-                                        >
-                                          <Minus size={12} /> Outward
-                                        </button>
-                                      )}
-                                      {isRfdVariant ? (
-                                        <button
-                                          onClick={() =>
-                                            openMovementModal(
-                                              "INWARD",
-                                              article.id,
-                                              variant.id
-                                            )
-                                          }
-                                          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg text-[9px] font-bold hover:bg-emerald-100 transition-all border border-emerald-100"
-                                        >
-                                          <Plus size={12} /> Inward
-                                        </button>
-                                      ) : (
-                                        // Pre-order stock never comes in manually —
-                                        // planned is PO-driven, arrival is via GRN.
-                                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
-                                          Via PO / GRN
-                                        </span>
-                                      )}
-                                    </div>
+                                  <td className="px-6 py-3 text-right">
+                                    <button
+                                      onClick={() => downloadVariantCartons(article, variant)}
+                                      disabled={(variant.availableCartons?.length || 0) === 0}
+                                      title={
+                                        (variant.availableCartons?.length || 0) === 0
+                                          ? "No cartons currently available"
+                                          : `Download ${variant.availableCartons!.length} available carton(s) as CSV`
+                                      }
+                                      className="inline-flex items-center justify-center p-2 rounded-lg text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                    >
+                                      <Download size={16} />
+                                    </button>
                                   </td>
                                 </tr>
                               );
@@ -1221,6 +1405,77 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           </div>
         )}
       </div>
+
+      {/* Bulk CSV Update — Result (carton labels to print) */}
+      {csvBulkOpen && csvBulkResult && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-lg shadow-2xl max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-emerald-50">
+                  <CheckCircle size={22} className="text-emerald-600" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                    Bulk Update (CSV)
+                  </p>
+                  <h3 className="text-base font-bold text-slate-900 leading-tight">
+                    {csvBulkResult.rowCount} row(s) updated
+                  </h3>
+                </div>
+              </div>
+              <button
+                onClick={() => { setCsvBulkOpen(false); setCsvBulkResult(null); }}
+                className="p-2 text-slate-400 hover:text-slate-600 transition-colors rounded-lg hover:bg-slate-100"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              {csvBulkResult.cartonBarcodes.length > 0 ? (
+                <>
+                  <p className="text-xs text-slate-500">
+                    Print the {csvBulkResult.cartonBarcodes.length} new carton label(s) below and paste on the matching boxes.
+                  </p>
+                  <div className="space-y-2">
+                    {csvBulkResult.cartonBarcodes.map((code) => (
+                      <div
+                        key={code}
+                        className="flex items-center justify-between rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-3"
+                      >
+                        <span className="font-mono text-sm font-black tracking-wider text-slate-800">
+                          {code}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => { navigator.clipboard.writeText(code); toast.success("Copied"); }}
+                          className="rounded-lg px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition-colors"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  {csvBulkResult.totalCartons} carton(s) processed — no new labels to print (Outward-only rows don't create labels).
+                </p>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 shrink-0">
+              <button
+                onClick={() => { setCsvBulkOpen(false); setCsvBulkResult(null); }}
+                className="w-full py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-200 transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Multi-Step Stock Movement Modal */}
       {showModal && (

@@ -12,10 +12,16 @@ import { type Bill, billService } from "../../services/billService";
 import { vendorService } from "../../services/vendorService";
 import BillDetails from "./BillDetails";
 import { exportPOToPDF, exportOrderToExcel } from "../../utils/exportPO";
+import { enrichItemsWithCatalogMrp } from "../../utils/poItemEnrichment";
+import { Article } from "../../types";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const Bill: React.FC = () => {
+interface BillPageProps {
+  articles: Article[];
+}
+
+const Bill: React.FC<BillPageProps> = ({ articles }) => {
   const [bills, setBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -185,6 +191,7 @@ const Bill: React.FC = () => {
     return (
       <BillDetails
         bill={selectedBill}
+        articles={articles}
         onBack={() => {
           setSelectedBill(null);
           fetchBills();
@@ -366,7 +373,11 @@ const Bill: React.FC = () => {
                             } catch {
                               v = undefined;
                             }
-                            await exportPOToPDF(bill, v, { isBill: true });
+                            await exportPOToPDF(
+                              { ...bill, items: enrichItemsWithCatalogMrp(bill.items, articles) },
+                              v,
+                              { isBill: true }
+                            );
                           }}
                           className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-xl transition-all inline-flex items-center gap-1 font-semibold text-xs"
                           title="Download PDF"
@@ -385,7 +396,10 @@ const Bill: React.FC = () => {
                             } catch {
                               v = undefined;
                             }
-                            await exportOrderToExcel(bill, v);
+                            await exportOrderToExcel(
+                              { ...bill, items: enrichItemsWithCatalogMrp(bill.items, articles) },
+                              v
+                            );
                           }}
                           className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-xl transition-all inline-flex items-center gap-1 font-semibold text-xs"
                           title="Download Excel"

@@ -205,6 +205,8 @@ exports.create = async (body) => {
 
           itemName: it.itemName || "",
           color: it.color || "",
+          gender: it.gender || "",
+          assortment: it.assortment || "",
           image: it.image || "",
           sku: it.sku || "",
           skuCompany: it.skuCompany || "",
@@ -216,6 +218,8 @@ exports.create = async (body) => {
           taxType: it.taxType || "GST",
           basePrice: it.basePrice,
           mrp: it.mrp || 0,
+          onlineMrp: it.onlineMrp || 0,
+          offlineMrp: it.offlineMrp || 0,
 
           taxPerItem: it.taxPerItem,
           unitTotal: it.unitTotal,
@@ -507,6 +511,8 @@ exports.update = async (id, body) => {
         variantId: it.variantId || "",
         itemName: it.itemName || "",
         color: it.color || "",
+        gender: it.gender || "",
+        assortment: it.assortment || "",
         image: it.image || "",
         sku: it.sku || "",
         skuCompany: it.skuCompany || "",
@@ -517,6 +523,8 @@ exports.update = async (id, body) => {
         taxType: it.taxType || "GST",
         basePrice: it.basePrice,
         mrp: it.mrp || 0,
+        onlineMrp: it.onlineMrp || 0,
+        offlineMrp: it.offlineMrp || 0,
         taxPerItem: it.taxPerItem,
         unitTotal: it.unitTotal,
         sizeMap: sizeMapData,
@@ -611,10 +619,106 @@ exports.rejectBill = async (id, body) => {
     throw err;
   }
 
+  const remark = String(body?.remark || "").trim();
+  if (!remark) {
+    const err = new Error("A reason is required to reject a bill");
+    err.statusCode = 400;
+    throw err;
+  }
+
   doc.billStatus = "REJECTED";
-  doc.billRemark = body?.remark || "";
+  doc.billRemark = remark;
   doc.billRejectedAt = new Date();
   doc.billApprovedAt = null;
+
+  await doc.save();
+  return doc;
+};
+
+// Total payable — sum of every invoice logged against this PO, falling back
+// to the PO's own total when nothing's been logged yet.
+const getTotalInvoiced = (doc) =>
+  doc.invoices && doc.invoices.length
+    ? doc.invoices.reduce((s, inv) => s + (Number(inv.invoiceAmount) || 0), 0)
+    : doc.total || 0;
+
+// ✅ vendor payable — log one of (possibly several) vendor invoices raised
+// against this PO, e.g. for partial shipments billed separately. Only
+// meaningful once the bill is approved (that's what makes it a real
+// commitment). Each call ADDS an entry — never overwrites an earlier one.
+exports.addInvoice = async (id, { invoiceNumber, invoiceAmount }) => {
+  ensureValidId(id, "po id");
+
+  const doc = await PurchaseOrder.findOne({ _id: id, isDeleted: false, billStatus: "APPROVED" });
+  if (!doc) {
+    const err = new Error("Approved bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const amt = Number(invoiceAmount);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    const err = new Error("invoiceAmount must be greater than 0");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!doc.invoices) doc.invoices = [];
+  doc.invoices.push({
+    invoiceNumber: String(invoiceNumber || "").trim(),
+    invoiceAmount: amt,
+    date: new Date(),
+  });
+
+  // Adding more invoiced amount can only ever increase what's owed — if the
+  // PO had already been marked PAID against a smaller total, it must fall
+  // back to PARTIAL (or PENDING) now that there's more to pay.
+  const totalInvoiced = getTotalInvoiced(doc);
+  const alreadyPaid = doc.amountPaid || 0;
+  doc.paymentStatus =
+    alreadyPaid <= 0 ? "UNPAID" : alreadyPaid >= totalInvoiced - 0.005 ? "PAID" : "PARTIAL";
+
+  await doc.save();
+  return doc;
+};
+
+// ✅ vendor payable — record one payment against this PO's combined invoiced
+// total. Mirrors the distributor-side Order.recordPayment ledger (see
+// order.service.js).
+exports.recordPayment = async (id, { amount, note, recordedBy }) => {
+  ensureValidId(id, "po id");
+
+  const doc = await PurchaseOrder.findOne({ _id: id, isDeleted: false, billStatus: "APPROVED" });
+  if (!doc) {
+    const err = new Error("Approved bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const payAmount = Number(amount);
+  if (!Number.isFinite(payAmount) || payAmount <= 0) {
+    const err = new Error("Payment amount must be greater than 0");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const totalInvoiced = getTotalInvoiced(doc);
+  const alreadyPaid = doc.amountPaid || 0;
+  const remaining = Math.max(0, totalInvoiced - alreadyPaid);
+  // Half-a-paisa tolerance — floating point subtraction (e.g. 19353.6 -
+  // 10000) can land a hair off the "exact" remaining value, which must
+  // never block a distributor/vendor from paying off the last of a balance.
+  if (payAmount > remaining + 0.005) {
+    const err = new Error(
+      `Payment (₹${payAmount.toLocaleString()}) exceeds remaining balance (₹${remaining.toLocaleString()})`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  doc.payments.push({ amount: payAmount, date: new Date(), note: note || "", recordedBy: recordedBy || "" });
+  doc.amountPaid = alreadyPaid + payAmount;
+  doc.paymentStatus = doc.amountPaid >= totalInvoiced - 0.005 ? "PAID" : "PARTIAL";
 
   await doc.save();
   return doc;

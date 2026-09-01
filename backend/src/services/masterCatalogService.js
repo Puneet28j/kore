@@ -564,6 +564,22 @@ exports.classifyVariantAvailability = (variant, poPendingPairs = 0) => {
   return "NONE";
 };
 
+// Carton barcode prefix for a variant — normally just its own sku, but two
+// variants can legitimately share a sku with a different assortment (see
+// Catalogue Manager's makeVariantKey, which dedupes by sku+assortment, not
+// sku alone). Their itemNames are already disambiguated for exactly this
+// reason ("...-7-11" vs "...-7-11-A") — mirror that suffix onto the barcode
+// too, otherwise both variants' first carton would get the identical
+// "SKU-CT1" barcode despite being physically different cartons.
+exports.getCartonBarcodeSku = (variant) => {
+  const base = variant.sku || variant.itemName || "CTN";
+  const itemName = variant.itemName || "";
+  const canonical = `${variant.color || ""}-${variant.sizeRange || ""}`;
+  const idx = itemName.indexOf(canonical);
+  const suffix = idx >= 0 ? itemName.slice(idx + canonical.length) : "";
+  return `${base}${suffix}`;
+};
+
 // Still-owed pre-booked pairs per variant — caps how much MORE can be
 // pre-booked against a PO's remaining (not-yet-arrived) planned quantity.
 // For each active order's still-PREORDER item, only sizeQuantities MINUS
@@ -822,24 +838,20 @@ exports.update = async (req, id) => {
     if (patch[k] !== undefined) doc[k] = patch[k];
   });
 
-  // Propagate article-level onlineMrp/offlineMrp to all matching variants
+  // Propagate article-level onlineMrp/offlineMrp to all variants. Every
+  // variant carries both prices regardless of its own `tag` — `tag` is not
+  // an exclusive channel-ownership flag, it only picks which of the two a
+  // given distributor sees (see catalogAvailability/getVariantPricePerPair).
   const newOnlineMrp = body.onlineMrp !== undefined ? Number(body.onlineMrp) : null;
   const newOfflineMrp = body.offlineMrp !== undefined ? Number(body.offlineMrp) : null;
   if (newOnlineMrp !== null || newOfflineMrp !== null) {
     (doc.variants || []).forEach((v) => {
-      const tag = (v.tag || "").toLowerCase();
-      if (newOnlineMrp !== null && tag === "online") {
-        v.onlineMrp = newOnlineMrp;
-        v.mrp = newOnlineMrp;
-      } else if (newOfflineMrp !== null && tag === "offline") {
-        v.offlineMrp = newOfflineMrp;
-        v.mrp = newOfflineMrp;
-      } else if (newOnlineMrp !== null && !tag) {
-        // Untagged variant — use the higher of the two as default mrp
-        v.onlineMrp = newOnlineMrp;
-        if (newOfflineMrp !== null) v.offlineMrp = newOfflineMrp;
-        v.mrp = Math.max(newOnlineMrp, newOfflineMrp ?? newOnlineMrp);
-      }
+      if (newOnlineMrp !== null) v.onlineMrp = newOnlineMrp;
+      if (newOfflineMrp !== null) v.offlineMrp = newOfflineMrp;
+      v.mrp = Math.max(
+        newOnlineMrp ?? v.onlineMrp ?? 0,
+        newOfflineMrp ?? v.offlineMrp ?? 0
+      );
     });
   }
 
@@ -989,32 +1001,56 @@ exports.update = async (req, id) => {
     Array.isArray(req.files) &&
     req.files.some((f) => f.fieldname && f.fieldname.startsWith("images_"));
 
-  const replaceColorMedia =
-    body.replaceColorMedia === "true" || body.replaceColorMedia === true;
+  // Per-color list of existing image URLs the edit UI wants to keep — sent
+  // by the frontend on every edit save. A color present here with fewer (or
+  // zero) URLs than it currently has means the user removed image(s); this
+  // is what lets a pure removal (no new file uploaded for that color) still
+  // persist, instead of the color's media being left untouched because the
+  // old logic only ever reacted to newly-uploaded files.
+  let existingImagesByColor = {};
+  try {
+    existingImagesByColor =
+      typeof body.existingImagesByColor === "string"
+        ? JSON.parse(body.existingImagesByColor)
+        : body.existingImagesByColor || {};
+  } catch {
+    existingImagesByColor = {};
+  }
+  const hasExistingImagesByColor =
+    existingImagesByColor && Object.keys(existingImagesByColor).length > 0;
 
-  if (hasNewColorImages) {
+  if (hasNewColorImages || hasExistingImagesByColor) {
     const incomingColorMedia = buildColorMediaPayload(req, doc.productColors);
+    const incomingByColor = new Map(
+      incomingColorMedia.map((cm) => [cm.color, cm.images])
+    );
 
-    const existingMap = new Map(
+    const nextColorMedia = new Map(
       (doc.colorMedia || []).map((cm) => [cm.color, cm.images || []])
     );
 
-    incomingColorMedia.forEach((cm) => {
-      // replaceColorMedia only replaces images for the color(s) actually
-      // re-uploaded — colors not present in this request keep their existing media.
-      const oldImages = replaceColorMedia ? [] : existingMap.get(cm.color) || [];
-      existingMap.set(cm.color, [...oldImages, ...cm.images]);
+    Object.keys(existingImagesByColor).forEach((color) => {
+      const keepUrls = new Set(existingImagesByColor[color] || []);
+      const kept = (nextColorMedia.get(color) || []).filter((img) =>
+        keepUrls.has(img.url)
+      );
+      nextColorMedia.set(color, kept);
     });
 
-    doc.colorMedia = Array.from(existingMap.entries()).map(
-      ([color, images]) => ({
+    incomingByColor.forEach((newImages, color) => {
+      const base = nextColorMedia.get(color) || [];
+      nextColorMedia.set(color, [...base, ...newImages]);
+    });
+
+    doc.colorMedia = Array.from(nextColorMedia.entries())
+      .filter(([, images]) => images.length > 0)
+      .map(([color, images]) => ({
         color,
         images: images.map((img, idx) => ({
           ...img,
           isCover: idx === 0,
         })),
-      })
-    );
+      }));
 
     const { primaryImage, secondaryImages } = buildFlatImagesFromColorMedia(
       doc.colorMedia
@@ -1429,9 +1465,11 @@ exports.resetVariantStock = async (variantIdStr) => {
   };
 };
 // Stock Movement — manually adjust a variant's real stock (sizeMap.qty).
-// Still-PREORDER variants are excluded from Inward entirely: their planned
-// quantity comes from Purchase Orders and their real stock only ever arrives
-// via GRN (which also promotes them to AVAILABLE).
+// RFD/PREORDER/NONE is purely a computed label (live stock vs. PO-pending —
+// see classifyVariantAvailability), never a stored/locked state, so it never
+// gates what actions are allowed. A PREORDER-classified variant (0 stock,
+// PO still pending) can still receive manual Inward same as any other —
+// e.g. loading existing physical stock that predates the PO/GRN flow.
 exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user }) => {
   const MasterCatalog = require("../models/MasterCatalog");
   const activityLog = require("./activityLog.service");
@@ -1449,27 +1487,6 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
     variant.sizeQuantities && typeof variant.sizeQuantities.toJSON === "function"
       ? variant.sizeQuantities.toJSON()
       : Object.fromEntries(variant.sizeQuantities || []);
-
-  // Manual Inward on a variant currently classified PREORDER (0 live stock,
-  // an approved PO still pending) is not allowed — its planned quantity is
-  // whatever the Purchase Order says, and real stock arrives via GRN only.
-  if (type === "INWARD") {
-    const [plannedMap, grnMap] = await Promise.all([
-      exports.getPoPlannedQtyMap([catalog._id]),
-      exports.getGrnReceivedQtyMap(),
-    ]);
-    const poPending = Math.max(
-      0,
-      (plannedMap.totals[variantIdStr] || 0) - (grnMap.totals[variantIdStr] || 0)
-    );
-    if (exports.classifyVariantAvailability(variant, poPending) === "PREORDER") {
-      const err = new Error(
-        "Manual inward is not allowed for a pre-order variant — planned quantity comes from its Purchase Order and stock arrives via GRN"
-      );
-      err.statusCode = 400;
-      throw err;
-    }
-  }
 
   const delta = {};
   Object.entries(sizeQuantitiesData).forEach(([size, qtyPerCarton]) => {
@@ -1493,7 +1510,7 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
   let cartonBarcodes = [];
   if (type === "INWARD") {
     const Counter = require("../models/Counter");
-    const cartonSku = variant.sku || variant.itemName || "CTN";
+    const cartonSku = exports.getCartonBarcodeSku(variant);
     const counter = await Counter.findOneAndUpdate(
       { id: `carton-serial-${variantIdStr}` },
       { $inc: { seq: cartons } },
@@ -1502,7 +1519,7 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
     const lastSerial = counter.seq;
     const firstSerial = lastSerial - cartons + 1;
     cartonBarcodes = Array.from({ length: cartons }, (_, i) =>
-      `${cartonSku}-CT${String(firstSerial + i).padStart(4, "0")}`
+      `${cartonSku}-CT${firstSerial + i}`
     );
     // Register in variant's available pool so dispatch scan can show and validate them
     variant.availableCartons = [...(variant.availableCartons || []), ...cartonBarcodes];
@@ -1523,12 +1540,197 @@ exports.stockMovement = async (variantIdStr, { type, cartons, reason, note, user
   return { variantId: variantIdStr, articleId: String(catalog._id), type, cartons, totalPairs, delta, cartonBarcodes };
 };
 
+// Extracts the trailing serial from a carton barcode ("SKU-CT23" -> 23),
+// used to pick which cartons an Outward removes (oldest/lowest serial
+// first — FIFO) and to keep the shared per-variant serial counter (also
+// used by GRN) continuing from the right number.
+const parseCartonSerial = (code) => {
+  const m = String(code || "").match(/-CT(\d+)$/);
+  return m ? parseInt(m[1], 10) : -1;
+};
+
+// CSV-driven bulk stock update, matched purely by Carton SKU (mandatory,
+// no fallback — a variant's SKU is unique so this alone is enough).
+// All-or-nothing: every row is validated (SKU present, matches a real
+// variant, type/cartons sane, and — for Outward — enough cartons actually
+// in the pool to remove) BEFORE anything is written. One bad row aborts
+// the whole batch with nothing touched, rather than silently applying a
+// partial import.
+//
+// Inward: same carton-barcode generation as the single-item stockMovement
+// (shared per-variant Counter, so numbering continues across CSV imports
+// and GRN receipts alike — never restarts).
+// Outward: removes `cartons` codes from the pool, oldest serial first
+// (FIFO) — no new barcodes are generated for Outward.
+exports.bulkStockMovementBySku = async (rows, user) => {
+  const Counter = require("../models/Counter");
+  const activityLog = require("./activityLog.service");
+
+  // ---- Pass 1: structural validation ----
+  const invalidRows = [];
+  rows.forEach((r, i) => {
+    const rowNo = i + 2; // header is row 1
+    const sku = (r.sku || "").trim();
+    if (!sku) { invalidRows.push({ row: rowNo, sku: r.sku || "", error: "SKU is blank" }); return; }
+    if (!["INWARD", "OUTWARD"].includes(r.type)) {
+      invalidRows.push({ row: rowNo, sku, error: "Fill exactly one of Inward/Outward Cartons" });
+      return;
+    }
+    if (!r.cartons || Number(r.cartons) < 1) {
+      invalidRows.push({ row: rowNo, sku, error: "Cartons must be at least 1" });
+    }
+  });
+  if (invalidRows.length) {
+    const err = new Error(`${invalidRows.length} row(s) have invalid data — fix the CSV and re-upload. Nothing was updated.`);
+    err.statusCode = 400;
+    err.details = { invalidRows };
+    throw err;
+  }
+
+  // ---- Pass 2: resolve every SKU against the live catalog ----
+  const catalogs = await MasterCatalog.find({});
+  const skuToMatch = new Map();
+  catalogs.forEach((catalog) => {
+    catalog.variants.forEach((v) => {
+      const sku = (v.sku || "").trim().toUpperCase();
+      if (sku && !skuToMatch.has(sku)) skuToMatch.set(sku, { catalog, variantId: String(v._id) });
+    });
+  });
+
+  const unmatched = [];
+  const resolved = rows.map((r, i) => {
+    const skuKey = r.sku.trim().toUpperCase();
+    const match = skuToMatch.get(skuKey);
+    if (!match) {
+      unmatched.push({ row: i + 2, sku: r.sku });
+      return null;
+    }
+    return {
+      row: i + 2,
+      sku: r.sku.trim(),
+      type: r.type,
+      cartons: Number(r.cartons),
+      reason: (r.reason || "").trim() || "Manual Correction",
+      note: (r.note || "").trim(),
+      catalogId: String(match.catalog._id),
+      variantId: match.variantId,
+    };
+  });
+  if (unmatched.length) {
+    const err = new Error(`${unmatched.length} row(s) have a SKU that doesn't match any catalog variant — fix the CSV and re-upload. Nothing was updated.`);
+    err.statusCode = 400;
+    err.details = { unmatched };
+    throw err;
+  }
+
+  // ---- Pass 3: Outward rows need enough cartons actually in the pool ----
+  const catalogById = new Map(catalogs.map((c) => [String(c._id), c]));
+  const insufficientStock = [];
+  resolved.forEach((r) => {
+    if (r.type !== "OUTWARD") return;
+    const catalog = catalogById.get(r.catalogId);
+    const variant = catalog.variants.id(r.variantId);
+    const available = (variant.availableCartons || []).length;
+    if (r.cartons > available) {
+      insufficientStock.push({ row: r.row, sku: r.sku, requested: r.cartons, available });
+    }
+  });
+  if (insufficientStock.length) {
+    const err = new Error(`${insufficientStock.length} row(s) request more Outward cartons than are currently in stock — fix the CSV and re-upload. Nothing was updated.`);
+    err.statusCode = 400;
+    err.details = { insufficientStock };
+    throw err;
+  }
+
+  // ---- Pass 4: everything validated — apply, one save per article ----
+  const rowsByCatalog = new Map();
+  resolved.forEach((r) => {
+    if (!rowsByCatalog.has(r.catalogId)) {
+      rowsByCatalog.set(r.catalogId, { catalog: catalogById.get(r.catalogId), rows: [] });
+    }
+    rowsByCatalog.get(r.catalogId).rows.push(r);
+  });
+
+  const results = [];
+  for (const { catalog, rows: catalogRows } of rowsByCatalog.values()) {
+    for (const row of catalogRows) {
+      const variant = catalog.variants.id(row.variantId);
+      const sizeQuantitiesData =
+        variant.sizeQuantities && typeof variant.sizeQuantities.toJSON === "function"
+          ? variant.sizeQuantities.toJSON()
+          : Object.fromEntries(variant.sizeQuantities || []);
+
+      const delta = {};
+      Object.entries(sizeQuantitiesData).forEach(([size, qtyPerCarton]) => {
+        const pairs = Math.round(Number(qtyPerCarton || 0) * row.cartons);
+        if (pairs <= 0) return;
+        delta[size] = pairs;
+        const cell = variant.sizeMap.get(size) || { qty: 0, sku: "" };
+        if (row.type === "INWARD") cell.qty = (cell.qty || 0) + pairs;
+        else cell.qty = Math.max(0, (cell.qty || 0) - pairs);
+        variant.sizeMap.set(size, cell);
+      });
+      const totalPairs = Object.values(delta).reduce((s, v) => s + v, 0);
+
+      let cartonBarcodes = [];
+      let removedCartons = [];
+      if (row.type === "INWARD") {
+        const cartonSku = exports.getCartonBarcodeSku(variant);
+        const counter = await Counter.findOneAndUpdate(
+          { id: `carton-serial-${row.variantId}` },
+          { $inc: { seq: row.cartons } },
+          { new: true, upsert: true }
+        );
+        const firstSerial = counter.seq - row.cartons + 1;
+        cartonBarcodes = Array.from({ length: row.cartons }, (_, i) => `${cartonSku}-CT${firstSerial + i}`);
+        variant.availableCartons = [...(variant.availableCartons || []), ...cartonBarcodes];
+      } else {
+        const sorted = [...(variant.availableCartons || [])].sort(
+          (a, b) => parseCartonSerial(a) - parseCartonSerial(b)
+        );
+        removedCartons = sorted.slice(0, row.cartons);
+        const removedSet = new Set(removedCartons);
+        variant.availableCartons = (variant.availableCartons || []).filter((c) => !removedSet.has(c));
+      }
+
+      results.push({
+        sku: row.sku,
+        variantId: row.variantId,
+        articleId: row.catalogId,
+        type: row.type,
+        cartons: row.cartons,
+        totalPairs,
+        cartonBarcodes,
+        removedCartons,
+      });
+
+      activityLog.createLog({
+        action: row.type === "INWARD" ? "STOCK_INWARD" : "STOCK_OUTWARD",
+        entityType: "STOCK",
+        entityId: row.variantId,
+        description: `Stock ${row.type === "INWARD" ? "Inward" : "Outward"} (CSV): ${row.cartons} carton(s) / ${totalPairs} pairs for "${variant.itemName || variant.color}" — ${row.reason}${row.note ? `: ${row.note}` : ""}`,
+        metadata: { variantId: row.variantId, articleId: row.catalogId, cartons: row.cartons, totalPairs, delta, reason: row.reason, note: row.note, type: row.type, cartonBarcodes, removedCartons },
+        user,
+      });
+    }
+    catalog.markModified("variants");
+    await catalog.save();
+  }
+
+  return results;
+};
+
 exports.updateVariantSku = async (variantId, sku) => {
+  const ctnSku = (sku || "").trim();
+  if (!ctnSku) {
+    const err = new Error("Carton SKU is required and cannot be blank");
+    err.statusCode = 400;
+    throw err;
+  }
   const catalog = await MasterCatalog.findOne({ "variants._id": variantId });
   if (!catalog) { const err = new Error("Variant not found"); err.statusCode = 404; throw err; }
   const variant = catalog.variants.id(variantId);
   if (!variant) { const err = new Error("Variant not found in catalog"); err.statusCode = 404; throw err; }
-  const ctnSku = (sku || "").trim();
   variant.sku = ctnSku;
   // Regenerate sizeSkus from new carton SKU
   const sizeKeys = variant.sizeQuantities ? Array.from(variant.sizeQuantities.keys()) : [];

@@ -44,14 +44,47 @@ exports.login = async (req, res, next) => {
       const dist = await Distributor.findById(user.distributorId).lean();
       if (dist) {
         const pendingOrders = await Order.aggregate([
-          { $match: { distributorId: user._id, status: { $ne: "RECEIVED" } } },
-          { $group: { _id: null, totalPending: { $sum: { $ifNull: ["$finalAmount", "$totalAmount"] } } } }
+          {
+            $match: {
+              distributorId: user._id,
+              // RECEIVED is included here (unlike order-listing filters
+              // elsewhere) — a delivered-but-unpaid order still owes real
+              // money and must keep counting against credit until paid.
+              status: { $nin: ["CANCELLED", "PRE_BOOKED", "CONFIRMED"] },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              // creditAmount is the REGULAR-only slice of a mixed order
+              // (see createOrder's own credit check); amountPaid is the
+              // running total from the payment ledger (see
+              // order.controller.js recordPayment) — whatever's still
+              // outstanding after payments keeps counting, clamped at 0 so
+              // an overpayment can't create negative "pending".
+              totalPending: {
+                $sum: {
+                  $max: [
+                    0,
+                    {
+                      $subtract: [
+                        { $ifNull: ["$creditAmount", { $ifNull: ["$finalAmount", "$totalAmount"] }] },
+                        { $ifNull: ["$amountPaid", 0] },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
         ]);
         const pendingValue = pendingOrders[0]?.totalPending || 0;
         creditInfo = {
           creditLimit: dist.creditLimit || 0,
           discountPercentage: dist.discountPercentage || 0,
           availableCredit: (dist.creditLimit || 0) - pendingValue,
+          paymentTerms: dist.paymentTerms || "",
+          tag: dist.tag || "online",
           companyName: dist.companyName || "",
           phone: dist.phone || "",
         };
@@ -123,14 +156,47 @@ exports.me = async (req, res, next) => {
       const dist = await Distributor.findById(user.distributorId).lean();
       if (dist) {
         const pendingOrders = await Order.aggregate([
-          { $match: { distributorId: user._id, status: { $ne: "RECEIVED" } } },
-          { $group: { _id: null, totalPending: { $sum: { $ifNull: ["$finalAmount", "$totalAmount"] } } } }
+          {
+            $match: {
+              distributorId: user._id,
+              // RECEIVED is included here (unlike order-listing filters
+              // elsewhere) — a delivered-but-unpaid order still owes real
+              // money and must keep counting against credit until paid.
+              status: { $nin: ["CANCELLED", "PRE_BOOKED", "CONFIRMED"] },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              // creditAmount is the REGULAR-only slice of a mixed order
+              // (see createOrder's own credit check); amountPaid is the
+              // running total from the payment ledger (see
+              // order.controller.js recordPayment) — whatever's still
+              // outstanding after payments keeps counting, clamped at 0 so
+              // an overpayment can't create negative "pending".
+              totalPending: {
+                $sum: {
+                  $max: [
+                    0,
+                    {
+                      $subtract: [
+                        { $ifNull: ["$creditAmount", { $ifNull: ["$finalAmount", "$totalAmount"] }] },
+                        { $ifNull: ["$amountPaid", 0] },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
         ]);
         const pendingValue = pendingOrders[0]?.totalPending || 0;
         creditInfo = {
           creditLimit: dist.creditLimit || 0,
           discountPercentage: dist.discountPercentage || 0,
           availableCredit: (dist.creditLimit || 0) - pendingValue,
+          paymentTerms: dist.paymentTerms || "",
+          tag: dist.tag || "online",
           companyName: dist.companyName || "",   // ← show in sidebar
           phone: dist.phone || "",
         };

@@ -10,10 +10,10 @@ const todayYYMMDD = () => {
   return `${yy}${mm}${dd}`;
 };
 
-// Primary carton barcode: <Carton SKU>-CT<serial>, e.g. "Riv-blk-04-08-CT001".
+// Primary carton barcode: <Carton SKU>-CT<serial>, e.g. "Riv-blk-04-08-CT1".
 // Serial restarts at 1 for every new GRN draft (draft.cartonSerial / cartonIndex).
 const makeCartonBarcode = (cartonSku, serial) =>
-  `${cartonSku}-CT${String(serial).padStart(4, "0")}`;
+  `${cartonSku}-CT${serial}`;
 
 // Legacy format, kept only for the unused-by-UI single-pair scanPair path,
 // which has no catalog/variant context to derive a Carton SKU from.
@@ -37,6 +37,7 @@ const PurchaseOrder = require("../models/PurchaseOrder");
 const MasterCatalog = require("../models/MasterCatalog");
 const Brand = require("../models/Brand");
 const Counter = require("../models/Counter");
+const masterCatalogService = require("./masterCatalogService");
 
 // helper to get next sequence
 const getNextSequence = async (name) => {
@@ -475,7 +476,7 @@ exports.submitDraft = async (draftId, {
     const variant = catalog?.variants.id(variantId);
     if (!variant) continue;
 
-    const cartonSku = variant.sku || variant.itemName || "CTN";
+    const cartonSku = masterCatalogService.getCartonBarcodeSku(variant);
     const count = info.count;
 
     const counter = await Counter.findOneAndUpdate(
@@ -487,7 +488,7 @@ exports.submitDraft = async (draftId, {
     const firstSerial = lastSerial - count + 1;
 
     const newCodes = Array.from({ length: count }, (_, i) =>
-      `${cartonSku}-CT${String(firstSerial + i).padStart(4, "0")}`
+      `${cartonSku}-CT${firstSerial + i}`
     );
 
     variant.availableCartons = [...(variant.availableCartons || []), ...newCodes];

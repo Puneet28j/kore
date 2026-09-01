@@ -90,6 +90,7 @@ const getStockReport = async (req, res) => {
       return {
         articleId: c._id,
         articleName: c.articleName,
+        gender: c.gender || "",
         category: c.categoryId?.name || "",
         brand: c.brandId?.name || "",
         company: c.manufacturerCompanyId?.name || "",

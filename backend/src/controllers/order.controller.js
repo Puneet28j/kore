@@ -366,7 +366,19 @@ const getOverdueOrders = async (req, res) => {
       if (daysOverdue <= 0) return null;
 
       const urgency = daysOverdue > 30 ? "RED" : "YELLOW";
-      return { ...o, daysSinceDelivery: daysSince, daysOverdue, paymentTerms, paymentDays, urgency };
+      const orderTotal = o.finalAmount || o.totalAmount || 0;
+      const amountPaid = o.amountPaid || 0;
+      const remainingAmount = Math.max(0, orderTotal - amountPaid);
+      return {
+        ...o,
+        daysSinceDelivery: daysSince,
+        daysOverdue,
+        paymentTerms,
+        paymentDays,
+        urgency,
+        amountPaid,
+        remainingAmount,
+      };
     }).filter(Boolean);
 
     res.json({ success: true, data: result, total: result.length });
@@ -375,13 +387,46 @@ const getOverdueOrders = async (req, res) => {
   }
 };
 
-const markOrderPaid = async (req, res) => {
+// Records one payment against an order's running ledger — however much
+// actually came in, not necessarily the full remaining balance. Auto-flips
+// to PAID once the ledger fully covers finalAmount/totalAmount; stays
+// PARTIAL otherwise. paidAt/paidBy/paymentNote are kept as a "most recent
+// payment" snapshot for older readers (exports, PDFs) that don't know about
+// the payments[] ledger.
+const recordPayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { note } = req.body;
+    const { amount, note } = req.body;
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ success: false, message: "Order not found" });
-    order.paymentStatus = "PAID";
+
+    const payAmount = Number(amount);
+    if (!Number.isFinite(payAmount) || payAmount <= 0) {
+      return res.status(400).json({ success: false, message: "Payment amount must be greater than 0" });
+    }
+
+    const orderTotal = order.finalAmount || order.totalAmount || 0;
+    const alreadyPaid = order.amountPaid || 0;
+    const remaining = Math.max(0, orderTotal - alreadyPaid);
+    // Half-a-paisa tolerance — floating point subtraction can land a hair
+    // off the "exact" remaining value, which must never block a distributor
+    // from paying off the last of a balance.
+    if (payAmount > remaining + 0.005) {
+      return res.status(400).json({
+        success: false,
+        message: `Payment (₹${payAmount.toLocaleString()}) exceeds remaining balance (₹${remaining.toLocaleString()})`,
+      });
+    }
+
+    if (!order.payments) order.payments = [];
+    order.payments.push({
+      amount: payAmount,
+      date: new Date(),
+      note: note || "",
+      recordedBy: req.user?.name || "admin",
+    });
+    order.amountPaid = alreadyPaid + payAmount;
+    order.paymentStatus = order.amountPaid >= orderTotal - 0.005 ? "PAID" : "PARTIAL";
     order.paidAt = new Date();
     order.paidBy = req.user?.name || "admin";
     order.paymentNote = note || "";
@@ -391,8 +436,8 @@ const markOrderPaid = async (req, res) => {
       action: "PAYMENT_RECEIVED",
       entityType: "ORDER",
       entityId: String(id),
-      description: `Payment received for order #${order.orderNumber} (${order.distributorName})${note ? ` — ${note}` : ""}`,
-      metadata: { orderId: String(id), orderNumber: order.orderNumber, paidAt: order.paidAt },
+      description: `₹${payAmount.toLocaleString()} received for order #${order.orderNumber} (${order.distributorName})${note ? ` — ${note}` : ""} — ${order.paymentStatus === "PAID" ? "fully paid" : `₹${(orderTotal - order.amountPaid).toLocaleString()} remaining`}`,
+      metadata: { orderId: String(id), orderNumber: order.orderNumber, amount: payAmount, amountPaid: order.amountPaid },
       user: req.user,
     });
 
@@ -500,7 +545,7 @@ module.exports = {
   processReturn,
   getReturnHistory,
   getOverdueOrders,
-  markOrderPaid,
+  recordPayment,
   deleteOrderCtrl,
   editOrderCtrl,
   getOrderStatsCtrl,

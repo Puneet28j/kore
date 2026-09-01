@@ -76,7 +76,7 @@ router.get(
 
 // Payment
 router.get("/overdue", role(["admin", "superadmin", "distributor"]), OrderController.getOverdueOrders);
-router.patch("/:id/mark-paid", role(["admin", "superadmin"]), OrderController.markOrderPaid);
+router.post("/:id/record-payment", role(["admin", "superadmin", "accountant"]), OrderController.recordPayment);
 
 // Single order fetch (admin sees any, distributor sees own only)
 router.get("/:id", role(["admin", "superadmin", "distributor", "manager", "supervisor", "accountant"]), OrderController.getOrderByIdCtrl);

@@ -69,6 +69,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     sales: true,
     partners: true,
     reports: true,
+    accounts: true,
   });
 
   const go = (tab: string) => {
@@ -399,13 +400,39 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                 {/* Accounts & Finance */}
                 <div className="pt-2">
-                  <NavItem
-                    icon={<IndianRupee size={20} />}
+                  <GroupHeader
+                    icon={<IndianRupee size={16} />}
                     label="Accounts"
-                    active={activeTab === "accounts"}
-                    onClick={() => go("accounts")}
-                    isCollapsed={isCollapsed}
+                    groupKey="accounts"
                   />
+                  {!isCollapsed && openGroups.accounts && (
+                    <div className="mt-1 ml-2 space-y-1 border-l border-slate-100 pl-3">
+                      <NavItem
+                        icon={<Receipt size={18} />}
+                        label="Vendor Bill/Invoice"
+                        active={activeTab === "vendor_invoice"}
+                        onClick={() => go("vendor_invoice")}
+                        compact
+                        isCollapsed={isCollapsed}
+                      />
+                      <NavItem
+                        icon={<FileText size={18} />}
+                        label="Distributor Invoice"
+                        active={activeTab === "distributor_invoice"}
+                        onClick={() => go("distributor_invoice")}
+                        compact
+                        isCollapsed={isCollapsed}
+                      />
+                      <NavItem
+                        icon={<AlertTriangle size={18} />}
+                        label="Overdue Payments"
+                        active={activeTab === "overdue_payments"}
+                        onClick={() => go("overdue_payments")}
+                        compact
+                        isCollapsed={isCollapsed}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Terms & Conditions — admin editable */}

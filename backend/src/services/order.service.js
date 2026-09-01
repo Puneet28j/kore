@@ -347,6 +347,14 @@ const createOrder = async (distributorId, orderData) => {
       : [{ bySize: {}, totals: {} }, { totals: {} }];
 
     const unavailableItemNames = [];
+    // One cart line can span BOTH a variant's real live stock and its
+    // pending-PO capacity at once (e.g. 10 in stock + 1 more still on a PO)
+    // — rather than classifying the whole line as one bookingType, split it
+    // into up to two order items: as many cartons as live stock actually
+    // backs → REGULAR (dispatchable now), any requested beyond that → a
+    // separate PREORDER item for the rest (still subject to the PO-cap
+    // check below, same as any other pre-order).
+    const resolvedItems = [];
     sanitizedItems.forEach((item) => {
       const catalog = catalogById.get(String(item.articleId));
       const variant = catalog?.variants?.find(
@@ -363,7 +371,7 @@ const createOrder = async (distributorId, orderData) => {
         throw err;
       }
 
-      item.productSnapshot = buildProductSnapshot(catalog, variant);
+      const productSnapshot = buildProductSnapshot(catalog, variant);
       const variantKey = String(item.variantId);
       const poPending = Math.max(
         0,
@@ -374,7 +382,52 @@ const createOrder = async (distributorId, orderData) => {
         unavailableItemNames.push(variant.itemName || catalog.articleName);
         return;
       }
-      item.bookingType = classification === "RFD" ? "REGULAR" : "PREORDER";
+
+      const cartonCount = item.cartonCount || 0;
+      const itemSizeQuantities = item.sizeQuantities instanceof Map
+        ? Object.fromEntries(item.sizeQuantities)
+        : (item.sizeQuantities || {});
+
+      // How many of the requested cartons this variant's CURRENT live stock
+      // can actually back, per size (same per-size floor-division the Shop
+      // cap uses) — the rest, if any, falls through to PREORDER below.
+      let regularCartons = 0;
+      if (classification === "RFD" && cartonCount > 0) {
+        let minCartons = Infinity;
+        Object.entries(itemSizeQuantities).forEach(([size, qty]) => {
+          const perCarton = Number(qty || 0) / cartonCount;
+          if (perCarton <= 0) return;
+          const currentQty = Number(variant.sizeMap?.[size]?.qty || 0);
+          minCartons = Math.min(minCartons, Math.floor(currentQty / perCarton));
+        });
+        regularCartons = Math.min(
+          cartonCount,
+          Math.max(0, minCartons === Infinity ? cartonCount : minCartons)
+        );
+      }
+      const preorderCartons = cartonCount - regularCartons;
+
+      const pairsPerCarton = cartonCount > 0 ? item.pairCount / cartonCount : 0;
+      const pricePerCarton = cartonCount > 0 ? item.price / cartonCount : 0;
+      const makeSplit = (splitCartons, bookingType) => {
+        const ratio = splitCartons / cartonCount;
+        const splitSizeQuantities = {};
+        Object.entries(itemSizeQuantities).forEach(([size, qty]) => {
+          splitSizeQuantities[size] = Math.round(Number(qty || 0) * ratio);
+        });
+        resolvedItems.push({
+          ...item,
+          productSnapshot,
+          bookingType,
+          cartonCount: splitCartons,
+          pairCount: Math.round(pairsPerCarton * splitCartons),
+          price: Math.round(pricePerCarton * splitCartons * 100) / 100,
+          sizeQuantities: splitSizeQuantities,
+        });
+      };
+
+      if (regularCartons > 0) makeSplit(regularCartons, "REGULAR");
+      if (preorderCartons > 0) makeSplit(preorderCartons, "PREORDER");
     });
 
     if (unavailableItemNames.length) {
@@ -385,8 +438,8 @@ const createOrder = async (distributorId, orderData) => {
       throw err;
     }
 
-    const regularItems = sanitizedItems.filter((i) => i.bookingType === "REGULAR");
-    const preorderItems = sanitizedItems.filter((i) => i.bookingType === "PREORDER");
+    const regularItems = resolvedItems.filter((i) => i.bookingType === "REGULAR");
+    const preorderItems = resolvedItems.filter((i) => i.bookingType === "PREORDER");
 
     // Credit limit only applies to the REGULAR portion — pre-order items
     // aren't a stock commitment yet. creditAmount (stored below) is what
@@ -499,7 +552,7 @@ const createOrder = async (distributorId, orderData) => {
       date: orderDate,
       status: "BOOKED",
       orderNumber,
-      items: sanitizedItems,
+      items: resolvedItems,
       totalAmount: Number(totalAmount) || 0,
       totalCartons: Number(totalCartons) || 0,
       totalPairs: Number(totalPairs) || 0,
@@ -655,12 +708,14 @@ const getOrdersByDistributor = async (
                 $sum: { $ifNull: ["$finalAmount", "$totalAmount"] },
               },
               totalPairs: { $sum: { $ifNull: ["$totalPairs", 0] } },
+              // Sum the actual amountPaid ledger (clamped to the order's own
+              // total), not a binary PAID/else split — otherwise a PARTIAL
+              // payment recorded via record-payment never shows up here.
               totalPaid: {
                 $sum: {
-                  $cond: [
-                    { $eq: ["$paymentStatus", "PAID"] },
+                  $min: [
                     { $ifNull: ["$finalAmount", "$totalAmount"] },
-                    0,
+                    { $ifNull: ["$amountPaid", 0] },
                   ],
                 },
               },
@@ -2101,31 +2156,54 @@ const getDashboardMetrics = async ({ startDate, endDate } = {}) => {
   const [row] = await Order.aggregate([
     { $match: match },
     {
-      $group: {
-        _id: null,
-        totalRevenue: {
-          $sum: {
-            $ifNull: ["$finalAmount", { $ifNull: ["$totalAmount", 0] }],
+      // Revenue is recognized proportionally to what's actually shipped,
+      // not the full order value the moment it's placed — a PARTIAL order
+      // only counts the slice of its (discount+GST-inclusive) finalAmount
+      // matching however many of its cartons have actually gone out.
+      $addFields: {
+        _orderCartons: { $ifNull: ["$totalCartons", 0] },
+        _dispatchedCartons: {
+          $reduce: {
+            input: { $ifNull: ["$items", []] },
+            initialValue: 0,
+            in: { $add: ["$$value", { $ifNull: ["$$this.fulfilledCartonCount", 0] }] },
           },
         },
-        ordersPlaced: { $sum: 1 },
-        distributorIds: { $addToSet: "$distributorId" },
+        _amount: { $ifNull: ["$finalAmount", { $ifNull: ["$totalAmount", 0] }] },
       },
     },
     {
-      $project: {
-        _id: 0,
-        totalRevenue: 1,
-        ordersPlaced: 1,
-        activeParties: { $size: "$distributorIds" },
+      $addFields: {
+        _dispatchedRevenue: {
+          $cond: [
+            { $gt: ["$_orderCartons", 0] },
+            {
+              $multiply: [
+                "$_amount",
+                { $min: [1, { $divide: ["$_dispatchedCartons", "$_orderCartons"] }] },
+              ],
+            },
+            0,
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalDispatchedRevenue: { $sum: "$_dispatchedRevenue" },
+        totalOrderedCartons: { $sum: "$_orderCartons" },
+        totalDispatchedCartons: { $sum: "$_dispatchedCartons" },
+        ordersPlaced: { $sum: 1 },
       },
     },
   ]);
 
   return {
-    totalRevenue: Math.round(Number(row?.totalRevenue) || 0),
+    totalRevenue: Math.round(Number(row?.totalDispatchedRevenue) || 0),
+    orderedCartons: Number(row?.totalOrderedCartons) || 0,
+    dispatchedCartons: Number(row?.totalDispatchedCartons) || 0,
     ordersPlaced: Number(row?.ordersPlaced) || 0,
-    activeParties: Number(row?.activeParties) || 0,
   };
 };
 

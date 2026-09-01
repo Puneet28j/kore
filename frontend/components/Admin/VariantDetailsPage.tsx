@@ -12,8 +12,6 @@ import {
   RotateCcw,
   Loader2,
   Save,
-  Globe,
-  Store,
 } from "lucide-react";
 import { Article, Variant } from "../../types";
 import { toast } from "sonner";
@@ -147,12 +145,18 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
 
   const handleSaveCtnSku = async () => {
     if (!variant.id) return;
+    const trimmed = ctnSkuValue.trim();
+    if (!trimmed) {
+      toast.error("Carton SKU cannot be blank");
+      return;
+    }
     setSavingCtnSku(true);
     try {
-      await masterCatalogService.updateVariantSku(variant.id, ctnSkuValue);
+      await masterCatalogService.updateVariantSku(variant.id, trimmed);
+      setCtnSkuValue(trimmed);
       toast.success("SKU saved — per-size SKUs regenerated");
-    } catch {
-      toast.error("Failed to save SKU");
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to save SKU");
     } finally {
       setSavingCtnSku(false);
     }
@@ -224,8 +228,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   // sizeMap = stock/inventory data ({"4": {qty: 0, sku: "..."}}) — qty is stock, NOT assortment
   const currentAssortmentMap = variant.sizeQuantities || {};
   const currentSizeMap = variant.sizeMap || {};
-  const currentBookingMap = variant.bookingMap || {};
-  const currentPOMap = stockData?.poMap || {};
   const currentLiveStockMap = stockData?.liveStockMap || {};
   const currentBlockedStockMap: Record<string, number> =
     stockData?.blockedStockMap || {};
@@ -234,17 +236,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
     (s: number, v) => s + (Number(v) || 0),
     0
   );
-
-  const totalBooked = Object.values(currentBookingMap).reduce(
-    (s: number, v) => {
-      return s + (Number(v) || 0);
-    },
-    0
-  );
-
-  const totalPO = Object.values(currentPOMap).reduce((s: number, v) => {
-    return s + (Number(v) || 0);
-  }, 0);
 
   const totalBlocked = Object.values(currentBlockedStockMap).reduce(
     (s: number, v) => s + (Number(v) || 0),
@@ -279,11 +270,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
   sizes.forEach((sz) => {
     availableStockMap[sz] = Math.max(0, currentLiveStockMap[sz] || 0);
   });
-
-  const totalAvailable = Object.values(availableStockMap).reduce(
-    (s, v) => s + v,
-    0
-  );
 
   const liveCartonsCount = calculateAssortmentCartons(availableStockMap);
 
@@ -349,7 +335,7 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* ─── Col 1: Image ─── */}
         <div className="lg:col-span-3">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3 sticky top-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3 lg:sticky lg:top-4">
             <div className="aspect-square rounded-xl overflow-hidden bg-slate-100 border border-slate-200 relative">
               {allImages.length > 0 ? (
                 <img
@@ -401,8 +387,8 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 <h1 className="text-lg font-bold text-slate-900 leading-snug truncate">
                   {variantName}
                 </h1>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <p className="text-xs text-slate-400">
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  <p className="text-xs text-slate-400 truncate max-w-full">
                     Master:{" "}
                     <span className="font-medium text-slate-500">
                       {article.name}
@@ -453,8 +439,9 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
           </div>
 
           {/* Pricing Row */}
-          <div className="grid grid-cols-2 gap-2">
-            <PriceBox label="MRP" value={mrp} accent="indigo" />
+          <div className="grid grid-cols-3 gap-2">
+            <PriceBox label="Online MRP" value={variant.onlineMrp || mrp} accent="indigo" />
+            <PriceBox label="Offline MRP" value={variant.offlineMrp || mrp} accent="emerald" />
             <PriceBox label="Cost" value={cost} accent="slate" />
           </div>
 
@@ -520,14 +507,14 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
         </div>
       </div>
 
-      {/* ─── Channel & SKU Details ─── */}
+      {/* ─── SKU Details ─── */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
         <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-1.5">
-          <Globe size={12} className="text-indigo-500" />
-          Channel &amp; SKU
+          <Tag size={12} className="text-indigo-500" />
+          SKU Details
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Left: carton SKU (editable) + channel MRPs */}
+          {/* Left: carton SKU (editable) */}
           <div className="space-y-4">
             {/* Carton SKU — editable */}
             <div>
@@ -559,48 +546,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
                 Save karne ke baad per-size SKUs auto-regenerate honge
               </p>
             </div>
-
-            {/* Tag + MRPs */}
-            {variant.tag && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400 font-medium w-20 shrink-0">
-                    Channel
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${
-                      variant.tag === "online"
-                        ? "bg-blue-50 text-blue-600 border-blue-100"
-                        : "bg-amber-50 text-amber-600 border-amber-100"
-                    }`}
-                  >
-                    {variant.tag}
-                  </span>
-                </div>
-                {(variant.onlineMrp || 0) > 0 && (
-                  <div className="flex items-center gap-2">
-                    <Globe size={11} className="text-blue-400 shrink-0" />
-                    <span className="text-xs text-slate-400 font-medium w-20 shrink-0">
-                      Online MRP
-                    </span>
-                    <span className="text-sm font-bold text-blue-700">
-                      ₹{(variant.onlineMrp || 0).toLocaleString()}
-                    </span>
-                  </div>
-                )}
-                {(variant.offlineMrp || 0) > 0 && (
-                  <div className="flex items-center gap-2">
-                    <Store size={11} className="text-amber-400 shrink-0" />
-                    <span className="text-xs text-slate-400 font-medium w-20 shrink-0">
-                      Offline MRP
-                    </span>
-                    <span className="text-sm font-bold text-amber-700">
-                      ₹{(variant.offlineMrp || 0).toLocaleString()}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
           {/* Right: per-size SKUs */}
@@ -643,243 +588,6 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
           </div>
         </div>
       </div>
-
-      {/* ─── NEW FULL WIDTH SECTION: Size & Booking Breakdown ─── */}
-      {sizes.length > 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mt-4">
-          {/* Header with totals */}
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Layers size={18} className="text-indigo-500" />
-              Size & Booking Details
-            </h3>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-green-500"></span>
-                <span className="text-xs font-medium text-slate-600">
-                  Stock:{" "}
-                  <span className="font-bold text-green-600">
-                    {totalAvailable} pairs
-                  </span>
-                </span>
-              </div>
-              {/* <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                <span className="text-xs font-medium text-slate-600">
-                  Booked:{" "}
-                  <span className="font-bold text-emerald-600">
-                    {totalBooked} pairs
-                  </span>
-                </span>
-              </div> */}
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
-                <span className="text-xs font-medium text-slate-600">
-                  PO:{" "}
-                  <span className="font-bold text-orange-600">
-                    {totalPO} pairs
-                  </span>
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
-                <span className="text-xs font-medium text-slate-600">
-                  Booked:{" "}
-                  <span className="font-bold text-indigo-600">
-                    {totalBlocked} pairs
-                  </span>
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Four-column grid for size, booking, PO and Blocked */}
-          {loadingStock ? (
-            <div className="flex flex-col items-center justify-center py-12 space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-              <Loader2 className="animate-spin text-indigo-500" size={32} />
-              <p className="text-sm font-medium text-slate-500 uppercase tracking-widest">
-                Fetching live inventory...
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {/* Left Column - Size Stock Breakdown */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black text-green-600 uppercase tracking-wider flex items-center gap-1.5">
-                    <Package size={14} /> Live Stock
-                  </h4>
-                  <span className="text-[10px] font-bold text-slate-400">
-                    pairs
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {sizes.map((sz) => {
-                    const cleanSz = sz.trim();
-                    const qty =
-                      Number(
-                        currentLiveStockMap[cleanSz] ?? currentLiveStockMap[sz]
-                      ) || 0;
-                    const available = availableStockMap[sz] || 0;
-
-                    let bgClass =
-                      qty > 0
-                        ? "bg-green-50/60 border-green-200"
-                        : "bg-rose-50/60 border-rose-200";
-                    let qtyClass = qty > 0 ? "text-green-600" : "text-rose-600";
-
-                    return (
-                      <div
-                        key={sz}
-                        className={`p-3 rounded-xl border transition-all hover:shadow-md ${bgClass}`}
-                      >
-                        <div className="flex flex-col items-start justify-between mb-1">
-                          <span className="text-[10px] font-bold text-slate-500">
-                            Size {sz}
-                          </span>
-                          <div className="flex items-baseline gap-1.5">
-                            <span
-                              className={`text-xl font-black leading-none ${qtyClass}`}
-                            >
-                              {available}
-                            </span>
-                          </div>
-                          {/* <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">Live: {qty}</p> */}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Middle Column - Blocked (Booked) Breakdown */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black text-purple-600 uppercase tracking-wider flex items-center gap-1.5">
-                    <ShoppingBag size={14} /> Booked Quantity
-                  </h4>
-                  <span className="text-[10px] font-bold text-slate-400">
-                    pairs
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {sizes.map((sz) => {
-                    const cleanSz = sz.trim();
-                    const blockedQty =
-                      Number(
-                        currentBlockedStockMap[cleanSz] ??
-                          currentBlockedStockMap[sz]
-                      ) || 0;
-
-                    return (
-                      <div
-                        key={sz}
-                        className={`p-3 rounded-xl border transition-all hover:shadow-md ${
-                          blockedQty > 0
-                            ? "bg-rose-50/60 border-rose-200"
-                            : "bg-slate-50/60 border-slate-200"
-                        }`}
-                      >
-                        <div className="flex flex-col items-start justify-between">
-                          <span className="text-xs font-bold text-slate-500">
-                            Size {sz}
-                          </span>
-                          <div
-                            className={`text-xl font-black leading-none ${
-                              blockedQty > 0
-                                ? "text-purple-600"
-                                : "text-slate-300"
-                            }`}
-                          >
-                            {blockedQty}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Third Column - PO Breakdown */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black text-orange-600 uppercase tracking-wider flex items-center gap-1.5">
-                    <ShoppingBag size={14} /> PO Quantity (pending)
-                  </h4>
-                  <span className="text-[10px] font-bold text-slate-400">
-                    per size
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {sizes.map((sz) => {
-                    const cleanSz = sz.trim();
-                    const poQty =
-                      Number(currentPOMap[cleanSz] ?? currentPOMap[sz]) || 0;
-                    const statusColor = poQty === 0 ? "slate" : "orange";
-
-                    return (
-                      <div
-                        key={sz}
-                        className={`p-3 rounded-xl border transition-all hover:shadow-md ${
-                          statusColor === "orange"
-                            ? "bg-orange-50/60 border-orange-200"
-                            : "bg-slate-50/60 border-slate-200"
-                        }`}
-                      >
-                        <div className="flex flex-col items-start justify-between">
-                          <span className="text-xs font-bold text-slate-500">
-                            Size {sz}
-                          </span>
-                          <div
-                            className={`text-xl font-black leading-none ${
-                              poQty > 0 ? "text-orange-600" : "text-slate-300"
-                            }`}
-                          >
-                            {poQty}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Fourth Column - Blocked Breakdown */}
-              {/* <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
-                    <Package size={14} /> Booked Stock
-                  </h4>
-                  <span className="text-[10px] font-bold text-slate-400">
-                    per size
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  {sizes.map((sz) => (
-                    <div
-                      key={sz}
-                      className="p-3 rounded-xl border bg-slate-50/60 border-slate-200 transition-all hover:shadow-md"
-                    >
-                      <div className="flex flex-col items-start justify-between">
-                        <span className="text-xs font-bold text-slate-500">
-                          Size {sz}
-                        </span>
-                        <div className="text-xl font-black leading-none text-slate-300">
-                          0
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div> */}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 };

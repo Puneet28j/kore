@@ -277,14 +277,15 @@ class DistributorOrderService {
   async getDashboardMetrics(params: { startDate?: string; endDate?: string } = {}): Promise<{
     totalRevenue: number;
     ordersPlaced: number;
-    activeParties: number;
+    orderedCartons: number;
+    dispatchedCartons: number;
   }> {
     const query = new URLSearchParams();
     if (params.startDate) query.append("startDate", params.startDate);
     if (params.endDate) query.append("endDate", params.endDate);
     const qs = query.toString() ? `?${query.toString()}` : "";
     const res = await axios.get(`${API_URL}/dashboard-metrics${qs}`, { headers: getAuthHeaders() });
-    return res.data.data || { totalRevenue: 0, ordersPlaced: 0, activeParties: 0 };
+    return res.data.data || { totalRevenue: 0, ordersPlaced: 0, orderedCartons: 0, dispatchedCartons: 0 };
   }
 
   async getReturnHistory(params: { page?: number; limit?: number; q?: string } = {}): Promise<{ items: any[]; meta: any }> {

@@ -12,6 +12,8 @@ import {
   TrendingUp,
   Star,
   CheckCircle,
+  CreditCard,
+  Wallet,
 } from "lucide-react";
 
 import {
@@ -51,6 +53,8 @@ import DispatchReport from "./components/Admin/DispatchReport";
 import DispatchOrderBreakdown from "./components/Admin/DispatchOrderBreakdown";
 import ReturnReport from "./components/Admin/ReturnReport";
 import AccountantPage from "./components/Admin/AccountantPage";
+import VendorBillInvoice from "./components/Admin/VendorBillInvoice";
+import DistributorInvoice from "./components/Admin/DistributorInvoice";
 import TermsPage from "./components/Admin/TermsPage";
 import NotificationSettings from "./components/Admin/NotificationSettings";
 import IntegrationsPage from "./components/Admin/IntegrationsPage";
@@ -63,7 +67,7 @@ import { useKoreStore } from "./store";
 import { Toaster, toast } from "sonner";
 import Bill from "./components/Admin/Bill";
 import { distributorOrderService } from "./services/distributorOrderService";
-import { getVariantAvailability } from "./utils/catalogAvailability";
+import { getVariantAvailability, getVariantPricePerPair as getVariantPricePerPairUtil } from "./utils/catalogAvailability";
 
 const App: React.FC = () => {
   const store = useKoreStore();
@@ -100,6 +104,7 @@ const App: React.FC = () => {
   });
   const [dispatchBreakdownOrder, setDispatchBreakdownOrder] = useState<Order | null>(null);
   const [distributorOrderToOpen, setDistributorOrderToOpen] = useState<Order | null>(null);
+  const [invoiceBreakdownOrder, setInvoiceBreakdownOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     localStorage.setItem("kore_activeTab", activeTab);
@@ -120,7 +125,6 @@ const App: React.FC = () => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showMasterForm, setShowMasterForm] = useState(false);
   const [returnToArticleId, setReturnToArticleId] = useState<string | null>(null);
-  const [catalogueActiveTab, setCatalogueActiveTab] = useState<"ALL" | "RFD" | "PREORDER">("ALL");
 
   // Articles state from API
   const [articles, setArticles] = useState<Article[]>([]);
@@ -169,6 +173,11 @@ const App: React.FC = () => {
   const handleOpenOrderFromReport = (order: Order) => {
     setDispatchBreakdownOrder(order);
     setActiveTab("dispatch_breakdown");
+  };
+
+  const handleOpenOrderFromInvoice = (order: Order) => {
+    setInvoiceBreakdownOrder(order);
+    setActiveTab("invoice_breakdown");
   };
 
   const handleViewVariant = (articleId: string, variantId: string) => {
@@ -229,7 +238,13 @@ const App: React.FC = () => {
           assortmentId: item.assortmentId || "",
           productCategory: item.categoryId?.name,
           brand: item.brandId?.name,
-          pricePerPair: item.variants?.[0]?.sellingPrice || item.mrp,
+          // Distributors ordering online must be charged off Online MRP
+          // specifically — falling back to the legacy/ambiguous mrp fields
+          // only for older data that predates the online/offline MRP split.
+          pricePerPair:
+            item.variants?.[0]?.onlineMrp ||
+            item.variants?.[0]?.sellingPrice ||
+            item.mrp,
           mrp: item.mrp,
           soleColor: item.soleColor,
           manufacturer: item.manufacturerCompanyId?.name,
@@ -252,9 +267,17 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchArticles();
     fetchArticlesRef.current = fetchArticles;
-  }, []);
+    // Gated on `user`, not an empty dep array: this effect can fire on the
+    // very first mount, before login finishes (e.g. right after submitting
+    // credentials, with no full page reload) — at that instant there's no
+    // token yet, the fetch comes back empty, and since a `[]`-dep effect
+    // never re-runs, `articles` stays empty for the rest of the session
+    // until a hard refresh. Depending on `user` re-fires it the moment
+    // login actually completes.
+    if (!user) return;
+    fetchArticles();
+  }, [user]);
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [distributorDashStats, setDistributorDashStats] = useState<any>(null);
@@ -665,9 +688,24 @@ const App: React.FC = () => {
   }, [articles]);
 
   // DERIVED STATE
+  // Recomputed live from the CURRENT catalog price on every render, not
+  // item.price (a snapshot frozen at add/update-cart time) — a price edited
+  // in the catalog after an item was added must show up immediately here,
+  // not only after the user next touches that cart line.
   const cartTotal = useMemo(() => {
-    return cart.reduce((total, item) => total + item.price, 0);
-  }, [cart]);
+    return cart.reduce((total, item) => {
+      const article = articles.find((a) => a.id === item.articleId);
+      const variant = article?.variants?.find(
+        (v) => v.id === item.variantId || (v as any)._id === item.variantId
+      );
+      const pricePerPair = getVariantPricePerPairUtil(
+        variant,
+        user?.tag,
+        article?.pricePerPair || 0
+      );
+      return total + pricePerPair * item.pairCount;
+    }, 0);
+  }, [cart, articles, user?.tag]);
 
   const cartItemsCount = useMemo(() => {
     // show total cartons in cart for badge/checkout button
@@ -718,6 +756,22 @@ const App: React.FC = () => {
     await fetchOrdersRef.current?.(true);
   };
 
+  // Price must come from THIS variant's own onlineMrp/offlineMrp (per the
+  // distributor's online/offline tag), not article.pricePerPair — that's
+  // derived once from the article's first variant and is wrong for every
+  // other color/size-range combo, and doesn't distinguish online vs offline
+  // pricing at all. Mirrors Shop.tsx's fullPricePerPair calculation.
+  const getVariantPricePerPair = (
+    articleId: string,
+    variantId: string | undefined
+  ): number => {
+    const article = articles.find((a) => a.id === articleId);
+    const variant = article?.variants?.find(
+      (v) => v.id === variantId || (v as any)._id === variantId
+    );
+    return getVariantPricePerPairUtil(variant, user?.tag, article?.pricePerPair || 0);
+  };
+
   // add given sizeQuantities for a particular variant
   const addToCart = (
     articleId: string,
@@ -746,9 +800,7 @@ const App: React.FC = () => {
                 ...i,
                 cartonCount: i.cartonCount + cartonCount,
                 pairCount: newPairs,
-                price:
-                  newPairs *
-                  (articles.find((a) => a.id === articleId)?.pricePerPair || 0),
+                price: newPairs * getVariantPricePerPair(articleId, variantId),
                 sizeQuantities: {
                   ...(existing.sizeQuantities || {}),
                   ...sizeQuantities,
@@ -765,9 +817,7 @@ const App: React.FC = () => {
           sizeQuantities,
           cartonCount,
           pairCount,
-          price:
-            pairCount *
-            (articles.find((a) => a.id === articleId)?.pricePerPair || 0),
+          price: pairCount * getVariantPricePerPair(articleId, variantId),
         },
       ];
     });
@@ -811,11 +861,17 @@ const App: React.FC = () => {
       );
 
       if (isPreOrder) {
-        // Cap by PO planned quantity minus what's already pre-booked
+        // Cap by PO planned quantity minus what's already pre-booked, and
+        // never more than what's actually still incoming (poPendingPairs) —
+        // once GRN delivers it, it's live stock, not pre-order capacity.
         if (totalPairsPerCarton > 0) {
           const plannedPairs = Number((variant as any).plannedPairs) || 0;
           const preBookedPairs = Number((variant as any).preBookedPairs) || 0;
-          const remaining = Math.max(0, plannedPairs - preBookedPairs);
+          const poPendingPairs = Number((variant as any).poPendingPairs) || 0;
+          const remaining = Math.min(
+            Math.max(0, plannedPairs - preBookedPairs),
+            poPendingPairs
+          );
           const maxCartons = Math.floor(remaining / totalPairsPerCarton);
           if (newCartonCount > maxCartons) {
             toast.error(
@@ -828,7 +884,9 @@ const App: React.FC = () => {
           }
         }
       } else {
-        // Cap by live sizeMap stock
+        // Cap by live sizeMap stock, PLUS whatever's still pre-bookable
+        // against a pending PO on top of that — same combined cap Shop.tsx
+        // uses; the excess becomes a separate PREORDER item at checkout.
         const sizeMap = (variant as any).sizeMap || {};
         const sizes = Object.keys(breakdown);
         if (sizes.length > 0) {
@@ -842,9 +900,22 @@ const App: React.FC = () => {
               : 0;
             min = Math.min(min, Math.floor(available / assortQty));
           }
-          const maxCartons = min === Infinity ? 0 : min;
+          const liveStockCartons = min === Infinity ? 0 : min;
+          const plannedPairs = Number((variant as any).plannedPairs) || 0;
+          const preBookedPairs = Number((variant as any).preBookedPairs) || 0;
+          const poPendingPairs = Number((variant as any).poPendingPairs) || 0;
+          // Capped at poPendingPairs — once a PO is fully received that
+          // stock is already counted in liveStockCartons above and must not
+          // ALSO count here (double-counting when preBookedPairs is 0).
+          const remainingPlanned = Math.min(
+            Math.max(0, plannedPairs - preBookedPairs),
+            poPendingPairs
+          );
+          const extraPreOrderCartons =
+            totalPairsPerCarton > 0 ? Math.floor(remainingPlanned / totalPairsPerCarton) : 0;
+          const maxCartons = liveStockCartons + extraPreOrderCartons;
           if (newCartonCount > maxCartons) {
-            toast.error(`Only ${maxCartons} carton(s) available in stock`);
+            toast.error(`Only ${maxCartons} carton(s) available (stock + pre-orderable)`);
             newCartonCount = maxCartons;
             if (newCartonCount < 1) return;
           }
@@ -857,7 +928,7 @@ const App: React.FC = () => {
         if (i.articleId !== articleId || i.variantId !== variantId) return i;
         const pairsPerCarton = i.cartonCount > 0 ? i.pairCount / i.cartonCount : 24;
         const newPairCount = Math.round(pairsPerCarton * newCartonCount);
-        const pricePerPair = articles.find((a) => a.id === articleId)?.pricePerPair || 0;
+        const pricePerPair = getVariantPricePerPair(articleId, variantId);
         // Scale sizeQuantities proportionally
         const scale = newCartonCount / i.cartonCount;
         const newSizeQty: Record<string, number> = {};
@@ -977,7 +1048,10 @@ const App: React.FC = () => {
       ) {
         const availCredit = freshUser.availableCredit ?? 0;
         const discPct = freshUser.discountPercentage || 0;
-        const orderTotal = availableItems.reduce((sum, i) => sum + i.price, 0);
+        const orderTotal = availableItems.reduce(
+          (sum, i) => sum + getVariantPricePerPair(i.articleId, i.variantId) * i.pairCount,
+          0
+        );
         const finalAmt = orderTotal - (orderTotal * discPct) / 100;
 
         if (availCredit === 0)
@@ -992,15 +1066,25 @@ const App: React.FC = () => {
         distributorId: user.id,
         distributorName: user.name,
         date: new Date().toISOString().split("T")[0],
-        items: cart.map((item) => ({
-          articleId: item.articleId,
-          variantId: item.variantId,
-          sizeQuantities: item.sizeQuantities,
-          cartonCount: item.cartonCount,
-          pairCount: item.pairCount,
-          price: item.price,
-        })),
-        totalAmount: cart.reduce((s, i) => s + i.price, 0),
+        items: cart.map((item) => {
+          // Price must reflect the CURRENT catalog price at checkout time,
+          // not item.price (a snapshot frozen at add/update-cart time) — a
+          // price edited in the catalog after the item was added must be
+          // what actually gets billed on the order.
+          const livePrice = getVariantPricePerPair(item.articleId, item.variantId) * item.pairCount;
+          return {
+            articleId: item.articleId,
+            variantId: item.variantId,
+            sizeQuantities: item.sizeQuantities,
+            cartonCount: item.cartonCount,
+            pairCount: item.pairCount,
+            price: livePrice,
+          };
+        }),
+        totalAmount: cart.reduce(
+          (s, i) => s + getVariantPricePerPair(i.articleId, i.variantId) * i.pairCount,
+          0
+        ),
         totalCartons: cart.reduce((s, i) => s + i.cartonCount, 0),
         totalPairs: cart.reduce((s, i) => s + i.pairCount, 0),
         gstRate: gstPercent,
@@ -1098,7 +1182,7 @@ const App: React.FC = () => {
 
       {/* Main Content */}
       <main
-        className={`flex-1 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300
+        className={`flex-1 min-w-0 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300
   ${isCollapsed ? "md:ml-20" : "md:ml-64"}
 `}
       >
@@ -1124,7 +1208,7 @@ const App: React.FC = () => {
                 updateStatus={updateOrderStatus}
                 loadingOrders={loadingOrders}
                 lastUpdated={lastUpdated}
-                onSeeAllOverdue={() => handleTabChange("accounts")}
+                onSeeAllOverdue={() => handleTabChange("overdue_payments")}
               />
             </div>
           ) : (
@@ -1175,8 +1259,6 @@ const App: React.FC = () => {
               onAddNewMaster={handleAddNewMaster}
               scrollToArticleId={returnToArticleId}
               onScrollRestored={() => setReturnToArticleId(null)}
-              initialActiveTab={catalogueActiveTab}
-              onActiveTabChange={setCatalogueActiveTab}
             />
           ))}
 
@@ -1228,13 +1310,37 @@ const App: React.FC = () => {
           </div>
         )}
         {activeTab === "grn" && user.role !== UserRole.DISTRIBUTOR && <GRN />}
-        {activeTab === "accounts" && user.role !== UserRole.DISTRIBUTOR && (
-          <AccountantPage />
+        {activeTab === "vendor_invoice" && user.role !== UserRole.DISTRIBUTOR && (
+          <VendorBillInvoice articles={articles} />
+        )}
+        {activeTab === "distributor_invoice" && user.role !== UserRole.DISTRIBUTOR && (
+          <DistributorInvoice onOpenOrder={handleOpenOrderFromInvoice} />
+        )}
+        {activeTab === "invoice_breakdown" && user.role !== UserRole.DISTRIBUTOR && (
+          invoiceBreakdownOrder ? (
+            <DispatchOrderBreakdown
+              order={invoiceBreakdownOrder}
+              articles={articles}
+              inventory={inventory}
+              onBack={() => {
+                setInvoiceBreakdownOrder(null);
+                setActiveTab("distributor_invoice");
+              }}
+            />
+          ) : (
+            <div className="bg-white rounded-2xl border border-dashed border-slate-200 p-12 text-center">
+              <p className="text-sm font-bold text-slate-500">No order selected</p>
+              <p className="text-xs text-slate-400 mt-1">Open an order from Distributor Invoice to view its breakdown.</p>
+            </div>
+          )
         )}
 
-        {/* Legacy redirect — bills tab still works */}
+        {/* Legacy — old "Accounts" nav target, kept for any bookmarked links */}
+        {activeTab === "accounts" && user.role !== UserRole.DISTRIBUTOR && (
+          <AccountantPage articles={articles} initialTab="bills" />
+        )}
         {activeTab === "bills" && user.role !== UserRole.DISTRIBUTOR && (
-          <AccountantPage />
+          <AccountantPage articles={articles} initialTab="bills" />
         )}
         {activeTab === "vendors" && user.role !== UserRole.DISTRIBUTOR && (
           <VendorManager />
@@ -1366,7 +1472,9 @@ const App: React.FC = () => {
           user.role !== UserRole.DISTRIBUTOR && <ReturnReport />}
 
         {activeTab === "overdue_payments" &&
-          user.role !== UserRole.DISTRIBUTOR && <AccountantPage />}
+          user.role !== UserRole.DISTRIBUTOR && (
+            <OverduePayments isAdmin={true} showAll={true} />
+          )}
 
         {activeTab === "terms_page" && user.role !== UserRole.DISTRIBUTOR && (
           <TermsPage />
@@ -1491,9 +1599,10 @@ const DistributorDashboard: React.FC<{
 
   const paidAmount =
     dashboardStats?.totalPaid ??
-    userOrders
-      .filter((o) => (o as any).paymentStatus === "PAID")
-      .reduce((s, o) => s + (o.finalAmount || o.totalAmount || 0), 0);
+    userOrders.reduce((s, o) => {
+      const amt = o.finalAmount || o.totalAmount || 0;
+      return s + Math.min(amt, (o as any).amountPaid || 0);
+    }, 0);
   const pendingPayment = totalValue - paidAmount;
 
   const recentOrders = [...userOrders]
@@ -1542,6 +1651,60 @@ const DistributorDashboard: React.FC<{
             </p>
           </div>
         ))}
+      </div>
+
+      {/* Financial Terms card — dynamic, from the distributor's own profile */}
+      <div className="bg-indigo-600 text-white rounded-2xl shadow-md p-6 relative overflow-hidden">
+        <div className="relative z-10">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-indigo-200 mb-6">
+            Financial Terms
+          </h3>
+
+          <div className="space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-indigo-200 text-xs font-medium mb-1 flex items-center gap-1.5">
+                  <CreditCard size={14} /> Payment Terms
+                </p>
+                <p className="text-lg font-bold">
+                  {user.paymentTerms || "31 days"}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-indigo-500/50">
+              <div>
+                <p className="text-indigo-200 text-xs font-medium mb-1">
+                  Discount Config
+                </p>
+                <p className="text-2xl font-black text-amber-300">
+                  {user.discountPercentage || 0}%
+                </p>
+              </div>
+              <div>
+                <p className="text-indigo-200 text-xs font-medium mb-1">
+                  Credit Limit
+                </p>
+                <p className="text-xl font-bold">
+                  ₹{(user.creditLimit || 0).toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-indigo-500/50">
+              <p className="text-indigo-200 text-xs font-medium mb-1">
+                Available Credit
+              </p>
+              <p className="text-xl font-bold text-emerald-300">
+                ₹{(user.availableCredit ?? user.creditLimit ?? 0).toLocaleString()}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="absolute -bottom-8 -right-8 opacity-10 blur-[1px]">
+          <Wallet size={120} />
+        </div>
       </div>
 
       {/* Activity Overview card */}

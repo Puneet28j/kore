@@ -14,6 +14,8 @@ const PurchaseOrderItemSchema = new mongoose.Schema(
 
     itemName: { type: String, trim: true, default: "" },
     color: { type: String, trim: true, default: "" },
+    gender: { type: String, trim: true, default: "" },
+    assortment: { type: String, trim: true, default: "" },
     image: { type: String, trim: true, default: "" },
 
     sku: { type: String, trim: true, default: "" },
@@ -28,6 +30,8 @@ const PurchaseOrderItemSchema = new mongoose.Schema(
 
     basePrice: { type: Number, min: 0, default: 0 },
     mrp: { type: Number, min: 0, default: 0 },
+    onlineMrp: { type: Number, min: 0, default: 0 },
+    offlineMrp: { type: Number, min: 0, default: 0 },
 
     taxPerItem: { type: Number, min: 0, default: 0 },
     unitTotal: { type: Number, min: 0, default: 0 },
@@ -95,6 +99,39 @@ const PurchaseOrderSchema = new mongoose.Schema(
 
     isRevised: { type: Boolean, default: false },
     revisionCount: { type: Number, default: 0 },
+
+    // ── Vendor payable — admin logs the vendor's actual invoice(s) once the
+    // bill is approved, then records payments against the combined total as
+    // they go out. A single PO can be invoiced more than once (e.g. partial
+    // shipments billed separately), so this is a list, not one field — the
+    // payable total is the sum of every entry's amount.
+    invoices: {
+      type: [
+        {
+          invoiceNumber: { type: String, trim: true, default: "" },
+          invoiceAmount: { type: Number, min: 0, required: true },
+          date: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+    amountPaid: { type: Number, min: 0, default: 0 },
+    paymentStatus: {
+      type: String,
+      enum: ["UNPAID", "PARTIAL", "PAID"],
+      default: "UNPAID",
+    },
+    payments: {
+      type: [
+        {
+          amount: { type: Number, required: true },
+          date: { type: Date, default: Date.now },
+          note: { type: String, trim: true, default: "" },
+          recordedBy: { type: String, trim: true, default: "" },
+        },
+      ],
+      default: [],
+    },
 
     isDeleted: { type: Boolean, default: false, index: true },
   },

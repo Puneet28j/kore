@@ -80,7 +80,13 @@ const PreOrderCard: React.FC<{
   // (backend enforces the same cap on order creation).
   const plannedPairs = Number(selectedVariant?.plannedPairs) || 0;
   const preBookedPairs = Number(selectedVariant?.preBookedPairs) || 0;
-  const remainingPairs = Math.max(0, plannedPairs - preBookedPairs);
+  const poPendingPairs = Number(selectedVariant?.poPendingPairs) || 0;
+  // Capped at poPendingPairs — once a PO is fully received that stock is
+  // live stock, not pre-order capacity (see Shop.tsx remainingPlannedPairs).
+  const remainingPairs = Math.min(
+    Math.max(0, plannedPairs - preBookedPairs),
+    poPendingPairs
+  );
   const maxCartons =
     totalPairsPerCarton > 0
       ? Math.floor(remainingPairs / totalPairsPerCarton)
@@ -442,7 +448,15 @@ const mapDocToArticle = (doc: any): Article => ({
   name: doc.articleName,
   category: doc.gender || doc.categoryId?.name,
   assortmentId: doc._id,
-  pricePerPair: doc.mrp || doc.variants?.[0]?.sellingPrice || doc.variants?.[0]?.mrp || 0,
+  // Distributors ordering online must be charged off Online MRP specifically
+  // — falling back to the legacy/ambiguous mrp fields only for older data
+  // that predates the online/offline MRP split.
+  pricePerPair:
+    doc.variants?.[0]?.onlineMrp ||
+    doc.mrp ||
+    doc.variants?.[0]?.sellingPrice ||
+    doc.variants?.[0]?.mrp ||
+    0,
   imageUrl: doc.primaryImage?.url || doc.variants?.[0]?.images?.[0] || "",
   images: doc.secondaryImages?.map((i: any) => i.url) || [],
   secondaryImages: doc.secondaryImages || [],

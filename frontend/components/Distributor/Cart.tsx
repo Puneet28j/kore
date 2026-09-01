@@ -16,7 +16,7 @@ import {
 import TermsModal from "./TermsModal";
 import { User, Article, Assortment } from "../../types";
 import { getImageUrl } from "../../utils/imageUtils";
-import { getVariantAvailability } from "../../utils/catalogAvailability";
+import { getVariantAvailability, getVariantPricePerPair } from "../../utils/catalogAvailability";
 
 // utility to expand a range like "5-7" into ["5","6","7"]
 const parseSizeRange = (range: string): string[] => {
@@ -30,8 +30,10 @@ const parseSizeRange = (range: string): string[] => {
 };
 
 // Mirrors Shop.tsx maxCartonsFromStock — computes the hard cap for both
-// RFD (from live sizeMap stock) and PREORDER (from PO plannedPairs)
-// variants. Returns 0 if no stock/PO data exists.
+// RFD (from live sizeMap stock, PLUS whatever's still pre-bookable against a
+// pending PO on top of that — the excess becomes a separate PREORDER item at
+// checkout, see order.service.js createOrder) and PREORDER (purely from PO
+// plannedPairs) variants. Returns 0 if no stock/PO data exists.
 const getMaxCartonsForVariant = (variant: any): number => {
   if (!variant) return 0;
   const isPreOrder = getVariantAvailability(variant) === "PREORDER";
@@ -40,13 +42,23 @@ const getMaxCartonsForVariant = (variant: any): number => {
     (a: number, b: any) => a + (Number(b) || 0), 0
   );
 
-  if (isPreOrder) {
-    // Cap by PO planned qty minus what's already pre-booked by all distributors
+  const remainingPlannedCartons = () => {
     if (totalPairsPerCarton <= 0) return 0;
     const plannedPairs = Number(variant.plannedPairs) || 0;
     const preBookedPairs = Number(variant.preBookedPairs) || 0;
-    const remaining = Math.max(0, plannedPairs - preBookedPairs);
+    const poPendingPairs = Number(variant.poPendingPairs) || 0;
+    // Capped at poPendingPairs — once a PO is fully received that stock is
+    // already live stock and must not ALSO count as pre-order capacity.
+    const remaining = Math.min(
+      Math.max(0, plannedPairs - preBookedPairs),
+      poPendingPairs
+    );
     return Math.floor(remaining / totalPairsPerCarton);
+  };
+
+  if (isPreOrder) {
+    // Cap by PO planned qty minus what's already pre-booked by all distributors
+    return remainingPlannedCartons();
   }
 
   // AVAILABLE: cap by live per-size stock in sizeMap
@@ -61,7 +73,8 @@ const getMaxCartonsForVariant = (variant: any): number => {
     const available = stockEntry ? Math.max(0, Number(stockEntry.qty ?? stockEntry) || 0) : 0;
     min = Math.min(min, Math.floor(available / assortQty));
   }
-  return min === Infinity ? 0 : min;
+  const liveStockCartons = min === Infinity ? 0 : min;
+  return liveStockCartons + remainingPlannedCartons();
 };
 
 interface CartProps {
@@ -129,6 +142,17 @@ const Cart: React.FC<CartProps> = ({
     return variant ? getVariantAvailability(variant) : "NONE";
   };
 
+  // Live price, not item.price — that's a snapshot frozen at add/update-cart
+  // time; a catalog price edited afterwards must show up here immediately.
+  const getItemLivePrice = (item: typeof cart[0]) => {
+    const art = articles.find(a => a.id === item.articleId);
+    const variant = art?.variants?.find(
+      v => v.id === item.variantId || (v as any)._id === item.variantId
+    );
+    const pricePerPair = getVariantPricePerPair(variant, currentUser?.tag, art?.pricePerPair || 0);
+    return pricePerPair * item.pairCount;
+  };
+
   const availableItems = cart.filter(i => getItemStage(i) === "RFD");
   const wishlistItems = cart.filter(i => getItemStage(i) === "PREORDER");
   const unavailableItems = cart.filter(i => getItemStage(i) === "NONE");
@@ -137,7 +161,7 @@ const Cart: React.FC<CartProps> = ({
   // aren't a stock commitment yet, backend skips the credit check for them
   // too (see order.service.js createOrder). Checking against the combined
   // cart total would wrongly block a preorder-only or mixed checkout.
-  const regularTotal = availableItems.reduce((s, i) => s + i.price, 0);
+  const regularTotal = availableItems.reduce((s, i) => s + getItemLivePrice(i), 0);
   const regularDiscountAmount = Math.round((regularTotal * discountPercentage) / 100 * 100) / 100;
   const regularAfterDiscount = Math.round((regularTotal - regularDiscountAmount) * 100) / 100;
   const regularGstAmount = Math.round((regularAfterDiscount * gstPercent) / 100 * 100) / 100;
@@ -162,8 +186,10 @@ const Cart: React.FC<CartProps> = ({
     const atStockMax = isFinite(maxCartons) && item.cartonCount >= maxCartons;
     const isPreOrder = variant != null && getVariantAvailability(variant) === "PREORDER";
 
-    // Show discounted price per item (discount applied once in summary, so show it here too for clarity)
-    const itemDiscountedPrice = item.price * (1 - discountPercentage / 100);
+    // Live price, not item.price (frozen at add/update-cart time) — discount
+    // applied once in summary, so show it here too for clarity.
+    const livePrice = getItemLivePrice(item);
+    const itemDiscountedPrice = livePrice * (1 - discountPercentage / 100);
 
     return (
       <div
@@ -195,6 +221,9 @@ const Cart: React.FC<CartProps> = ({
             {article.name}{" "}
             <span className="text-slate-400 font-medium">({variant?.color || "N/A"})</span>
           </h4>
+          <p className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest mt-0.5">
+            {article.category}
+          </p>
           <div className="flex flex-wrap gap-1 mt-1.5">
             {sizes.map((sz) => (
               <span
@@ -213,7 +242,7 @@ const Cart: React.FC<CartProps> = ({
             </p>
             {discountPercentage > 0 && (
               <p className="text-[9px] font-bold text-slate-400 line-through">
-                ₹{item.price.toLocaleString()}
+                ₹{livePrice.toLocaleString()}
               </p>
             )}
             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">

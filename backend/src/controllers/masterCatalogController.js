@@ -40,15 +40,24 @@ exports.createMasterCatalog = async (req, res) => {
   try {
     const doc = await masterCatalogService.create(req);
 
+    // Bulk CSV import sends `silent=true` on every one of its N per-master
+    // requests — without this, each one fires its own realtime toast +
+    // full article/order refetch on every connected client, turning a
+    // 20-master import into 20 stacked toasts and 20 heavy refetches
+    // competing with the import itself for bandwidth. The importer does
+    // one manual refresh after the whole batch finishes instead.
+    const silent = req.body?.silent === "true" || req.body?.silent === true;
+
     activityLog.createLog({
       action: "CATALOG_CREATED",
       entityType: "CATALOG",
       entityId: String(doc._id),
       description: `Article "${doc.articleName}" added to catalog by ${req.user?.name || "admin"}`,
       user: req.user,
+      emitRealtime: !silent,
     });
 
-    emitCatalogUpdated("created", doc._id);
+    if (!silent) emitCatalogUpdated("created", doc._id);
     return res.status(201).json({
       message: "Master catalog created",
       data: doc,
@@ -111,6 +120,10 @@ exports.updateMasterCatalog = async (req, res) => {
   try {
     const { doc, variantChanges } = await masterCatalogService.update(req, req.params.id);
 
+    // See createMasterCatalog — bulk CSV import passes silent=true to avoid
+    // a stacked toast + refetch storm across its N per-master requests.
+    const silent = req.body?.silent === "true" || req.body?.silent === true;
+
     activityLog.createLog({
       action: "CATALOG_UPDATED",
       entityType: "CATALOG",
@@ -118,9 +131,10 @@ exports.updateMasterCatalog = async (req, res) => {
       description: `Article "${doc.articleName}" updated — ${describeVariantChanges(doc, variantChanges)}`,
       metadata: { variantChanges },
       user: req.user,
+      emitRealtime: !silent,
     });
 
-    emitCatalogUpdated("updated", req.params.id);
+    if (!silent) emitCatalogUpdated("updated", req.params.id);
     return res.json({
       message: "Updated",
       data: doc,
@@ -273,3 +287,24 @@ exports.stockMovement = async (req, res) => {
     return sendError(res, err);
   }
 };
+
+exports.bulkStockMovementBySku = async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length) {
+      return res.status(400).json({ message: "rows is required and must be non-empty" });
+    }
+    const results = await masterCatalogService.bulkStockMovementBySku(rows, req.user);
+    const touchedArticleIds = [...new Set(results.map((r) => r.articleId))];
+    touchedArticleIds.forEach((id) => emitCatalogUpdated("updated", id));
+    const totalCartons = results.reduce((s, r) => s + r.cartons, 0);
+    const cartonBarcodes = results.flatMap((r) => r.cartonBarcodes || []);
+    return res.json({
+      message: `${results.length} row(s) updated — ${totalCartons} carton(s)`,
+      data: { results, totalCartons, cartonBarcodes },
+    });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+

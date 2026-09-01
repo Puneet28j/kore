@@ -122,6 +122,21 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
   const [currentOrder, setCurrentOrder] = useState<Order>(order);
   const [activeTab, setActiveTab] = useState<"items" | "history">("items");
 
+  // MRP shown anywhere on this order must match the tag (online/offline) of
+  // whichever distributor this order actually belongs to — not the viewer's
+  // own tag, since admin views orders for many different distributors. The
+  // order's distributorId is populated two levels deep by the backend
+  // (User → its linked Distributor profile, which carries `tag`).
+  const orderDistributorTag =
+    ((currentOrder.distributorId as any)?.distributorId?.tag as
+      | "online"
+      | "offline"
+      | undefined) || "online";
+  const getVariantMrp = (variant: any): number =>
+    orderDistributorTag === "offline"
+      ? Number(variant?.offlineMrp || variant?.onlineMrp || 0)
+      : Number(variant?.onlineMrp || variant?.offlineMrp || 0);
+
   // Per-carton dispatch pools — no fixed "batch" grouping. Each physical
   // carton independently sits in one of these three states; Scan/Transport/
   // Receive tabs each act on whichever pool is theirs, any time, in any
@@ -549,13 +564,18 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
         break;
       }
     }
-    // Fallback: old sequential CT0001..N logic (GRN cartons / legacy orders with empty allocatedCartons)
+    // Fallback: old sequential CT<n> logic (GRN cartons / legacy orders with empty allocatedCartons).
+    // Barcodes generated before the zero-padding removal are "CT0001" style;
+    // newer ones are plain "CT1" — try both so old printed labels still scan.
     if (!matchedItemKey) {
       const baseline = getScanBaseline();
       for (const [itemKey, code] of Object.entries(baseline.itemCodes)) {
         const remaining = baseline.remaining[itemKey] || 0;
         for (let n = 1; n <= remaining; n++) {
-          if (`${code}-CT${String(n).padStart(4, "0")}` === barcode) {
+          if (
+            `${code}-CT${n}` === barcode ||
+            `${code}-CT${String(n).padStart(4, "0")}` === barcode
+          ) {
             matchedItemKey = itemKey;
             break;
           }
@@ -1458,7 +1478,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
           article?.name || "Style", // Style No
           variant?.color || "N/A",
           gender,
-          article?.mrp || item.price / (item.pairCount || 1), // MRP
+          getVariantMrp(variant) || item.price / (item.pairCount || 1), // MRP
           batchPairs,
           price.toFixed(2), // Unit Cost
           totalValue.toFixed(2), // Total Value
@@ -1800,7 +1820,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
           article?.name || "Style",
           variant?.color || "N/A",
           gender,
-          article?.mrp || item.price / (item.pairCount || 1),
+          getVariantMrp(variant) || item.price / (item.pairCount || 1),
           batchPairs,
           price.toFixed(2),
           totalValue.toFixed(2),
@@ -1902,7 +1922,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
     receivedCartons.length > 0 && receivedCartons.length < totalExpectedCartons;
   const statusSteps = [
     {
-      label: "Pending",
+      label: "Booked",
       icon: <Package size={16} />,
       activeColor: "bg-indigo-600",
     },
@@ -2447,13 +2467,13 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
               <div className="animate-in fade-in slide-in-from-left-4 duration-500 space-y-6">
                 {/* Items Detail - Sleek Rows */}
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <button
+                  <div
                     onClick={() =>
                       !breakdownOnly && setBreakdownOpen((p) => !p)
                     }
                     className={`w-full px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between gap-4 text-left ${
                       !breakdownOnly
-                        ? "hover:bg-slate-50 transition-colors"
+                        ? "hover:bg-slate-50 transition-colors cursor-pointer"
                         : ""
                     }`}
                   >
@@ -2461,7 +2481,27 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                       <Package size={14} className="text-indigo-600" />
                       Order Breakdown
                     </h3>
-                    {!breakdownOnly && (
+                    {breakdownOnly ? (
+                      <div
+                        className="flex items-center gap-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          onClick={handleDownloadPI}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"
+                        >
+                          <FileText size={12} className="text-indigo-600" />
+                          PDF
+                        </button>
+                        <button
+                          onClick={handleDownloadExcelPI}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-50 transition-all shadow-sm"
+                        >
+                          <Download size={12} className="text-green-600" />
+                          Excel
+                        </button>
+                      </div>
+                    ) : (
                       <ChevronRight
                         size={14}
                         className={`text-slate-400 transition-transform duration-200 ${
@@ -2469,7 +2509,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                         }`}
                       />
                     )}
-                  </button>
+                  </div>
 
                   {breakdownOpen && (
                     <div className="overflow-x-auto">
@@ -2636,11 +2676,11 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                       <p className="text-[10px] text-indigo-500 font-black uppercase tracking-wider">
                                         {displayAssortment}
                                       </p>
-                                      {article?.mrp ? (
+                                      {getVariantMrp(variant) ? (
                                         <p className="text-[10px] font-black text-amber-600">
                                           MRP ₹
                                           {(
-                                            article.mrp *
+                                            getVariantMrp(variant) *
                                             (item.pairCount /
                                               (item.cartonCount || 1))
                                           ).toLocaleString()}
@@ -2824,11 +2864,11 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                     <p className="text-[10px] text-indigo-500 font-black uppercase tracking-wider">
                                       {displayAssortment}
                                     </p>
-                                    {article?.mrp ? (
+                                    {getVariantMrp(variant) ? (
                                       <p className="text-[10px] font-black text-amber-600">
                                         MRP ₹
                                         {(
-                                          article.mrp *
+                                          getVariantMrp(variant) *
                                           (item.pairCount /
                                             (item.cartonCount || 1))
                                         ).toLocaleString()}
@@ -2933,6 +2973,46 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                       </table>
                     </div>
                   )}
+
+                  {breakdownOnly && (() => {
+                    const orderTotal = currentOrder.finalAmount || currentOrder.totalAmount || 0;
+                    const amountPaid = currentOrder.amountPaid || 0;
+                    const remaining = Math.max(0, orderTotal - amountPaid);
+                    const paymentStatus = currentOrder.paymentStatus || "PENDING";
+                    const statusMeta: Record<string, string> =
+                      {
+                        PENDING: "bg-rose-50 text-rose-700 border-rose-100",
+                        PARTIAL: "bg-amber-50 text-amber-700 border-amber-100",
+                        PAID: "bg-emerald-50 text-emerald-700 border-emerald-100",
+                      };
+                    return (
+                      <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">
+                          Payment
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="bg-white rounded-xl border border-slate-200 p-3">
+                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Total</p>
+                            <p className="text-sm font-black text-slate-900 mt-0.5">₹{orderTotal.toLocaleString("en-IN")}</p>
+                          </div>
+                          <div className="bg-white rounded-xl border border-slate-200 p-3">
+                            <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-wider">Paid</p>
+                            <p className="text-sm font-black text-emerald-700 mt-0.5">₹{amountPaid.toLocaleString("en-IN")}</p>
+                          </div>
+                          <div className="bg-white rounded-xl border border-slate-200 p-3">
+                            <p className="text-[9px] font-bold text-rose-500 uppercase tracking-wider">Remaining</p>
+                            <p className="text-sm font-black text-rose-700 mt-0.5">₹{remaining.toLocaleString("en-IN")}</p>
+                          </div>
+                          <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-col justify-center">
+                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Status</p>
+                            <span className={`inline-flex w-fit items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${statusMeta[paymentStatus] || statusMeta.PENDING}`}>
+                              {paymentStatus}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {(() => {
                     if (
@@ -3087,73 +3167,6 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                     </p>
                                   </div>
                                 </div>
-
-                                {/* Pre-allocated carton codes for this order (REGULAR items)
-                                    plus the shared live pool for still-PREORDER items — the
-                                    same codes shown here may also be visible on another order
-                                    waiting on this same variant; whichever scans first wins. */}
-                                {currentOrder.items.some(
-                                  (item) =>
-                                    (item.allocatedCartons || []).length > 0 ||
-                                    (item.liveAvailableCartonCodes || [])
-                                      .length > 0
-                                ) && (
-                                  <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4">
-                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">
-                                      Stock Cartons — Scan These
-                                    </p>
-                                    <div className="space-y-2">
-                                      {currentOrder.items.map((item) => {
-                                        const scanned = new Set(
-                                          (
-                                            currentOrder.cartonTracking || []
-                                          ).map((c: any) => c.code)
-                                        );
-                                        const codes = (
-                                          item.bookingType === "PREORDER"
-                                            ? item.liveAvailableCartonCodes ||
-                                              []
-                                            : item.allocatedCartons || []
-                                        ).filter(
-                                          (c: string) => !scanned.has(c)
-                                        );
-                                        if (codes.length === 0) return null;
-                                        return (
-                                          <div
-                                            key={
-                                              item.variantId || item.articleId
-                                            }
-                                          >
-                                            <p className="text-[10px] font-bold text-slate-400 mb-1">
-                                              {getItemLabel(
-                                                item.variantId ||
-                                                  item.articleId ||
-                                                  ""
-                                              )}
-                                              {item.bookingType ===
-                                                "PREORDER" && (
-                                                <span className="ml-1.5 text-amber-600 font-normal normal-case">
-                                                  · shared stock, first scan
-                                                  wins
-                                                </span>
-                                              )}
-                                            </p>
-                                            <div className="flex flex-wrap gap-1">
-                                              {codes.map((code) => (
-                                                <span
-                                                  key={code}
-                                                  className="text-[10px] font-mono font-bold bg-white border border-indigo-200 text-indigo-700 rounded-lg px-2 py-1"
-                                                >
-                                                  {code}
-                                                </span>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                )}
 
                                 <div className="flex gap-2">
                                   <button

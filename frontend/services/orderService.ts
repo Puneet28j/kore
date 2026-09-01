@@ -41,7 +41,7 @@ export const orderService = {
     return axios.get(`${API_URL}/overdue`, { headers: getAuthHeaders() });
   },
 
-  markOrderPaid: async (id: string, note?: string) => {
-    return axios.patch(`${API_URL}/${id}/mark-paid`, { note }, { headers: getAuthHeaders() });
+  recordPayment: async (id: string, amount: number, note?: string) => {
+    return axios.post(`${API_URL}/${id}/record-payment`, { amount, note }, { headers: getAuthHeaders() });
   },
 };

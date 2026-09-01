@@ -484,7 +484,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [dashMetrics, setDashMetrics] = useState({
     totalRevenue: 0,
     ordersPlaced: 0,
-    activeParties: 0,
+    orderedCartons: 0,
+    dispatchedCartons: 0,
   });
 
   // Map dashboard date filter → YYYY-MM-DD range for full-data metrics API
@@ -544,7 +545,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setDashMetrics({
         totalRevenue: Number(data.totalRevenue) || 0,
         ordersPlaced: Number(data.ordersPlaced) || 0,
-        activeParties: Number(data.activeParties) || 0,
+        orderedCartons: Number(data.orderedCartons) || 0,
+        dispatchedCartons: Number(data.dispatchedCartons) || 0,
       });
     } catch {
       /* keep last known */
@@ -635,13 +637,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <MetricCard
           title="Total Revenue"
           value={`₹${dashMetrics.totalRevenue.toLocaleString()}`}
-          sub={dateFilter === 'all' ? 'All time' : dateFilter === 'custom' ? (customStart && customEnd ? `${customStart} → ${customEnd}` : 'Custom Range') : DATE_OPTIONS.find(d => d.value === dateFilter)?.label}
+          sub={dateFilter === 'all' ? 'Dispatched · All time' : `Dispatched · ${dateFilter === 'custom' ? (customStart && customEnd ? `${customStart} → ${customEnd}` : 'Custom Range') : DATE_OPTIONS.find(d => d.value === dateFilter)?.label}`}
           icon={<TrendingUp size={24} className="text-emerald-600" />}
         />
         <MetricCard
-          title="Active Parties"
-          value={dashMetrics.activeParties}
+          title="Orders Placed"
+          value={`${dashMetrics.orderedCartons.toLocaleString()} Ctns`}
           sub={`${dashMetrics.ordersPlaced} orders`}
+          icon={<ArrowUpRight size={24} className="text-red-600" />}
+        />
+        <MetricCard
+          title="Total Dispatch"
+          value={`${dashMetrics.dispatchedCartons.toLocaleString()} Ctns`}
+          sub="Live status"
           icon={<Users size={24} className="text-indigo-600" />}
         />
         <MetricCard
@@ -649,12 +657,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           value={`${totalLiveCtns.toLocaleString()} Ctns`}
           sub={`${totalLivePairs.toLocaleString()} pairs`}
           icon={<Package size={24} className="text-amber-600" />}
-        />
-        <MetricCard
-          title="Orders Placed"
-          value={dashMetrics.ordersPlaced}
-          sub="Live status"
-          icon={<ArrowUpRight size={24} className="text-red-600" />}
         />
       </div>
 

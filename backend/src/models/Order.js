@@ -286,8 +286,22 @@ const OrderSchema = new mongoose.Schema(
     },
     paymentStatus: {
       type: String,
-      enum: ["PENDING", "PAID"],
+      enum: ["PENDING", "PARTIAL", "PAID"],
       default: "PENDING",
+    },
+    // amountPaid/payments is the real ledger; paidAt/paidBy/paymentNote are
+    // kept as a "most recent payment" snapshot for older readers/exports.
+    amountPaid: { type: Number, min: 0, default: 0 },
+    payments: {
+      type: [
+        {
+          amount: { type: Number, required: true },
+          date: { type: Date, default: Date.now },
+          note: { type: String, trim: true, default: "" },
+          recordedBy: { type: String, trim: true, default: "" },
+        },
+      ],
+      default: [],
     },
     paidAt: { type: Date, default: null },
     paidBy: { type: String, default: null },

@@ -28,6 +28,7 @@ import {
   IndianRupee,
   Clock,
   Tag,
+  X,
 } from "lucide-react";
 import { apiFetch } from "../../services/api";
 import GSTVerifyInput, { type GSTVerifyResult } from "../shared/GSTVerifyInput";
@@ -126,12 +127,33 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   PARTIAL:  { label: "Partial",  color: "bg-orange-100 text-orange-700" },
 };
 
+interface PendingCartonItemEntry {
+  articleName: string;
+  color: string;
+  sizeRange: string;
+  bookingType: string;
+  pendingCartons: number;
+  totalCartons: number;
+}
+
+interface PendingCartonBreakdownEntry {
+  orderId: string;
+  orderNumber?: string;
+  status: string;
+  date: string;
+  pendingCartons: number;
+  totalCartons: number;
+  items: PendingCartonItemEntry[];
+}
+
 interface DistributorSummary {
   totalOrders: number;
   totalAmount: number;
   totalPairs: number;
   paidAmount: number;
   pendingAmount: number;
+  totalPendingCartons: number;
+  pendingCartonBreakdown: PendingCartonBreakdownEntry[];
   statusCounts: Record<string, number>;
   recentOrders: any[];
   totalReturns: number;
@@ -143,6 +165,8 @@ const DistributorActivityOverview: React.FC<{ distributorId: string }> = ({ dist
   const [summary, setSummary] = useState<DistributorSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showPendingBreakdown, setShowPendingBreakdown] = useState(false);
+  const [expandedPendingOrders, setExpandedPendingOrders] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -192,14 +216,26 @@ const DistributorActivityOverview: React.FC<{ distributorId: string }> = ({ dist
         </div>
 
         {/* Stat cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
           {[
             { label: "Total Orders",  value: summary.totalOrders.toLocaleString(),            icon: <Package size={14} />,      color: "text-indigo-600",  bg: "bg-indigo-50" },
             { label: "Total Value",   value: `₹${summary.totalAmount.toLocaleString()}`,       icon: <IndianRupee size={14} />,   color: "text-emerald-600", bg: "bg-emerald-50" },
             { label: "Total CTN",   value: Math.floor(summary.totalPairs / 24).toLocaleString(),   icon: <Package size={14} />,      color: "text-blue-600",    bg: "bg-blue-50" },
+            {
+              label: "Pending CTN",
+              value: summary.totalPendingCartons.toLocaleString(),
+              icon: <Clock size={14} />,
+              color: "text-rose-600",
+              bg: "bg-rose-50",
+              onClick: summary.totalPendingCartons > 0 ? () => setShowPendingBreakdown(true) : undefined,
+            },
             { label: "Returns",       value: `${summary.totalReturns} (${Math.floor(summary.returnPairs / 24)} ctn)`, icon: <RotateCcw size={14} />, color: "text-amber-600",   bg: "bg-amber-50" },
           ].map(s => (
-            <div key={s.label} className={`${s.bg} rounded-xl p-3`}>
+            <div
+              key={s.label}
+              onClick={s.onClick}
+              className={`${s.bg} rounded-xl p-3 text-left ${s.onClick ? "cursor-pointer hover:shadow-sm transition-shadow" : ""}`}
+            >
               <div className={`${s.color} mb-1`}>{s.icon}</div>
               <p className={`text-base font-black ${s.color}`}>{s.value}</p>
               <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mt-0.5">{s.label}</p>
@@ -276,11 +312,15 @@ const DistributorActivityOverview: React.FC<{ distributorId: string }> = ({ dist
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-black ${meta.color}`}>{meta.label}</span>
                       </td>
                       <td className="px-4 py-2.5 text-right text-slate-700 font-semibold">{(o.totalPairs || 0).toLocaleString()}</td>
-                      <td className="px-4 py-2.5 text-right font-bold text-emerald-700">₹{(o.finalAmount || o.totalAmount || 0).toLocaleString()}</td>
+                      <td className={`px-4 py-2.5 text-right font-bold ${o.status === "CANCELLED" ? "text-slate-400" : "text-emerald-700"}`}>₹{(o.finalAmount || o.totalAmount || 0).toLocaleString()}</td>
                       <td className="px-4 py-2.5">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-black ${o.paymentStatus === "PAID" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
-                          {o.paymentStatus || "PENDING"}
-                        </span>
+                        {o.status === "CANCELLED" ? (
+                          <span className="text-[10px] font-bold text-slate-400">— N/A —</span>
+                        ) : (
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-black ${o.paymentStatus === "PAID" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                            {o.paymentStatus || "PENDING"}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -321,6 +361,100 @@ const DistributorActivityOverview: React.FC<{ distributorId: string }> = ({ dist
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Pending CTN breakdown */}
+      {showPendingBreakdown && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+          onClick={() => setShowPendingBreakdown(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Pending Cartons Breakdown</h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  {summary.totalPendingCartons.toLocaleString()} carton(s) not yet scanned out, across {summary.pendingCartonBreakdown.length} order(s)
+                </p>
+              </div>
+              <button
+                onClick={() => setShowPendingBreakdown(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 transition-colors shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="overflow-y-auto divide-y divide-slate-50">
+              {summary.pendingCartonBreakdown.map((p) => {
+                const meta = STATUS_META[p.status] || { label: p.status, color: "bg-slate-100 text-slate-600" };
+                const isExpanded = expandedPendingOrders.has(p.orderId);
+                return (
+                  <div key={p.orderId}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedPendingOrders(prev => {
+                        const next = new Set(prev);
+                        if (next.has(p.orderId)) next.delete(p.orderId);
+                        else next.add(p.orderId);
+                        return next;
+                      })}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-xs hover:bg-slate-50/60 transition-colors text-left"
+                    >
+                      <ChevronRight
+                        size={13}
+                        className={`text-slate-300 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                      />
+                      <span className="font-mono font-semibold text-indigo-600 shrink-0">
+                        {p.orderNumber ? `#${p.orderNumber}` : "—"}
+                      </span>
+                      <span className="text-slate-400 shrink-0">
+                        {p.date ? new Date(p.date).toLocaleDateString("en-IN") : "—"}
+                      </span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-black shrink-0 ${meta.color}`}>{meta.label}</span>
+                      <span className="ml-auto font-black text-rose-600 shrink-0">
+                        {p.pendingCartons} / {p.totalCartons} CTN
+                      </span>
+                    </button>
+                    {isExpanded && (
+                      <div className="bg-slate-50/70 px-4 py-2 pl-10">
+                        <table className="w-full text-left text-[11px]">
+                          <thead>
+                            <tr>
+                              <th className="py-1 font-bold text-slate-400 uppercase tracking-wider">Item</th>
+                              <th className="py-1 font-bold text-slate-400 uppercase tracking-wider text-right">Pending CTN</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {p.items.map((it, idx) => (
+                              <tr key={idx}>
+                                <td className="py-1.5 text-slate-700 font-medium">
+                                  {it.articleName}
+                                  {it.color && <span className="text-slate-400"> — {it.color}</span>}
+                                  {it.sizeRange && <span className="text-slate-400"> ({it.sizeRange})</span>}
+                                  {it.bookingType === "PREORDER" && (
+                                    <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-amber-50 text-amber-600 border border-amber-100">
+                                      Pre-Order
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-1.5 text-right font-bold text-rose-600 shrink-0">
+                                  {it.pendingCartons} / {it.totalCartons}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -458,6 +592,22 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
   const [selectedDistributor, setSelectedDistributor] = useState<User | null>(
     initialView === "CREATE" ? (savedDraft?.selectedDistributor || null) : null
   );
+
+  // Credit "Used Limit" for the Financial Terms card — sourced from the same
+  // eligible-orders rule the login credit check uses, so it never disagrees
+  // with what actually blocks checkout.
+  const [usedLimit, setUsedLimit] = useState<number | null>(null);
+  React.useEffect(() => {
+    if (view !== "DETAILS" || !selectedDistributor?.id) {
+      setUsedLimit(null);
+      return;
+    }
+    let cancelled = false;
+    apiFetch(`/distributors/${selectedDistributor.id}/summary`)
+      .then((res) => { if (!cancelled) setUsedLimit(res.data?.creditUsed ?? 0); })
+      .catch(() => { if (!cancelled) setUsedLimit(null); });
+    return () => { cancelled = true; };
+  }, [view, selectedDistributor?.id]);
 
   // confirmation helper
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -1460,6 +1610,15 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                         </p>
                       </div>
                     </div>
+
+                    <div className="pt-4 border-t border-indigo-500/50">
+                      <p className="text-indigo-200 text-xs font-medium mb-1">
+                        Used Limit
+                      </p>
+                      <p className="text-xl font-bold text-rose-300">
+                        {usedLimit === null ? "…" : `₹${usedLimit.toLocaleString()}`}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
@@ -1745,7 +1904,12 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
                           typeof o.distributorId === "string"
                             ? o.distributorId
                             : (o.distributorId as any)?.id || (o.distributorId as any)?._id;
-                        return !!oDistId && !!distUserId && String(oDistId) === String(distUserId);
+                        return (
+                          !!oDistId &&
+                          !!distUserId &&
+                          String(oDistId) === String(distUserId) &&
+                          o.status !== "CANCELLED"
+                        );
                       }).length;
 
                       return (

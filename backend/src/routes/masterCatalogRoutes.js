@@ -23,6 +23,7 @@ router.get("/booked-map", ctrl.getBookedMap);
 router.get("/variants/:variantId/stock", ctrl.getVariantStock);
 router.post("/variants/:variantId/reset-stock", ctrl.resetVariantStock);
 router.post("/variants/:variantId/stock-movement", ctrl.stockMovement);
+router.post("/stock-movement/bulk-by-sku", ctrl.bulkStockMovementBySku);
 router.get("/variants/:variantId/available-cartons", ctrl.getAvailableCartons);
 router.get("/variants/:variantId/carton-counter", ctrl.getCartonCounter);
 router.patch("/variants/:variantId/sku", ctrl.updateVariantSku);

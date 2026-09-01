@@ -413,8 +413,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           const sku = (cells[idxSku] || "").trim();
           const inward = Number(cells[idxInward]) || 0;
           const outward = Number(cells[idxOutward]) || 0;
-          // A fully blank leftover template row — not an error, just skip.
-          if (!sku && inward <= 0 && outward <= 0) return;
+          // Skip rows where both Inward and Outward are 0 — these are "leave
+          // unchanged" rows (user only filled some rows in the template).
+          // Also skip fully blank rows with no SKU.
+          if (inward <= 0 && outward <= 0) return;
           rows.push({
             sku,
             type: inward > 0 && outward > 0 ? "BOTH" : inward > 0 ? "INWARD" : outward > 0 ? "OUTWARD" : "NONE",

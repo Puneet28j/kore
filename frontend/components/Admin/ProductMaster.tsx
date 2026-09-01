@@ -106,6 +106,9 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
   const [colorMedia, setColorMedia] = useState<
     Record<string, { images: File[]; previews: string[] }>
   >({});
+  const [imageUrlInputByColor, setImageUrlInputByColor] = useState<
+    Record<string, string>
+  >({});
 
   const [sizeRangeInput, setSizeRangeInput] = useState("");
   const [sizeRanges, setSizeRanges] = useState<SizeRangeEntry[]>([]);
@@ -554,14 +557,48 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
     }
   };
 
+  // A pasted URL is added straight into `previews` alongside existing/kept
+  // image URLs — submit already treats every non-blob preview as an image
+  // to keep (see existingImagesByColor below), so a freshly-typed URL flows
+  // through that exact same path with no separate tracking needed.
+  const addColorImageUrl = (color: string, url: string) => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    if (!/^https?:\/\//i.test(trimmed)) {
+      toast.error("Enter a valid http(s) image URL");
+      return;
+    }
+    setColorMedia((prev) => {
+      const current = prev[color] || { images: [], previews: [] };
+      if (current.previews.includes(trimmed)) return prev;
+      return {
+        ...prev,
+        [color]: { ...current, previews: [...current.previews, trimmed] },
+      };
+    });
+  };
+
   const removeColorImage = (color: string, idx: number) => {
     setColorMedia((prev) => {
       const current = prev[color];
       if (!current) return prev;
+      const removedPreview = current.previews[idx];
+      // previews mixes blob (new file) and non-blob (existing/pasted URL)
+      // entries, so its index doesn't line up with `images` (which only
+      // holds new files) — only remove from `images` when the removed
+      // preview actually has a file behind it, and find that file by
+      // counting blob previews up to this point, not by the shared index.
+      let images = current.images;
+      if (removedPreview?.startsWith("blob:")) {
+        const blobIdx = current.previews
+          .slice(0, idx)
+          .filter((p) => p.startsWith("blob:")).length;
+        images = current.images.filter((_, i) => i !== blobIdx);
+      }
       return {
         ...prev,
         [color]: {
-          images: current.images.filter((_, i) => i !== idx),
+          images,
           previews: current.previews.filter((_, i) => i !== idx),
         },
       };
@@ -1502,6 +1539,38 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
                             className="hidden"
                             onChange={(e) => handleColorImageChange(color, e)}
                           />
+                        </div>
+
+                        <div className="flex items-center gap-2 mb-4">
+                          <input
+                            type="text"
+                            value={imageUrlInputByColor[color] || ""}
+                            onChange={(e) =>
+                              setImageUrlInputByColor((prev) => ({
+                                ...prev,
+                                [color]: e.target.value,
+                              }))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                addColorImageUrl(color, imageUrlInputByColor[color] || "");
+                                setImageUrlInputByColor((prev) => ({ ...prev, [color]: "" }));
+                              }
+                            }}
+                            placeholder="Paste image URL (https://...)"
+                            className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              addColorImageUrl(color, imageUrlInputByColor[color] || "");
+                              setImageUrlInputByColor((prev) => ({ ...prev, [color]: "" }));
+                            }}
+                            className="px-3 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-[10px] font-bold hover:bg-slate-50 transition-all shadow-sm shrink-0"
+                          >
+                            Add URL
+                          </button>
                         </div>
 
                         {(colorMedia[color]?.previews.length || 0) > 0 ? (

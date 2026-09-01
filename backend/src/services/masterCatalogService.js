@@ -996,6 +996,21 @@ exports.update = async (req, id) => {
     Array.isArray(req.files) &&
     req.files.some((f) => f.fieldname && f.fieldname.startsWith("images_"));
 
+  // Per-color pasted image URL — same JSON shape as the create path
+  // (colorImageUrls: {color: url}), so "Choose Images" (file upload) and
+  // "Paste Image URL" both work on edit, together or separately.
+  let colorImageUrls = {};
+  try {
+    colorImageUrls =
+      typeof body.colorImageUrls === "string"
+        ? JSON.parse(body.colorImageUrls)
+        : body.colorImageUrls || {};
+  } catch {
+    colorImageUrls = {};
+  }
+  const hasColorImageUrls =
+    colorImageUrls && Object.keys(colorImageUrls).length > 0;
+
   // Per-color list of existing image URLs the edit UI wants to keep — sent
   // by the frontend on every edit save. A color present here with fewer (or
   // zero) URLs than it currently has means the user removed image(s); this
@@ -1014,20 +1029,36 @@ exports.update = async (req, id) => {
   const hasExistingImagesByColor =
     existingImagesByColor && Object.keys(existingImagesByColor).length > 0;
 
-  if (hasNewColorImages || hasExistingImagesByColor) {
-    const incomingColorMedia = buildColorMediaPayload(req, doc.productColors);
-    const incomingByColor = new Map(
-      incomingColorMedia.map((cm) => [cm.color, cm.images])
-    );
+  if (hasNewColorImages || hasExistingImagesByColor || hasColorImageUrls) {
+    const incomingColorMedia = [
+      ...buildColorMediaPayload(req, doc.productColors),
+      ...buildColorMediaFromUrls(colorImageUrls, doc.productColors),
+    ];
+    const incomingByColor = new Map();
+    incomingColorMedia.forEach((cm) => {
+      const base = incomingByColor.get(cm.color) || [];
+      incomingByColor.set(cm.color, [...base, ...cm.images]);
+    });
 
     const nextColorMedia = new Map(
       (doc.colorMedia || []).map((cm) => [cm.color, cm.images || []])
     );
 
+    // existingImagesByColor is the authoritative full list (and order) of
+    // non-blob images the edit UI is showing for each color — not just
+    // pre-existing ones being kept. A URL the user pastes fresh in this same
+    // session ends up here too (see ProductMaster's "Paste Image URL"),
+    // since the frontend treats "already-displayed, non-blob" uniformly
+    // whether it came from the DB or was just typed in. Look up each URL
+    // against what's currently stored to preserve its local-upload `key`
+    // (needed for file serving/cleanup); a URL with no match is a brand-new
+    // paste and gets `key: ""`.
     Object.keys(existingImagesByColor).forEach((color) => {
-      const keepUrls = new Set(existingImagesByColor[color] || []);
-      const kept = (nextColorMedia.get(color) || []).filter((img) =>
-        keepUrls.has(img.url)
+      const priorByUrl = new Map(
+        (nextColorMedia.get(color) || []).map((img) => [img.url, img])
+      );
+      const kept = (existingImagesByColor[color] || []).map(
+        (url) => priorByUrl.get(url) || { url, key: "" }
       );
       nextColorMedia.set(color, kept);
     });
@@ -1713,6 +1744,98 @@ exports.bulkStockMovementBySku = async (rows, user) => {
   }
 
   return results;
+};
+
+// Bulk-set the image for whichever variants a CSV export/re-import round
+// trip found a URL for — matched by SKU (case-insensitive), same pattern as
+// bulkStockMovementBySku. Rows with a blank imageUrl are silently skipped
+// (not an error) so an admin can fill in only the SKUs they have images for
+// and re-upload the same export unmodified; only the matched color's image
+// (and the article's primaryImage, if it was still blank) gets touched —
+// everything else on the article is left exactly as-is.
+exports.bulkImageUpdateBySku = async (rows) => {
+  const candidates = rows
+    .map((r, i) => ({
+      row: i + 2,
+      sku: (r.sku || "").trim(),
+      imageUrl: (r.imageUrl || "").trim(),
+    }))
+    .filter((r) => r.sku && r.imageUrl);
+
+  if (!candidates.length) {
+    const err = new Error("No rows with both a SKU and an Image URL were found.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Only accept http(s) URLs — a local file path or stray text would
+  // otherwise get stored as a broken image reference.
+  const invalidUrl = candidates.filter((r) => !/^https?:\/\//i.test(r.imageUrl));
+  if (invalidUrl.length) {
+    const err = new Error(`${invalidUrl.length} row(s) have an Image URL that isn't a valid http(s) link — fix the CSV and re-upload. Nothing was updated.`);
+    err.statusCode = 400;
+    err.details = { invalidUrl };
+    throw err;
+  }
+
+  const catalogs = await MasterCatalog.find({});
+  const skuToMatch = new Map();
+  catalogs.forEach((catalog) => {
+    catalog.variants.forEach((v) => {
+      const sku = (v.sku || "").trim().toUpperCase();
+      if (sku && !skuToMatch.has(sku)) skuToMatch.set(sku, { catalog, variant: v });
+    });
+  });
+
+  const unmatched = [];
+  const updated = [];
+  const touchedCatalogIds = new Set();
+
+  candidates.forEach((r) => {
+    const match = skuToMatch.get(r.sku.toUpperCase());
+    if (!match) {
+      unmatched.push({ row: r.row, sku: r.sku });
+      return;
+    }
+    const { catalog, variant } = match;
+    const color = variant.color || "";
+
+    const colorEntry = (catalog.colorMedia || []).find(
+      (cm) => (cm.color || "").toLowerCase() === color.toLowerCase()
+    );
+    if (colorEntry) {
+      colorEntry.images = [{ url: r.imageUrl, key: "", isCover: true }];
+    } else {
+      catalog.colorMedia = [
+        ...(catalog.colorMedia || []),
+        { color, images: [{ url: r.imageUrl, key: "", isCover: true }] },
+      ];
+    }
+    if (!catalog.primaryImage?.url) {
+      catalog.primaryImage = { url: r.imageUrl, key: "" };
+    }
+
+    touchedCatalogIds.add(String(catalog._id));
+    updated.push({ row: r.row, sku: r.sku, articleId: String(catalog._id), color });
+  });
+
+  // Unlike stock movements, an unmatched SKU here isn't dangerous to leave
+  // partially applied — reported back, but doesn't block the rows that DID
+  // match (whether that's 1 row or all of them).
+  if (!updated.length) {
+    const err = new Error("None of the SKUs in this CSV matched a catalog variant.");
+    err.statusCode = 400;
+    err.details = { unmatched };
+    throw err;
+  }
+
+  for (const id of touchedCatalogIds) {
+    const catalog = catalogs.find((c) => String(c._id) === id);
+    catalog.markModified("colorMedia");
+    await catalog.save();
+  }
+
+  return { updated, unmatched };
 };
 
 exports.updateVariantSku = async (variantId, sku) => {

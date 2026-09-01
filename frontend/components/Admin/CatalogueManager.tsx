@@ -478,6 +478,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [appliedSearchTerm, setAppliedSearchTerm] = useState("");
   const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportingImageCsv, setExportingImageCsv] = useState(false);
+  const [uploadingImageCsv, setUploadingImageCsv] = useState(false);
+  const imageCsvInputRef = useRef<HTMLInputElement | null>(null);
   const observerRef = useRef<HTMLDivElement | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useRef("");
@@ -1578,6 +1581,104 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     }
   };
 
+  // ---------- Image CSV export/import ----------
+  // Export: Article Name + SKU per variant, with a blank Image URL column to
+  // fill in. Re-import matches by SKU only — a row can be left blank (no
+  // change), filled in for just one variant, or filled in for all of them;
+  // rows without a URL are simply skipped, never treated as an error.
+  const exportImageCsvTemplate = async () => {
+    setExportingImageCsv(true);
+    try {
+      const allItems: any[] = [];
+      let page = 1;
+      let totalPages = 1;
+      do {
+        const res = await masterCatalogService.listMasterItems({
+          page,
+          limit: 1000,
+          sort: sortOption,
+        });
+        allItems.push(...(res.data || []));
+        totalPages = Math.max(1, Number(res.meta?.totalPages) || 1);
+        page += 1;
+      } while (page <= totalPages);
+
+      const lines = ["Article Name,SKU,Color,Size Range,Image URL"];
+      allItems.forEach((item: any) => {
+        (item.variants || []).forEach((v: any) => {
+          if (!v.sku) return;
+          lines.push(
+            `"${(item.articleName || "").replace(/"/g, '""')}","${v.sku}","${(v.color || "").replace(/"/g, '""')}","${v.sizeRange || ""}",`
+          );
+        });
+      });
+
+      const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "catalogue_image_template.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${lines.length - 1} SKU rows`);
+    } catch {
+      toast.error("Failed to build image template");
+    } finally {
+      setExportingImageCsv(false);
+    }
+  };
+
+  const handleImageCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setUploadingImageCsv(true);
+    try {
+      const text = await file.text();
+      // Deliberately NOT using the main catalog-import parseCsv() here — its
+      // header aliasing and required-name filter are built around the full
+      // article-import CSV shape, not this simpler sku+image-url one.
+      const lines = text.trim().split(/\r?\n/).filter(Boolean);
+      const headers = lines.length ? parseCsvRow(lines[0]).map((h) => h.trim().toLowerCase()) : [];
+      const skuIdx = headers.indexOf("sku");
+      const urlIdx = headers.indexOf("image url");
+      if (skuIdx === -1 || urlIdx === -1) {
+        toast.error("CSV must have SKU and Image URL columns — use the exported template.");
+        return;
+      }
+      const rows = lines
+        .slice(1)
+        .map((line) => {
+          const cells = parseCsvRow(line);
+          return { sku: (cells[skuIdx] || "").trim(), imageUrl: (cells[urlIdx] || "").trim() };
+        })
+        .filter((r) => r.sku && r.imageUrl);
+
+      if (!rows.length) {
+        toast.error("No rows with both a SKU and an Image URL were found in this CSV.");
+        return;
+      }
+
+      const res: any = await masterCatalogService.bulkImageUpdateBySku(rows);
+      const unmatchedCount = res?.data?.unmatched?.length || 0;
+      toast.success(res?.message || `${rows.length} row(s) processed`);
+      if (unmatchedCount > 0) {
+        toast.warning(
+          `${unmatchedCount} SKU(s) didn't match any catalog variant: ${res.data.unmatched
+            .slice(0, 5)
+            .map((u: any) => u.sku)
+            .join(", ")}${unmatchedCount > 5 ? "…" : ""}`
+        );
+      }
+      fetchLocalArticles(1, debouncedSearch.current, false, genderFilter, sortOption);
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to update images");
+    } finally {
+      setUploadingImageCsv(false);
+    }
+  };
+
   // ---------- Modal ----------
   const openModal = (article?: Article) => {
     setImagePreviews((prev) => {
@@ -1754,6 +1855,39 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             )}
             {exportingExcel ? "Exporting..." : "Export Excel"}
           </button>
+          <button
+            onClick={() => exportImageCsvTemplate()}
+            disabled={exportingImageCsv || pageLoading || loadingMore}
+            title="Download a CSV of Article Name + SKU with a blank Image URL column to fill in"
+            className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-xl font-semibold text-sm hover:bg-amber-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {exportingImageCsv ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <ImageIcon size={16} />
+            )}
+            {exportingImageCsv ? "Exporting..." : "Image CSV Template"}
+          </button>
+          <button
+            onClick={() => imageCsvInputRef.current?.click()}
+            disabled={uploadingImageCsv}
+            title="Upload the filled-in Image CSV to update images by SKU"
+            className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-xl font-semibold text-sm hover:bg-amber-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {uploadingImageCsv ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Upload size={16} />
+            )}
+            {uploadingImageCsv ? "Uploading..." : "Upload Image CSV"}
+          </button>
+          <input
+            ref={imageCsvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={handleImageCsvUpload}
+          />
           {onAddNewMaster && (
             <button
               onClick={onAddNewMaster}

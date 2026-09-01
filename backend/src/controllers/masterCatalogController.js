@@ -308,3 +308,21 @@ exports.bulkStockMovementBySku = async (req, res) => {
   }
 };
 
+exports.bulkImageUpdateBySku = async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length) {
+      return res.status(400).json({ message: "rows is required and must be non-empty" });
+    }
+    const { updated, unmatched } = await masterCatalogService.bulkImageUpdateBySku(rows);
+    const touchedArticleIds = [...new Set(updated.map((r) => r.articleId))];
+    touchedArticleIds.forEach((id) => emitCatalogUpdated("updated", id));
+    return res.json({
+      message: `${updated.length} row(s) updated${unmatched.length ? `, ${unmatched.length} SKU(s) not found` : ""}`,
+      data: { updated, unmatched },
+    });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+

@@ -177,4 +177,11 @@ export const masterCatalogService = {
       body: JSON.stringify({ rows }),
     });
   },
+
+  async bulkImageUpdateBySku(rows: { sku: string; imageUrl: string }[]) {
+    return apiFetch(`/master-catalog/image-update/bulk-by-sku`, {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    });
+  },
 };

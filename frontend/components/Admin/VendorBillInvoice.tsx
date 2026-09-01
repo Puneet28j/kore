@@ -79,7 +79,15 @@ const VendorBillInvoice: React.FC<VendorBillInvoiceProps> = ({ articles }) => {
   useEffect(() => {
     const handler = () => fetchBills();
     window.addEventListener("billRefetch", handler);
-    return () => window.removeEventListener("billRefetch", handler);
+    // addInvoice/recordPayment (this same page's own actions) emit
+    // "poUpdated" → poRefetch, not billApproved/billRejected → billRefetch —
+    // without this, a payment/invoice recorded from another tab wouldn't
+    // show up here live.
+    window.addEventListener("poRefetch", handler);
+    return () => {
+      window.removeEventListener("billRefetch", handler);
+      window.removeEventListener("poRefetch", handler);
+    };
   }, [fetchBills]);
 
   // Keep the open detail view's data in sync whenever the list refreshes

@@ -779,7 +779,6 @@ const mapDocToArticle = (doc: any): Article => ({
       typeof i === "string" ? i : i.url
     ),
     isActive: v.isActive !== false,
-    tag: v.tag,
     onlineMrp: v.onlineMrp,
     offlineMrp: v.offlineMrp,
     // PO-derived planned + already pre-booked pairs (backend-injected) —
@@ -869,8 +868,8 @@ const Shop: React.FC<ShopProps> = ({
   }, [fetchPendingDispatch]);
 
   // Fetch Page 1 whenever search, gender, sort, or status changes
-  const fetchInitialPage = useCallback(async () => {
-    setLoading(true);
+  const fetchInitialPage = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setPage(1);
     try {
       let docs: any[] = [];
@@ -932,11 +931,29 @@ const Shop: React.FC<ShopProps> = ({
       setTotalServerItems(totalCount);
       setHasMorePages(false); // Disable pagination for now with full fetch
     } catch {
-      toast.error("Failed to load catalog");
+      if (!silent) toast.error("Failed to load catalog");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [search, genderFilter, sortOption, statusFilter]);
+
+  // Real-time: MRP, live stock, and PO-pending shown here all change from
+  // pages the distributor doesn't have open (Catalogue Manager, GRN, PO
+  // approval) — refresh in the background (no loading spinner / grid
+  // flicker) whenever any of those change something relevant.
+  useEffect(() => {
+    const handler = () => fetchInitialPage(true);
+    window.addEventListener("catalogRefetch", handler);
+    window.addEventListener("grnRefetch", handler);
+    window.addEventListener("poRefetch", handler);
+    window.addEventListener("billRefetch", handler);
+    return () => {
+      window.removeEventListener("catalogRefetch", handler);
+      window.removeEventListener("grnRefetch", handler);
+      window.removeEventListener("poRefetch", handler);
+      window.removeEventListener("billRefetch", handler);
+    };
+  }, [fetchInitialPage]);
 
   // Load Next Page for Infinite Scroll
   const loadNextPage = useCallback(async () => {
@@ -1009,9 +1026,6 @@ const Shop: React.FC<ShopProps> = ({
         // Deactivated variants remain in the catalog for operational history,
         // but distributors must not see or order them.
         if (v.isActive === false) return;
-        // v.tag never gates visibility — every variant is orderable by every
-        // distributor; tag only selects which of onlineMrp/offlineMrp to show
-        // (see fullPricePerPair below, keyed off distributorTag).
         const availability = getVariantAvailability(v);
         // Not orderable at all (no live stock, no pending PO) — hide
         // entirely from the shopping grid, not just the RFD/PreOrder split.

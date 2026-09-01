@@ -559,7 +559,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     fetchDashMetrics(metricsDateRange);
   }, [metricsDateRange, fetchDashMetrics]);
 
-  // Real-time: refresh PO list + live inventory + metrics on socket events
+  // Real-time: refresh PO list + live inventory + metrics on socket events.
+  // dashMetrics (Total Revenue/Orders Placed/Total Dispatch) is order-derived,
+  // so it must also refresh on order changes (dispatch, cancel, payment) and
+  // returns — not just PO/catalog/GRN/bill events — or it goes stale the
+  // moment an order updates elsewhere without a manual page reload.
   useEffect(() => {
     const handler = () => {
       fetchPOs();
@@ -570,11 +574,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.addEventListener("catalogRefetch", handler);
     window.addEventListener("grnRefetch", handler);
     window.addEventListener("billRefetch", handler);
+    window.addEventListener("orderUpdatedSocket", handler);
+    window.addEventListener("returnRefetch", handler);
     return () => {
       window.removeEventListener("poRefetch", handler);
       window.removeEventListener("catalogRefetch", handler);
       window.removeEventListener("grnRefetch", handler);
       window.removeEventListener("billRefetch", handler);
+      window.removeEventListener("orderUpdatedSocket", handler);
+      window.removeEventListener("returnRefetch", handler);
     };
   }, [fetchStockTotals, fetchDashMetrics, metricsDateRange]);
 

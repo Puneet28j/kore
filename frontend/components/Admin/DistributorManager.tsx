@@ -168,20 +168,33 @@ const DistributorActivityOverview: React.FC<{ distributorId: string }> = ({ dist
   const [showPendingBreakdown, setShowPendingBreakdown] = useState(false);
   const [expandedPendingOrders, setExpandedPendingOrders] = useState<Set<string>>(new Set());
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    if (!silent) setError(null);
     try {
       const res = await apiFetch(`/distributors/${distributorId}/summary`);
       setSummary(res.data);
     } catch (e: any) {
-      setError(e?.message || "Failed to load activity");
+      if (!silent) setError(e?.message || "Failed to load activity");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [distributorId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Paid/Pending/Active Orders here are order-derived — refresh in the
+  // background (no loading spinner) when an order updates or a return is
+  // filed elsewhere, so this stays live while the details view is open.
+  useEffect(() => {
+    const handler = () => load(true);
+    window.addEventListener("orderUpdatedSocket", handler);
+    window.addEventListener("returnRefetch", handler);
+    return () => {
+      window.removeEventListener("orderUpdatedSocket", handler);
+      window.removeEventListener("returnRefetch", handler);
+    };
+  }, [load]);
 
   if (loading) return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex items-center justify-center py-16">
@@ -210,7 +223,7 @@ const DistributorActivityOverview: React.FC<{ distributorId: string }> = ({ dist
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
             <TrendingUp size={15} className="text-indigo-500" /> Activity Overview
           </h3>
-          <button onClick={load} className="text-slate-400 hover:text-indigo-600 p-1 rounded-lg hover:bg-slate-50 transition-colors">
+          <button onClick={() => load()} className="text-slate-400 hover:text-indigo-600 p-1 rounded-lg hover:bg-slate-50 transition-colors">
             <RefreshCw size={14} />
           </button>
         </div>
@@ -603,10 +616,18 @@ const DistributorManager: React.FC<DistributorManagerProps> = ({ orders }) => {
       return;
     }
     let cancelled = false;
-    apiFetch(`/distributors/${selectedDistributor.id}/summary`)
-      .then((res) => { if (!cancelled) setUsedLimit(res.data?.creditUsed ?? 0); })
-      .catch(() => { if (!cancelled) setUsedLimit(null); });
-    return () => { cancelled = true; };
+    const fetchUsedLimit = () =>
+      apiFetch(`/distributors/${selectedDistributor.id}/summary`)
+        .then((res) => { if (!cancelled) setUsedLimit(res.data?.creditUsed ?? 0); })
+        .catch(() => { if (!cancelled) setUsedLimit(null); });
+
+    fetchUsedLimit();
+    // Order updates/payments change what counts as "used" against the limit.
+    window.addEventListener("orderUpdatedSocket", fetchUsedLimit);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("orderUpdatedSocket", fetchUsedLimit);
+    };
   }, [view, selectedDistributor?.id]);
 
   // confirmation helper

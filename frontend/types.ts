@@ -70,7 +70,6 @@ export interface Variant {
   poMap?: Record<string, number>;
   images?: string[];
   isActive?: boolean;
-  tag?: "online" | "offline";
   onlineMrp?: number;
   offlineMrp?: number;
   // PO-derived planned pairs for a still-PREORDER variant — computed by the

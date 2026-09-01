@@ -69,7 +69,6 @@ interface CsvRow {
   sku_ctn?: string;
   online_mrp?: string;
   offline_mrp?: string;
-  tag?: string;
   cost_price?: string;
   hsn?: string;
   gender?: string;
@@ -179,16 +178,16 @@ function dedupeBySku(rows: CsvRow[]): { kept: CsvRow[]; skipped: CsvRow[] } {
 
 // Variant uniqueness key — sku_ctn + size assortment ONLY. Same SKU + same
 // assortment = the same variant (duplicate). Same SKU + a different
-// assortment = a genuinely different variant, kept. Color/sizeRange/tag are
-// not part of the identity at all — only used as a fallback when a row has
-// no sku_ctn, so blank-SKU rows don't all collapse into one "duplicate".
+// assortment = a genuinely different variant, kept. Color/sizeRange are not
+// part of the identity at all — only used as a fallback when a row has no
+// sku_ctn, so blank-SKU rows don't all collapse into one "duplicate".
 function makeVariantKey(r: CsvRow): string {
   const sku = (r.sku_ctn || "").trim();
   const fp = assortFp(extractSizeQty(r));
   if (sku) return `sku:${sku}|||${fp}`;
   return `nosku:${(r.color || "").toLowerCase().trim()}|||${(
     r.size || ""
-  ).trim()}|||${fp}|||${(r.tag || "online").toLowerCase().trim()}`;
+  ).trim()}|||${fp}`;
 }
 
 // Same composite key, built from an existing DB variant instead of a CSV row
@@ -196,7 +195,6 @@ function existingVariantKey(v: {
   color?: string;
   sizeRange?: string;
   sizeQuantities?: Record<string, number>;
-  tag?: string;
   sku?: string;
 }): string {
   const sku = (v.sku || "").trim();
@@ -204,7 +202,7 @@ function existingVariantKey(v: {
   if (sku) return `sku:${sku}|||${fp}`;
   return `nosku:${(v.color || "").toLowerCase().trim()}|||${(
     v.sizeRange || ""
-  ).trim()}|||${fp}|||${(v.tag || "online").toLowerCase()}`;
+  ).trim()}|||${fp}`;
 }
 
 const SUFFIX_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -219,8 +217,8 @@ const SUFFIX_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 // variant — e.g. a SKU mistakenly reused across two different size ranges
 // in the source CSV) and need no suffix at all, since their names already
 // differ. Conversely two rows with DIFFERENT sku_ctn but the same
-// color+sizeRange (e.g. online vs offline tag) DO need a suffix, since
-// their names would otherwise be identical.
+// color+sizeRange (e.g. a re-issued SKU for the same size range) DO need a
+// suffix, since their names would otherwise be identical.
 function disambiguateItemNames(
   newVariants: { itemName: string; color: string; sizeRange: string }[],
   existingVariants: { itemName?: string; color: string; sizeRange: string }[] = []
@@ -370,11 +368,6 @@ const CSV_REQUIRED_COLUMNS: {
     key: "size",
     label: "size  (size range, e.g. 6-10)",
     check: (hs) => hs.includes("size"),
-  },
-  {
-    key: "tag",
-    label: "tag  (online / offline)",
-    check: (hs) => hs.includes("tag"),
   },
   {
     key: "gender",
@@ -583,7 +576,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     const rawRows = parseCsv(csvText);
     if (!rawRows.length) {
       toast.error(
-        "No valid rows found. Check CSV format: name,sku,color,size,online_mrp,offline_mrp,tag,..."
+        "No valid rows found. Check CSV format: name,sku,color,size,online_mrp,offline_mrp,..."
       );
       return;
     }
@@ -724,15 +717,15 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
         const sizes = Array.from(
           new Set(rows.map((r) => r.size).filter(Boolean))
         );
-        // Master MRP = max of each variant's effective MRP
-        // For online items, only online_mrp matters; for offline, only offline_mrp matters
+        // Master MRP = max of every variant's online/offline MRP — every
+        // variant carries both prices, so both count toward the article-level
+        // headline figure.
         const mrp = Math.max(
-          ...rows.map((r) => {
-            const t = (r.tag || "online").toLowerCase().trim();
-            return t === "offline"
-              ? Number(r.offline_mrp) || 0
-              : Number(r.online_mrp) || 0;
-          })
+          0,
+          ...rows.flatMap((r) => [
+            Number(r.online_mrp) || 0,
+            Number(r.offline_mrp) || 0,
+          ])
         );
 
         // Build color → image URL map from CSV
@@ -746,15 +739,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           const sizeQuantities = extractSizeQty(r);
           const sizeMap: Record<string, { qty: number; sku: string }> = {};
           const ctnSku = r.sku_ctn?.trim() || "";
-          const rawTag = (r.tag || "online").toLowerCase().trim();
-          const tag = (
-            ["online", "offline"].includes(rawTag) ? rawTag : "online"
-          ) as "online" | "offline";
           const onlineMrp = Number(r.online_mrp) || 0;
           const offlineMrp = Number(r.offline_mrp) || 0;
-          // Tag-aware MRP: online items use online_mrp only; offline items use offline_mrp only
-          // Absence of the other field has no impact
-          const variantMrp = tag === "offline" ? offlineMrp : onlineMrp;
+          const variantMrp = Math.max(onlineMrp, offlineMrp);
           // Auto-generate per-size SKUs from carton SKU
           const sizeSkus = generateSizeSkus(
             ctnSku,
@@ -777,7 +764,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             sizeSkus,
             sizeMap,
             sku: ctnSku,
-            tag,
             onlineMrp,
             offlineMrp,
           };
@@ -910,7 +896,6 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
             sizeSkus: v.sizeSkus || {},
             sizeMap: v.sizeMap || {},
             isActive: v.isActive !== false,
-            tag: v.tag || "online",
             onlineMrp: v.onlineMrp || 0,
             offlineMrp: v.offlineMrp || 0,
             sku: v.sku || "",
@@ -919,9 +904,9 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
           // ── Build variants for new (non-duplicate) rows only ────────
           // Duplicate = same sku_ctn + same size assortment (handled above).
           // A new row whose color+sizeRange matches an existing variant's
-          // (e.g. same slot, different assortment or a different sku_ctn —
-          // online vs offline) gets -A/-B/-C appended to its itemName so
-          // the two are distinguishable in the UI.
+          // (e.g. same slot, different assortment or a re-issued sku_ctn)
+          // gets -A/-B/-C appended to its itemName so the two are
+          // distinguishable in the UI.
           const colorSizeRows = newRows.filter((r) => r.color && r.size);
           // Reject rows whose sku_ctn is already bound to a DIFFERENT
           // color/sizeRange slot — either an existing DB variant of this
@@ -1260,12 +1245,24 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm]);
 
-  // Real-time refresh on catalogRefetch socket event
+  // Real-time refresh on socket events. Beyond catalogRefetch (direct
+  // catalog edits), a PO being created/approved or a GRN being submitted
+  // changes the poPendingPairs/plannedPairs/preBookedPairs shown per variant
+  // here — those controllers don't emit catalogUpdated themselves, so this
+  // list would otherwise go stale until a manual reload.
   useEffect(() => {
     const handler = () =>
       fetchLocalArticles(1, debouncedSearch.current, false, genderFilter, sortOption);
     window.addEventListener("catalogRefetch", handler);
-    return () => window.removeEventListener("catalogRefetch", handler);
+    window.addEventListener("poRefetch", handler);
+    window.addEventListener("billRefetch", handler);
+    window.addEventListener("grnRefetch", handler);
+    return () => {
+      window.removeEventListener("catalogRefetch", handler);
+      window.removeEventListener("poRefetch", handler);
+      window.removeEventListener("billRefetch", handler);
+      window.removeEventListener("grnRefetch", handler);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [genderFilter, sortOption]);
 
@@ -1593,20 +1590,17 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
     if (article) {
       setEditingArticle(article);
 
-      // Derive onlineMrp/offlineMrp from variants (not article.mrp which drifts)
+      // Derive onlineMrp/offlineMrp from the first variant (not article.mrp
+      // which drifts) — every variant carries both prices directly now, and
+      // saving this form propagates whatever's entered here to all of them.
       const variants: any[] = (article as any).variants || [];
-      const onlineVariant = variants.find(
-        (v: any) => v.tag === "online" || v.tag === "ONLINE"
-      );
-      const offlineVariant = variants.find(
-        (v: any) => v.tag === "offline" || v.tag === "OFFLINE"
-      );
+      const firstVariant = variants[0];
       const fallbackMrp = Number((article as any).mrp || 0);
       const onlineMrp = Number(
-        onlineVariant?.onlineMrp || onlineVariant?.mrp || fallbackMrp || 0
+        firstVariant?.onlineMrp || firstVariant?.mrp || fallbackMrp || 0
       );
       const offlineMrp = Number(
-        offlineVariant?.offlineMrp || offlineVariant?.mrp || fallbackMrp || 0
+        firstVariant?.offlineMrp || fallbackMrp || 0
       );
 
       setFormData({
@@ -2389,7 +2383,7 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <p className="text-xs text-slate-400 mb-1">
                       <span className="font-bold text-red-500">Required: </span>
                       <code className="bg-slate-100 px-1 rounded">
-                        name, color, sku, size, tag, gender, size_5 / size_6 …
+                        name, color, sku, size, gender, size_5 / size_6 …
                       </code>
                     </p>
                     <p className="text-xs text-slate-400 mb-3">
@@ -2427,9 +2421,10 @@ const CatalogueManager: React.FC<CatalogueManagerProps> = ({
                     <p>
                       <b>sku_ctn</b> = carton-level SKU (e.g.{" "}
                       <code>slk-blk-5-9</code> or <code>kid-pnk-11-03</code>).
-                      Per-size SKUs auto-generate honge. <b>tag</b> ={" "}
-                      <code>online</code> ya <code>offline</code>.{" "}
-                      <b>online_mrp</b> + <b>offline_mrp</b>.
+                      Per-size SKUs auto-generate honge. Har variant ke{" "}
+                      <b>online_mrp</b> + <b>offline_mrp</b> dono set karo —
+                      distributor apne channel ke hisaab se sahi price
+                      dekhega.
                     </p>
                     <p>
                       <b>Kids sizes</b>: <code>11-03</code> (11→12→13→01→02→03).

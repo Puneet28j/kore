@@ -156,16 +156,21 @@ const StockReport: React.FC = () => {
   useEffect(() => { fetchAllData(); }, [fetchAllData]);
   useEffect(() => { fetchGlobalData(); }, [fetchGlobalData]);
 
-  // Real-time: refresh when GRN received or catalog changes
+  // Real-time: refresh when GRN/catalog/order changes, or when a PO is
+  // created/approved — poPendingPairs shown per row comes from exactly that.
   useEffect(() => {
     const handler = () => { fetchAllData(); fetchGlobalData(); };
     window.addEventListener("grnRefetch",    handler);
     window.addEventListener("catalogRefetch", handler);
     window.addEventListener("orderUpdatedSocket", handler);
+    window.addEventListener("poRefetch", handler);
+    window.addEventListener("billRefetch", handler);
     return () => {
       window.removeEventListener("grnRefetch",    handler);
       window.removeEventListener("catalogRefetch", handler);
       window.removeEventListener("orderUpdatedSocket", handler);
+      window.removeEventListener("poRefetch", handler);
+      window.removeEventListener("billRefetch", handler);
     };
   }, [fetchAllData, fetchGlobalData]);
 

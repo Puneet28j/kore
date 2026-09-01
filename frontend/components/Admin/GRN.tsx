@@ -257,7 +257,7 @@ const GRN: React.FC = () => {
   }, [historySearch, historyDateFrom, historyDateTo, historyPORef, historySortBy, historySortOrder]);
 
   /* ── Load PO list ── */
-  useEffect(() => {
+  const fetchPoRefs = useCallback(() => {
     grnService.listReferences("").then((res) => {
       const filtered = (res.data || []).filter(
         (ref) => !ref.poNo.startsWith("CAT-")
@@ -265,6 +265,22 @@ const GRN: React.FC = () => {
       setPoRefs(filtered);
     });
   }, []);
+
+  useEffect(() => {
+    fetchPoRefs();
+  }, [fetchPoRefs]);
+
+  // A PO only becomes GRN-eligible once its bill is approved (poNumber
+  // allocated) — without this, a freshly-approved PO stays invisible here
+  // until the page is manually reloaded.
+  useEffect(() => {
+    window.addEventListener("poRefetch", fetchPoRefs);
+    window.addEventListener("billRefetch", fetchPoRefs);
+    return () => {
+      window.removeEventListener("poRefetch", fetchPoRefs);
+      window.removeEventListener("billRefetch", fetchPoRefs);
+    };
+  }, [fetchPoRefs]);
 
   /* ── Reload history on socket event ── */
   useEffect(() => {

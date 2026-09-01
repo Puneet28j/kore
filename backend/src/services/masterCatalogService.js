@@ -131,7 +131,6 @@ const normalizeVariants = (variantsRaw) => {
       });
     }
 
-    const tag = ["online", "offline"].includes(v.tag) ? v.tag : "online";
     const onlineMrp  = Number(v.onlineMrp  || 0);
     const offlineMrp = Number(v.offlineMrp || 0);
     // Backward-compat: mrp = max(online, offline) or explicit mrp
@@ -167,7 +166,6 @@ const normalizeVariants = (variantsRaw) => {
       sizeQuantities,
       sizeSkus: finalSizeSkus,
       isActive: parseBoolean(v.isActive, true),
-      tag,
       onlineMrp,
       offlineMrp,
       sku: ctnSku,
@@ -259,11 +257,9 @@ exports.create = async (req) => {
   const { primaryImage, secondaryImages } =
     buildFlatImagesFromColorMedia(colorMedia);
 
-  if (!primaryImage?.url && !colorImageUrls) {
-    const err = new Error("At least one product image is required");
-    err.statusCode = 400;
-    throw err;
-  }
+  // Image is optional — name, sku, assortment, and size range (validated
+  // upstream in normalizeVariants/CSV import) are the only mandatory fields.
+  // A CSV import in particular routinely has no image column at all.
 
   const doc = await MasterCatalog.create({
     articleName: body.articleName,
@@ -838,10 +834,10 @@ exports.update = async (req, id) => {
     if (patch[k] !== undefined) doc[k] = patch[k];
   });
 
-  // Propagate article-level onlineMrp/offlineMrp to all variants. Every
-  // variant carries both prices regardless of its own `tag` — `tag` is not
-  // an exclusive channel-ownership flag, it only picks which of the two a
-  // given distributor sees (see catalogAvailability/getVariantPricePerPair).
+  // Propagate article-level onlineMrp/offlineMrp to all variants — every
+  // variant carries both prices; which one a distributor sees is picked by
+  // their own tag at read time (see catalogAvailability/getVariantPricePerPair),
+  // never stored on the variant itself.
   const newOnlineMrp = body.onlineMrp !== undefined ? Number(body.onlineMrp) : null;
   const newOfflineMrp = body.offlineMrp !== undefined ? Number(body.offlineMrp) : null;
   if (newOnlineMrp !== null || newOfflineMrp !== null) {
@@ -929,7 +925,6 @@ exports.update = async (req, id) => {
         matched.sizeQuantities = v.sizeQuantities;
         matched.sizeSkus = v.sizeSkus;
         matched.isActive = v.isActive;
-        if (v.tag) matched.tag = v.tag;
         if (v.onlineMrp !== undefined) matched.onlineMrp = v.onlineMrp;
         if (v.offlineMrp !== undefined) matched.offlineMrp = v.offlineMrp;
         // sku + sizeSkus: only update if new sku provided (preserve manual edits otherwise).

@@ -798,8 +798,17 @@ const POPage: React.FC<POPageProps> = ({ articles, onSyncSuccess }) => {
 
   useEffect(() => {
     const handler = () => fetchData();
+    // billRefetch: approving/rejecting a bill elsewhere updates billStatus/
+    // poNumber on these same PurchaseOrder docs — must reflect here live.
+    // vendorRefetch: keeps the vendor picker in sync with Vendors page edits.
     window.addEventListener("poRefetch", handler);
-    return () => window.removeEventListener("poRefetch", handler);
+    window.addEventListener("billRefetch", handler);
+    window.addEventListener("vendorRefetch", handler);
+    return () => {
+      window.removeEventListener("poRefetch", handler);
+      window.removeEventListener("billRefetch", handler);
+      window.removeEventListener("vendorRefetch", handler);
+    };
   }, []);
 
   // ── Draft Persistence ──

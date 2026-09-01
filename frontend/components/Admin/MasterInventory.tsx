@@ -413,8 +413,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           const sku = (cells[idxSku] || "").trim();
           const inward = Number(cells[idxInward]) || 0;
           const outward = Number(cells[idxOutward]) || 0;
-          // A fully blank leftover template row — not an error, just skip.
-          if (!sku && inward <= 0 && outward <= 0) return;
+          if (inward <= 0 && outward <= 0) return;
           rows.push({
             sku,
             type: inward > 0 && outward > 0 ? "BOTH" : inward > 0 ? "INWARD" : outward > 0 ? "OUTWARD" : "NONE",
@@ -642,7 +641,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, stockTab]);
 
-  // Real-time refresh inventory on catalog / grn changes
+  // Real-time refresh inventory on catalog / grn / PO / bill / order changes —
+  // each row's poPendingPairs/plannedPairs/preBookedPairs are derived from
+  // exactly this data, same as the summary totals above, so this list needs
+  // the same event coverage or it goes stale while the totals stay live.
   useEffect(() => {
     const handler = () =>
       fetchLocalInventory(
@@ -653,9 +655,15 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       );
     window.addEventListener("catalogRefetch", handler);
     window.addEventListener("grnRefetch", handler);
+    window.addEventListener("poRefetch", handler);
+    window.addEventListener("billRefetch", handler);
+    window.addEventListener("orderUpdatedSocket", handler);
     return () => {
       window.removeEventListener("catalogRefetch", handler);
       window.removeEventListener("grnRefetch", handler);
+      window.removeEventListener("poRefetch", handler);
+      window.removeEventListener("billRefetch", handler);
+      window.removeEventListener("orderUpdatedSocket", handler);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, pageSize, stockTab]);

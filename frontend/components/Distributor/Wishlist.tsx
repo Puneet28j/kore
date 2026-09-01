@@ -484,7 +484,6 @@ const mapDocToArticle = (doc: any): Article => ({
     sizeMap: v.sizeMap || {},
     images: (v.images || []).map((i: any) => typeof i === "string" ? i : i.url),
     isActive: v.isActive !== false,
-    tag: v.tag,
     onlineMrp: v.onlineMrp,
     offlineMrp: v.offlineMrp,
     // PO-derived planned + already pre-booked pairs (backend-injected) —

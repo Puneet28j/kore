@@ -210,11 +210,12 @@ const VariantDetailsPage: React.FC<VariantDetailsPageProps> = ({
       for (let i = start; i <= end; i++) out.push(String(i));
       return out;
     } else {
-      // Kids wrap-around range: 11-03, 12-02, etc.
-      // Sequence: start → 13 (child), then 01 → end (junior, zero-padded)
+      // Kids wrap-around range: 11-3, 12-2, etc.
+      // Sequence: start → 13 (child), then 1 → end (junior) — every size is
+      // always keyed as a plain unpadded number, same as a normal range.
       const out: string[] = [];
       for (let i = start; i <= 13; i++) out.push(String(i));
-      for (let i = 1; i <= end; i++) out.push(String(i).padStart(2, "0"));
+      for (let i = 1; i <= end; i++) out.push(String(i));
       return out;
     }
   };

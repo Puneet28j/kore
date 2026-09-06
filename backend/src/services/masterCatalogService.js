@@ -96,6 +96,13 @@ const buildFlatImagesFromColorMedia = (colorMedia = []) => {
   };
 };
 
+// Every size is always keyed as a plain unpadded number ("1", "2", not "01",
+// "02") across sizeQuantities/sizeSkus/sizeMap — this is the single choke
+// point every variant write passes through, so normalizing the key here
+// guarantees it regardless of which caller (frontend form, import script,
+// direct API call) sent a zero-padded key.
+const normalizeSizeKey = (size) => (/^\d+$/.test(size) ? String(Number(size)) : size);
+
 const normalizeVariants = (variantsRaw) => {
   const variants = Array.isArray(variantsRaw) ? variantsRaw : [];
 
@@ -107,8 +114,9 @@ const normalizeVariants = (variantsRaw) => {
     // 1. Process Assortment (Breakup)
     if (v.sizeQuantities && typeof v.sizeQuantities === "object") {
       Object.keys(v.sizeQuantities).forEach((size) => {
-        sizeQuantities[size] = Number(v.sizeQuantities[size] || 0);
-        sizeSkus[size] = v.sizeSkus?.[size] || "";
+        const key = normalizeSizeKey(size);
+        sizeQuantities[key] = Number(v.sizeQuantities[size] || 0);
+        sizeSkus[key] = v.sizeSkus?.[size] || "";
       });
     }
 
@@ -116,7 +124,7 @@ const normalizeVariants = (variantsRaw) => {
     if (v.sizeMap && typeof v.sizeMap === "object") {
       Object.keys(v.sizeMap).forEach((size) => {
         const cell = v.sizeMap[size] || {};
-        sizeMap[size] = {
+        sizeMap[normalizeSizeKey(size)] = {
           qty: Number(cell.qty || 0),
           sku: cell.sku || "",
         };
@@ -124,7 +132,7 @@ const normalizeVariants = (variantsRaw) => {
     } else if (v.sizeQuantities && typeof v.sizeQuantities === "object") {
       // Fallback: Initialize stock to 0 but keep SKU
       Object.keys(v.sizeQuantities).forEach((size) => {
-        sizeMap[size] = {
+        sizeMap[normalizeSizeKey(size)] = {
           qty: 0,
           sku: v.sizeSkus?.[size] || "",
         };

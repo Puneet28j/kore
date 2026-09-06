@@ -40,30 +40,18 @@ type SizeRangeEntry = {
   label: string;
 };
 
-// Kids wrap-around ranges (e.g. "11-1": 11→13, then wraps to 1→1) always
-// key the post-13 segment as a plain unpadded number ("1", not "01") — same
-// as every other size. Older data that got zero-padded is remapped back to
-// the plain form here so it matches the columns this page renders.
+// Every size is always keyed as a plain unpadded number ("1", "2", not "01",
+// "02") — this applies to every range shape (normal and kids wrap-around
+// alike). Older/dirty data that got zero-padded is remapped back to the
+// plain form here so it matches the columns this page renders.
 function remapToCanonicalSizeKeys<T>(
-  data: Record<string, T> | undefined,
-  sizeRange: string
+  data: Record<string, T> | undefined
 ): Record<string, T> {
   if (!data) return {};
-  const parts = (sizeRange || "").split("-").map((s) => s.trim());
-  if (parts.length !== 2) return data;
-  const start = parseInt(parts[0]);
-  const end = parseInt(parts[1]);
-  if (isNaN(start) || isNaN(end) || start <= end) return data;
-  if (!(start >= 1 && start <= 13 && end >= 1 && end <= 13)) return data;
-
-  const canonicalKeys: string[] = [];
-  for (let i = start; i <= 13; i++) canonicalKeys.push(String(i));
-  for (let i = 1; i <= end; i++) canonicalKeys.push(String(i));
-  const byNumber = new Map(canonicalKeys.map((k) => [Number(k), k]));
-
   const remapped: Record<string, T> = {};
   Object.entries(data).forEach(([k, v]) => {
-    remapped[byNumber.get(Number(k)) ?? k] = v;
+    const canonical = /^\d+$/.test(k) ? String(Number(k)) : k;
+    remapped[canonical] = v;
   });
   return remapped;
 }
@@ -188,8 +176,8 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
         const mappedVariants = item.variants.map((v: any) => ({
           ...v,
           id: v.id || v._id,
-          sizeQuantities: remapToCanonicalSizeKeys(v.sizeQuantities, v.sizeRange),
-          sizeSkus: remapToCanonicalSizeKeys(v.sizeSkus, v.sizeRange),
+          sizeQuantities: remapToCanonicalSizeKeys(v.sizeQuantities),
+          sizeSkus: remapToCanonicalSizeKeys(v.sizeSkus),
         }));
         setVariants(mappedVariants);
 
@@ -287,8 +275,8 @@ const ProductMaster: React.FC<ProductMasterProps> = ({
               });
             }
 
-            sizeQuantities = remapToCanonicalSizeKeys(sizeQuantities, v.sizeRange);
-            sizeSkus = remapToCanonicalSizeKeys(sizeSkus, v.sizeRange);
+            sizeQuantities = remapToCanonicalSizeKeys(sizeQuantities);
+            sizeSkus = remapToCanonicalSizeKeys(sizeSkus);
 
             const label = v.sizeRange || "";
             const currentIndex = rangeUsageCount[label] || 0;

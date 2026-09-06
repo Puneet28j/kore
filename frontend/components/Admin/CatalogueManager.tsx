@@ -141,7 +141,7 @@ function extractSizeQty(row: CsvRow): Record<string, number> {
     const match = key.match(/^size_(\d+(?:\.\d+)?)$/);
     if (match && row[key]) {
       const qty = Number(row[key]);
-      if (qty > 0) result[match[1]] = qty;
+      if (qty > 0) result[String(Number(match[1]))] = qty;
     }
   });
   return result;

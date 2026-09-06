@@ -170,7 +170,7 @@ export const masterCatalogService = {
   },
 
   async bulkStockMovementBySku(
-    rows: { sku: string; type: "INWARD" | "OUTWARD"; cartons: number; reason?: string; note?: string }[]
+    rows: { sku: string; variant?: string; type: "INWARD" | "OUTWARD"; cartons: number; reason?: string; note?: string }[]
   ) {
     return apiFetch(`/master-catalog/stock-movement/bulk-by-sku`, {
       method: "POST",

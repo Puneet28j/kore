@@ -1583,8 +1583,11 @@ const parseCartonSerial = (code) => {
   return m ? parseInt(m[1], 10) : -1;
 };
 
-// CSV-driven bulk stock update, matched purely by Carton SKU (mandatory,
-// no fallback — a variant's SKU is unique so this alone is enough).
+// CSV-driven bulk stock update, matched by Carton SKU (mandatory, no
+// fallback). A SKU is usually unique to one variant, but two variants can
+// legitimately share one (a second batch of the same style with a
+// different assortment) — see Pass 2 below for how those rows are
+// disambiguated via the Variant column instead of guessed at.
 // All-or-nothing: every row is validated (SKU present, matches a real
 // variant, type/cartons sane, and — for Outward — enough cartons actually
 // in the pool to remove) BEFORE anything is written. One bad row aborts
@@ -1622,23 +1625,50 @@ exports.bulkStockMovementBySku = async (rows, user) => {
   }
 
   // ---- Pass 2: resolve every SKU against the live catalog ----
+  // Two variants can legitimately share the same Carton SKU (e.g. a second
+  // batch of the same style with a different assortment) — so a SKU may
+  // resolve to more than one variant. When it does, the row's Variant
+  // (itemName) column is required to pick the right one; a row that leaves
+  // it blank or gives a name that doesn't match any candidate is rejected
+  // rather than silently applied to an arbitrary one of the candidates.
   const catalogs = await MasterCatalog.find({});
-  const skuToMatch = new Map();
+  const skuToMatches = new Map();
   catalogs.forEach((catalog) => {
     catalog.variants.forEach((v) => {
       const sku = (v.sku || "").trim().toUpperCase();
-      if (sku && !skuToMatch.has(sku)) skuToMatch.set(sku, { catalog, variantId: String(v._id) });
+      if (!sku) return;
+      if (!skuToMatches.has(sku)) skuToMatches.set(sku, []);
+      skuToMatches.get(sku).push({ catalog, variantId: String(v._id), itemName: v.itemName || "" });
     });
   });
 
   const unmatched = [];
+  const ambiguous = [];
   const resolved = rows.map((r, i) => {
     const skuKey = r.sku.trim().toUpperCase();
-    const match = skuToMatch.get(skuKey);
-    if (!match) {
+    const candidates = skuToMatches.get(skuKey) || [];
+    if (candidates.length === 0) {
       unmatched.push({ row: i + 2, sku: r.sku });
       return null;
     }
+
+    let match = candidates[0];
+    if (candidates.length > 1) {
+      const variantLabel = (r.variant || "").trim().toLowerCase();
+      const found = variantLabel
+        ? candidates.find((c) => c.itemName.trim().toLowerCase() === variantLabel)
+        : null;
+      if (!found) {
+        ambiguous.push({
+          row: i + 2,
+          sku: r.sku,
+          candidates: candidates.map((c) => c.itemName),
+        });
+        return null;
+      }
+      match = found;
+    }
+
     return {
       row: i + 2,
       sku: r.sku.trim(),
@@ -1654,6 +1684,12 @@ exports.bulkStockMovementBySku = async (rows, user) => {
     const err = new Error(`${unmatched.length} row(s) have a SKU that doesn't match any catalog variant — fix the CSV and re-upload. Nothing was updated.`);
     err.statusCode = 400;
     err.details = { unmatched };
+    throw err;
+  }
+  if (ambiguous.length) {
+    const err = new Error(`${ambiguous.length} row(s) have a SKU shared by more than one variant — fill the Variant column with the exact variant name to pick one. Nothing was updated.`);
+    err.statusCode = 400;
+    err.details = { ambiguous };
     throw err;
   }
 

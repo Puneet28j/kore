@@ -1068,10 +1068,15 @@ const GRN: React.FC = () => {
       const data = res.data as MockPODetail | null;
       if (!data) return;
 
-      // Initialise scanState for linked PO's items (prefixed keys)
+      // Initialise scanState for linked PO's items (prefixed keys). Prefixed
+      // with data.id (the PO's Mongo _id) — same identifier allPOItems/
+      // getDoneKey use as _poId for linked items, NOT the poNumber string
+      // (poId here) that addLinkedPO is called with; those two differ, and
+      // prefixing with the wrong one silently orphans this state (linked
+      // PO's already-received progress always reads back as 0).
       const linkedState: ScanState = {};
       data.items.forEach((item) => {
-        linkedState[`${poId}::${item.variantId || item.itemName}`] = Array.from(
+        linkedState[`${data.id}::${item.variantId || item.itemName}`] = Array.from(
           { length: item.cartonCount || 1 },
           () => ({})
         );
@@ -1082,7 +1087,7 @@ const GRN: React.FC = () => {
       const rawDone = doneRes.data || {};
       const prefixedDone: Record<string, number[]> = {};
       Object.keys(rawDone).forEach((k) => {
-        prefixedDone[`${poId}::${k}`] = rawDone[k];
+        prefixedDone[`${data.id}::${k}`] = rawDone[k];
       });
 
       setLinkedPOIds((prev) => [...prev, poId]);
@@ -1112,7 +1117,11 @@ const GRN: React.FC = () => {
       Object.keys(updated).forEach((k) => { if (k.startsWith(`${poId}::`)) delete updated[k]; });
       return updated;
     });
-    setLinkedPOIds((prev) => prev.filter((id) => id !== poId));
+    // linkedPOIds holds poNumber strings (what addLinkedPO was called with),
+    // not the Mongo _id this function receives — filter by detail.poNo, the
+    // matching poNumber, or a removed PO stays stuck in linkedPOIds forever
+    // and can never be re-linked from the dropdown.
+    setLinkedPOIds((prev) => prev.filter((id) => id !== detail.poNo));
     setLinkedPODetails((prev) => prev.filter((d) => d.id !== poId));
     if (selectedItemName.startsWith(`${poId}::`)) setSelectedItemName("");
   };

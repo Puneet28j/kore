@@ -277,7 +277,10 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   // "Download Sample" gives every variant in the whole catalog (not just the
   // current page/tab/search) with two blank columns — fill Inward Cartons OR
   // Outward Cartons per row, leave the other blank, then re-upload. Carton
-  // SKU is the only match key on upload — mandatory, no fallback.
+  // SKU is the match key on upload — mandatory, no fallback. Two variants can
+  // legitimately share the same Carton SKU with a different assortment (a
+  // second batch of the same style); the Variant column is what disambiguates
+  // those rows server-side, so don't strip/rename it when editing the CSV.
   const downloadStockTemplate = async () => {
     setCsvBulkTemplateLoading(true);
     try {
@@ -293,7 +296,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
       } while (page <= totalPages);
 
       const lines = [
-        "Article,Gender,Color,Size Range,Carton SKU,Current Stock (Ctn),Inward Cartons,Outward Cartons,Reason,Note",
+        "Article,Gender,Color,Size Range,Carton SKU,Variant,Current Stock (Ctn),Inward Cartons,Outward Cartons,Reason,Note",
       ];
       items.forEach((item) => {
         (item.variants || []).forEach((v: any) => {
@@ -301,8 +304,9 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           const livePairs = Object.values(sizeMap).reduce(
             (s: number, c: any) => s + (Number(c?.qty) || 0), 0
           );
+          const variantLabel = v.itemName || `${item.articleName}-${v.color || ""}-${v.sizeRange || ""}`;
           lines.push(
-            `"${item.articleName}","${item.gender || ""}","${v.color || ""}","${v.sizeRange || ""}","${v.sku || ""}",${Math.floor(livePairs / 24)},,,,`
+            `"${item.articleName}","${item.gender || ""}","${v.color || ""}","${v.sizeRange || ""}","${v.sku || ""}","${variantLabel}",${Math.floor(livePairs / 24)},,,,`
           );
         });
       });
@@ -397,6 +401,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
         const headers = parseStockCsvRow(lines[0]).map((h) => h.trim().toLowerCase());
         const colIdx = (name: string) => headers.indexOf(name);
         const idxSku = colIdx("carton sku");
+        const idxVariant = colIdx("variant");
         const idxInward = colIdx("inward cartons");
         const idxOutward = colIdx("outward cartons");
         const idxReason = colIdx("reason");
@@ -407,7 +412,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           return;
         }
 
-        const rows: { sku: string; type: "INWARD" | "OUTWARD" | "BOTH" | "NONE"; cartons: number; reason?: string; note?: string }[] = [];
+        const rows: { sku: string; variant?: string; type: "INWARD" | "OUTWARD" | "BOTH" | "NONE"; cartons: number; reason?: string; note?: string }[] = [];
         lines.slice(1).forEach((line) => {
           const cells = parseStockCsvRow(line);
           const sku = (cells[idxSku] || "").trim();
@@ -416,6 +421,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
           if (inward <= 0 && outward <= 0) return;
           rows.push({
             sku,
+            variant: idxVariant > -1 ? (cells[idxVariant] || "").trim() || undefined : undefined,
             type: inward > 0 && outward > 0 ? "BOTH" : inward > 0 ? "INWARD" : outward > 0 ? "OUTWARD" : "NONE",
             cartons: inward > 0 ? inward : outward,
             reason: (cells[idxReason] || "").trim() || undefined,

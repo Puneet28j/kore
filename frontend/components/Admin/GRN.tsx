@@ -960,6 +960,17 @@ const GRN: React.FC = () => {
         return;
       }
 
+      // A bare modifier keydown (Shift/Control/Alt/Meta/CapsLock) is not a
+      // scanned character — it's how the OS produces an upcoming uppercase
+      // letter or symbol (a keyboard-wedge scanner "presses" Shift the same
+      // way a real keyboard does). Ignore it without touching the buffer or
+      // lastKeyAt, or every capital letter in the SKU would wipe out
+      // everything scanned before it (e.g. "ARZ-BRW-6" surviving as only
+      // "W-6" — the tail after the last Shift-preceded letter).
+      if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) {
+        return;
+      }
+
       // A correctly configured keyboard-wedge scanner supplies printable
       // characters plus Enter. Keep browser shortcuts and normal navigation
       // outside this capture path.
@@ -1820,7 +1831,8 @@ const GRN: React.FC = () => {
                               ref={scanInputRef}
                               type="text"
                               autoComplete="off"
-                              placeholder="Scan barcode or type SKU → Enter"
+                              readOnly
+                              placeholder="Scan barcode → Enter"
                               value={scanInput}
                               onChange={(e) => setScanInput(e.target.value)}
                               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleScan(); } }}
@@ -2457,10 +2469,11 @@ const GRN: React.FC = () => {
                   ref={confirmInputRef}
                   type="text"
                   autoComplete="off"
+                  readOnly
                   value={cartonConfirmPopup.inputValue}
                   onChange={(e) => setCartonConfirmPopup({ ...cartonConfirmPopup, inputValue: e.target.value, error: "" })}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); confirmCartonLabel(); } }}
-                  placeholder="Scan barcode or type it → Enter"
+                  placeholder="Scan barcode → Enter"
                   className={`w-full rounded-2xl border-2 p-3 text-sm outline-none transition font-mono ${
                     cartonConfirmPopup.error
                       ? "border-rose-300 bg-rose-50 focus:border-rose-400 focus:ring-4 focus:ring-rose-100"

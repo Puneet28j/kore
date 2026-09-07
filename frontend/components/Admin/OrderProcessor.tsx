@@ -22,10 +22,14 @@ import {
   StickyNote,
   CheckSquare,
   BoxesIcon,
+  SearchCheck,
 } from "lucide-react";
 import { Order, OrderStatus, Article, Inventory } from "../../types";
 import OrderDetail from "../Distributor/OrderDetail";
-import { distributorOrderService } from "../../services/distributorOrderService";
+import {
+  distributorOrderService,
+  ItemOrderSummary,
+} from "../../services/distributorOrderService";
 import Pagination from "../ui/Pagination";
 import { usePageSize } from "../../utils/usePageSize";
 import { toast } from "sonner";
@@ -51,6 +55,7 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [bookingOrder, setBookingOrder] = useState<Order | null>(null);
   const [stats, setStats] = useState<Record<string, number>>({});
+  const [itemLookupOpen, setItemLookupOpen] = useState(false);
 
   // Pagination & Server-side State
   const [orders, setOrders] = useState<Order[]>([]);
@@ -137,6 +142,9 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
 
   return (
     <div className="space-y-4 animate-in fade-in duration-500 pb-10">
+      {itemLookupOpen && (
+        <ItemLookupModal onClose={() => setItemLookupOpen(false)} />
+      )}
       {bookingOrder && (
         <BookingConfirmModal
           order={bookingOrder}
@@ -177,6 +185,12 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
               </span>
             </div>
           )}
+          <button
+            onClick={() => setItemLookupOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs text-slate-700 hover:bg-slate-50 transition-all shadow-sm"
+          >
+            <SearchCheck size={14} /> Item Lookup
+          </button>
           <button className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs text-slate-700 hover:bg-slate-50 transition-all shadow-sm">
             <Download size={14} /> Export
           </button>
@@ -523,6 +537,149 @@ const OrderProcessor: React.FC<OrderProcessorProps> = ({
           onPageSizeChange={setPageSize}
         />
       )}
+    </div>
+  );
+};
+
+// ─── Item Lookup Modal ──────────────────────────────────────────────────────
+// Search by Article / Variant / SKU, see how much of it has been ordered,
+// dispatched, and is still pending across every distributor.
+const ItemLookupModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [summary, setSummary] = useState<ItemOrderSummary | null>(null);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setSummary(null);
+      return;
+    }
+    setLoading(true);
+    const t = setTimeout(() => {
+      distributorOrderService
+        .getItemOrderSummary(q)
+        .then(setSummary)
+        .catch(() => toast.error("Failed to load item summary"))
+        .finally(() => setLoading(false));
+    }, 350);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const totalPill = (label: string, value: number, color: string) => (
+    <div className="flex-1 rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-center">
+      <p className={`text-lg font-black leading-none ${color}`}>{value}</p>
+      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">
+        {label}
+      </p>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto">
+      <div className="w-full max-w-2xl mt-10 mb-10 bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <div>
+            <h3 className="font-black text-slate-800 text-sm">Item Lookup</h3>
+            <p className="text-[11px] text-slate-400 font-medium">
+              Search by Article, Variant or SKU — see Ordered / Dispatched / Pending across every distributor
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input
+              autoFocus
+              type="text"
+              placeholder="e.g. ARIZONA, Brown 7-11, ARZ-BRW-M-7-11..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-indigo-400 outline-none text-sm font-medium text-slate-900"
+            />
+          </div>
+
+          {loading && (
+            <div className="flex items-center justify-center py-10 text-slate-400">
+              <Loader2 className="animate-spin" size={20} />
+            </div>
+          )}
+
+          {!loading && query.trim() && summary && summary.variants.length === 0 && (
+            <div className="text-center py-10 text-slate-400 text-xs font-bold uppercase tracking-widest">
+              No matching article / variant / SKU
+            </div>
+          )}
+
+          {!loading && summary && summary.variants.length > 0 && (
+            <div className="space-y-4">
+              {summary.variants.length > 1 && (
+                <div className="flex gap-2">
+                  {totalPill("Ordered", summary.grandTotal.orderedCartons, "text-slate-700")}
+                  {totalPill("Dispatched", summary.grandTotal.dispatchedCartons, "text-emerald-600")}
+                  {totalPill("Pending", summary.grandTotal.pendingCartons, "text-amber-600")}
+                </div>
+              )}
+
+              <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-1">
+                {summary.variants.map((v) => (
+                  <div key={v.variantId} className="rounded-xl border border-slate-200 overflow-hidden">
+                    <div className="px-4 py-3 bg-slate-50 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-slate-800 truncate">
+                          {v.itemName || `${v.articleName} - ${v.color} - ${v.sizeRange}`}
+                        </p>
+                        <p className="text-[10px] text-slate-400 font-mono mt-0.5">{v.sku}</p>
+                      </div>
+                      <div className="flex gap-1.5 shrink-0">
+                        {totalPill("Ord", v.totals.orderedCartons, "text-slate-700")}
+                        {totalPill("Disp", v.totals.dispatchedCartons, "text-emerald-600")}
+                        {totalPill("Pend", v.totals.pendingCartons, "text-amber-600")}
+                      </div>
+                    </div>
+
+                    {v.byDistributor.length > 0 && (
+                      <div className="divide-y divide-slate-100">
+                        {v.byDistributor.map((d) => (
+                          <div
+                            key={d.distributorId}
+                            className="px-4 py-2 flex items-center justify-between text-xs"
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <User size={12} className="text-slate-300 shrink-0" />
+                              <span className="font-bold text-slate-600 truncate">{d.distributorName}</span>
+                            </div>
+                            <div className="flex items-center gap-3 text-[11px] font-bold shrink-0">
+                              <span className="text-slate-500">{d.totals.orderedCartons} ord</span>
+                              <span className="text-emerald-600">{d.totals.dispatchedCartons} disp</span>
+                              <span className="text-amber-600">{d.totals.pendingCartons} pend</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {v.byDistributor.length === 0 && (
+                      <div className="px-4 py-3 text-[11px] text-slate-400 font-medium">
+                        No orders yet for this variant
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!query.trim() && (
+            <p className="text-center py-10 text-slate-300 text-xs font-bold uppercase tracking-widest">
+              Start typing to search
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

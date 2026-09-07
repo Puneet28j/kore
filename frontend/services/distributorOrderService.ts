@@ -10,6 +10,56 @@ const getAuthHeaders = () => {
   return { Authorization: `Bearer ${token}` };
 };
 
+export type ItemOrderTotals = {
+  orderedCartons: number;
+  dispatchedCartons: number;
+  returnedCartons: number;
+  pendingCartons: number;
+  orderedPairs: number;
+  dispatchedPairs: number;
+  returnedPairs: number;
+  pendingPairs: number;
+};
+
+export const EMPTY_ITEM_TOTALS: ItemOrderTotals = {
+  orderedCartons: 0, dispatchedCartons: 0, returnedCartons: 0, pendingCartons: 0,
+  orderedPairs: 0, dispatchedPairs: 0, returnedPairs: 0, pendingPairs: 0,
+};
+
+export type ItemOrderSummaryOrderRow = {
+  orderNumber: string;
+  status: string;
+  bookingType: "REGULAR" | "PREORDER";
+  orderedCartons: number;
+  dispatchedCartons: number;
+  pendingCartons: number;
+  createdAt: string;
+};
+
+export type ItemOrderSummaryDistributor = {
+  distributorId: string;
+  distributorName: string;
+  totals: ItemOrderTotals;
+  orders: ItemOrderSummaryOrderRow[];
+};
+
+export type ItemOrderSummaryVariant = {
+  variantId: string;
+  articleName: string;
+  itemName: string;
+  color: string;
+  sizeRange: string;
+  sku: string;
+  totals: ItemOrderTotals;
+  byDistributor: ItemOrderSummaryDistributor[];
+};
+
+export type ItemOrderSummary = {
+  query: string;
+  variants: ItemOrderSummaryVariant[];
+  grandTotal: ItemOrderTotals;
+};
+
 class DistributorOrderService {
   private mapOrder(o: any): Order {
     return { ...o, id: o._id || o.id };
@@ -286,6 +336,14 @@ class DistributorOrderService {
     const qs = query.toString() ? `?${query.toString()}` : "";
     const res = await axios.get(`${API_URL}/dashboard-metrics${qs}`, { headers: getAuthHeaders() });
     return res.data.data || { totalRevenue: 0, ordersPlaced: 0, orderedCartons: 0, dispatchedCartons: 0 };
+  }
+
+  async getItemOrderSummary(q: string): Promise<ItemOrderSummary> {
+    const res = await axios.get(`${API_URL}/item-summary`, {
+      params: { q },
+      headers: getAuthHeaders(),
+    });
+    return res.data.data || { query: q, variants: [], grandTotal: EMPTY_ITEM_TOTALS };
   }
 
   async getReturnHistory(params: { page?: number; limit?: number; q?: string } = {}): Promise<{ items: any[]; meta: any }> {

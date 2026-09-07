@@ -346,6 +346,34 @@ const createOrder = async (distributorId, orderData) => {
         ])
       : [{ bySize: {}, totals: {} }, { totals: {} }];
 
+    // How many cartons of each variant are already "owed" to OLDER orders
+    // still waiting as PREORDER on that same variant. Without this, a new
+    // order's REGULAR-vs-PREORDER split below only looks at raw current
+    // stock — so freshly-arrived GRN stock gets grabbed by whichever order
+    // happens to be created next, even if an older pre-order was already
+    // waiting for that exact stock (first-come-first-served by order
+    // CREATION time is the intent; without this guard it was actually
+    // first-come by whoever orders/scans next, jumping the queue).
+    const variantIdsForStage = [
+      ...new Set(sanitizedItems.map((i) => String(i.variantId)).filter(Boolean)),
+    ];
+    const owedCartonsByVariant = new Map();
+    if (variantIdsForStage.length) {
+      const openPreorders = await Order.find({
+        status: { $nin: ["RECEIVED", "CANCELLED"] },
+        items: { $elemMatch: { variantId: { $in: variantIdsForStage }, bookingType: "PREORDER" } },
+      }).select("items.variantId items.bookingType items.cartonCount items.fulfilledCartonCount").lean();
+      openPreorders.forEach((order) => {
+        (order.items || []).forEach((item) => {
+          if (item.bookingType !== "PREORDER" || !item.variantId) return;
+          const key = String(item.variantId);
+          if (!variantIdsForStage.includes(key)) return;
+          const owed = Math.max(0, (item.cartonCount || 0) - (item.fulfilledCartonCount || 0));
+          owedCartonsByVariant.set(key, (owedCartonsByVariant.get(key) || 0) + owed);
+        });
+      });
+    }
+
     const unavailableItemNames = [];
     // One cart line can span BOTH a variant's real live stock and its
     // pending-PO capacity at once (e.g. 10 in stock + 1 more still on a PO)
@@ -400,10 +428,12 @@ const createOrder = async (distributorId, orderData) => {
           const currentQty = Number(variant.sizeMap?.[size]?.qty || 0);
           minCartons = Math.min(minCartons, Math.floor(currentQty / perCarton));
         });
-        regularCartons = Math.min(
-          cartonCount,
-          Math.max(0, minCartons === Infinity ? cartonCount : minCartons)
+        const freeCartons = Math.max(
+          0,
+          (minCartons === Infinity ? cartonCount : minCartons) -
+            (owedCartonsByVariant.get(variantKey) || 0)
         );
+        regularCartons = Math.min(cartonCount, freeCartons);
       }
       const preorderCartons = cartonCount - regularCartons;
 
@@ -2279,6 +2309,147 @@ const backfillLegacyProductSnapshots = async ({ apply = false } = {}) => {
   };
 };
 
+// ─── Item-wise order summary (search by Article/Variant/SKU) ───────────────
+// Powers the admin Orders search: "how much of this item has been ordered,
+// dispatched, and is still pending — across every distributor". Ordered =
+// item.cartonCount, Dispatched = item.fulfilledCartonCount, Returned =
+// item.returnedCartonCount, Pending = max(0, ordered - dispatched) — the
+// exact same fields/derivation the order-detail page's Ordered/Dispatched/
+// Returned/Remaining columns already use (see scanCarton / processReturn).
+const emptyItemTotals = () => ({
+  orderedCartons: 0, dispatchedCartons: 0, returnedCartons: 0, pendingCartons: 0,
+  orderedPairs: 0, dispatchedPairs: 0, returnedPairs: 0, pendingPairs: 0,
+});
+
+const accumulateItemTotals = (target, item) => {
+  const orderedCartons = item.cartonCount || 0;
+  const dispatchedCartons = item.fulfilledCartonCount || 0;
+  const orderedPairs = item.pairCount || 0;
+  const dispatchedPairs = item.fulfilledPairCount || 0;
+
+  target.orderedCartons += orderedCartons;
+  target.dispatchedCartons += dispatchedCartons;
+  target.returnedCartons += item.returnedCartonCount || 0;
+  target.pendingCartons += Math.max(0, orderedCartons - dispatchedCartons);
+  target.orderedPairs += orderedPairs;
+  target.dispatchedPairs += dispatchedPairs;
+  target.returnedPairs += item.returnedPairCount || 0;
+  target.pendingPairs += Math.max(0, orderedPairs - dispatchedPairs);
+};
+
+const getItemOrderSummary = async (query) => {
+  const q = (query || "").trim();
+  if (!q) return { query: q, variants: [], grandTotal: emptyItemTotals() };
+
+  const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+
+  const catalogs = await MasterCatalog.find({
+    isDeleted: { $ne: true },
+    $or: [
+      { articleName: regex },
+      { "variants.itemName": regex },
+      { "variants.color": regex },
+      { "variants.sku": regex },
+      { "variants.sizeRange": regex },
+    ],
+  })
+    .select("articleName variants._id variants.itemName variants.color variants.sizeRange variants.sku")
+    .lean();
+
+  // Flatten to just the variants that actually match (a matching article
+  // name pulls in all of its variants; a matching variant field pulls in
+  // just that one).
+  const variantMeta = new Map();
+  catalogs.forEach((catalog) => {
+    const articleMatches = regex.test(catalog.articleName || "");
+    (catalog.variants || []).forEach((v) => {
+      const matches = articleMatches
+        || regex.test(v.itemName || "")
+        || regex.test(v.color || "")
+        || regex.test(v.sku || "")
+        || regex.test(v.sizeRange || "");
+      if (!matches) return;
+      variantMeta.set(String(v._id), {
+        variantId: String(v._id),
+        articleName: catalog.articleName,
+        itemName: v.itemName || "",
+        color: v.color || "",
+        sizeRange: v.sizeRange || "",
+        sku: v.sku || "",
+      });
+    });
+  });
+
+  const variantIds = [...variantMeta.keys()];
+  if (!variantIds.length) return { query: q, variants: [], grandTotal: emptyItemTotals() };
+
+  // Cancelled demand never happened as far as this report is concerned;
+  // every other status (BOOKED/PARTIAL/DISPATCHED/IN_TRANSIT/RECEIVED/...)
+  // still counts toward "ordered" and flows into dispatched/pending below.
+  const orders = await Order.find({
+    status: { $ne: "CANCELLED" },
+    "items.variantId": { $in: variantIds },
+  })
+    .select("orderNumber distributorId distributorName status createdAt items")
+    .sort({ createdAt: 1 })
+    .lean();
+
+  const perVariant = new Map(
+    variantIds.map((id) => [id, { totals: emptyItemTotals(), byDistributor: new Map() }])
+  );
+
+  orders.forEach((order) => {
+    (order.items || []).forEach((item) => {
+      const vid = item.variantId ? String(item.variantId) : "";
+      const entry = perVariant.get(vid);
+      if (!entry) return;
+
+      accumulateItemTotals(entry.totals, item);
+
+      const distKey = String(order.distributorId || "unknown");
+      if (!entry.byDistributor.has(distKey)) {
+        entry.byDistributor.set(distKey, {
+          distributorId: distKey,
+          distributorName: order.distributorName || "Unknown",
+          totals: emptyItemTotals(),
+          orders: [],
+        });
+      }
+      const distEntry = entry.byDistributor.get(distKey);
+      accumulateItemTotals(distEntry.totals, item);
+      distEntry.orders.push({
+        orderNumber: order.orderNumber,
+        status: order.status,
+        bookingType: item.bookingType,
+        orderedCartons: item.cartonCount || 0,
+        dispatchedCartons: item.fulfilledCartonCount || 0,
+        pendingCartons: Math.max(0, (item.cartonCount || 0) - (item.fulfilledCartonCount || 0)),
+        createdAt: order.createdAt,
+      });
+    });
+  });
+
+  const grandTotal = emptyItemTotals();
+  const variants = variantIds
+    .map((vid) => {
+      const meta = variantMeta.get(vid);
+      const entry = perVariant.get(vid);
+      Object.keys(grandTotal).forEach((k) => { grandTotal[k] += entry.totals[k]; });
+      return {
+        ...meta,
+        totals: entry.totals,
+        byDistributor: [...entry.byDistributor.values()].sort(
+          (a, b) => b.totals.orderedCartons - a.totals.orderedCartons
+        ),
+      };
+    })
+    // Variants with zero orders ever still surface (so "no orders yet" is
+    // visible for a searched item) but sink to the bottom.
+    .sort((a, b) => b.totals.orderedCartons - a.totals.orderedCartons);
+
+  return { query: q, variants, grandTotal };
+};
+
 module.exports = {
   createOrder,
   getOrdersByDistributor,
@@ -2298,4 +2469,5 @@ module.exports = {
   backfillLegacyProductSnapshots,
   attachLiveCartonAvailability,
   backfillRegularCartonAllocations,
+  getItemOrderSummary,
 };

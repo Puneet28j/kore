@@ -532,6 +532,15 @@ const getDashboardMetricsCtrl = async (req, res) => {
   }
 };
 
+const getItemOrderSummaryCtrl = async (req, res) => {
+  try {
+    const data = await OrderService.getItemOrderSummary(req.query.q);
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   createOrder,
   getDistributorOrders,
@@ -550,4 +559,5 @@ module.exports = {
   editOrderCtrl,
   getOrderStatsCtrl,
   getDashboardMetricsCtrl,
+  getItemOrderSummaryCtrl,
 };

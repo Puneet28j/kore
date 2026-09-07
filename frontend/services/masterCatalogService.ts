@@ -25,8 +25,12 @@ export const masterCatalogService = {
     return apiFetch(`/master-catalog/stock-totals${qs}`);
   },
 
-  // { variantId: totalBookedPairs } across all variants with a BOOKED/PENDING order.
-  async getBookedMap(): Promise<{ data: Record<string, number> }> {
+  // { variantId: totalBookedPairs } across all variants with a BOOKED/PENDING order,
+  // plus the same total split by bookingType (RFD vs Pre-Order).
+  async getBookedMap(): Promise<{
+    data: Record<string, number>;
+    byBookingType: Record<string, { REGULAR: number; PREORDER: number }>;
+  }> {
     return apiFetch(`/master-catalog/booked-map`);
   },
 

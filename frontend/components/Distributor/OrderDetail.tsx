@@ -359,6 +359,7 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
   });
   const [ctnScanInput, setCtnScanInput] = useState("");
   const [scanSyncing, setScanSyncing] = useState(false);
+  const ctnScanInputRef = useRef<HTMLInputElement>(null);
   const [previewDoc, setPreviewDoc] = useState<{
     url: string;
     title: string;
@@ -615,6 +616,75 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
       setScanSyncing(false);
     }
   };
+
+  // Always call the LATEST handleCTNScan without making the capture effect
+  // below re-subscribe on every render — re-subscribing mid-scan would reset
+  // the buffer closure and drop whatever was scanned so far (see GRN.tsx's
+  // identical confirmCartonLabelRef pattern for the same reason).
+  const handleCTNScanRef = useRef(handleCTNScan);
+  useEffect(() => {
+    handleCTNScanRef.current = handleCTNScan;
+  });
+
+  /* USB scanner capture for CTN Out-Scan — buffers every keydown into a
+     shadow string regardless of which field currently has focus, and
+     decides at Enter time whether it was a scanner burst. The visible input
+     is read-only (manual typing/mobile keyboard disabled); this is what
+     actually drives it. Ignores bare modifier keydowns (Shift/Control/Alt/
+     Meta/CapsLock) — a keyboard-wedge scanner "presses" Shift before every
+     capital letter the same way a real keyboard does, and treating that as
+     a non-scanner key would wipe the buffer before every capital letter in
+     the barcode (see the identical fix in GRN.tsx). */
+  const ctnScannerCaptureReady = dispatchTab === "scan" && totalRemainingToScan > 0;
+  useEffect(() => {
+    if (!ctnScannerCaptureReady) return;
+
+    let buffer = "";
+    let lastKeyAt = 0;
+    const CTN_SCANNER_KEY_INTERVAL_MS = 150;
+    const CTN_SCANNER_MIN_LENGTH = 3;
+
+    const reset = () => {
+      buffer = "";
+      lastKeyAt = 0;
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const now = performance.now();
+
+      if (event.key === "Enter") {
+        const isScannerBurst =
+          buffer.length >= CTN_SCANNER_MIN_LENGTH &&
+          now - lastKeyAt <= CTN_SCANNER_KEY_INTERVAL_MS;
+        if (isScannerBurst) {
+          event.preventDefault();
+          event.stopPropagation();
+          handleCTNScanRef.current(buffer);
+        }
+        reset();
+        return;
+      }
+
+      if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) {
+        return;
+      }
+
+      if (event.ctrlKey || event.altKey || event.metaKey || event.key.length !== 1) {
+        reset();
+        return;
+      }
+
+      if (!buffer || now - lastKeyAt > CTN_SCANNER_KEY_INTERVAL_MS) {
+        buffer = event.key;
+      } else {
+        buffer += event.key;
+      }
+      lastKeyAt = now;
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [ctnScannerCaptureReady]);
 
   // Transport → submits the vehicle/transporter form for exactly the
   // checked subset of the Dispatched pool.
@@ -3126,7 +3196,9 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                           className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                                         />
                                         <input
+                                          ref={ctnScanInputRef}
                                           type="text"
+                                          readOnly
                                           value={ctnScanInput}
                                           onChange={(e) =>
                                             setCtnScanInput(

@@ -91,6 +91,11 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
   const [bookedPairsPerVariant, setBookedPairsPerVariant] = useState<
     Record<string, number>
   >({});
+  // Same total, split by bookingType — drives the small "RFD + Pre" hint
+  // under each variant row's Booked figure.
+  const [bookedByTypePerVariant, setBookedByTypePerVariant] = useState<
+    Record<string, { REGULAR: number; PREORDER: number }>
+  >({});
 
   const [stockTab, setStockTab] = useState<"ALL" | "RFD" | "PREORDER">("ALL");
 
@@ -116,21 +121,29 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     try {
       if (stage === "ALL") {
         // "All" must tally exactly with the RFD and Pre-Order tabs — not a
-        // separately-computed figure — so every number here is built
-        // directly by summing (or taking) the two tabs' own numbers:
-        // Live Stock = RFD's Available, Booked = RFD's Booked + Pre-Order's
-        // Booked, PO Pending = RFD's PO Pending + Pre-Order's PO Pending.
-        const [rfdRes, preRes] = await Promise.all([
+        // separately-computed figure — so Live Stock and PO Pending are
+        // built directly by summing the two tabs' own numbers: Live Stock =
+        // RFD's Available, PO Pending = RFD's PO Pending + Pre-Order's PO
+        // Pending. Booked is NOT "RFD's Booked + Pre-Order's Booked" though
+        // — pre.totalPreOrderedPairs is a still-OWED figure (capped by
+        // what's left to claim against the PO), not the full total booked
+        // for preorder variants, so that sum silently undercounted whenever
+        // any preorder variant had already had some of its cartons
+        // dispatched/allocated. Fetch the plain unscoped total instead — the
+        // exact same unconditional per-variant sum the table's own Booked
+        // column is built from — so the header always tallies with it.
+        const [rfdRes, preRes, allRes] = await Promise.all([
           masterCatalogService.getStockTotals("RFD"),
           masterCatalogService.getStockTotals("PREORDER"),
+          masterCatalogService.getStockTotals(),
         ]);
         const rfd = rfdRes?.data || rfdRes || {};
         const pre = preRes?.data || preRes || {};
+        const all = allRes?.data || allRes || {};
         setTotalLivePairs(Number(rfd.totalLivePairs) || 0);
         setTotalPOPairs((Number(rfd.totalPoPendingPairs) || 0) + (Number(pre.totalPoPendingPairs) || 0));
-        const preBooked = Number(pre.totalPreOrderedPairs) || 0;
-        setTotalBookedPairs((Number(rfd.totalBookedPairs) || 0) + preBooked);
-        setTotalPreOrderedPairs(preBooked);
+        setTotalBookedPairs(Number(all.totalBookedPairs) || 0);
+        setTotalPreOrderedPairs(Number(pre.totalPreOrderedPairs) || 0);
         return;
       }
       const res = await masterCatalogService.getStockTotals(stage);
@@ -148,6 +161,7 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
     try {
       const res = await masterCatalogService.getBookedMap();
       setBookedPairsPerVariant(res?.data || {});
+      setBookedByTypePerVariant(res?.byBookingType || {});
     } catch {
       /* silent */
     }
@@ -1275,6 +1289,22 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                 bookedPairsPerVariant[(variant as any)._id] ??
                                 0;
                               const bookedCtns = Math.floor(bookedPairs / 24);
+                              // RFD vs Pre-Order split of the same Booked
+                              // figure, for the small hint under it. rfdCtns
+                              // floors normally, preCtns takes whatever's
+                              // left of bookedCtns — guarantees the two
+                              // always add up to the displayed total instead
+                              // of drifting apart from two independent floors.
+                              const bookedByType =
+                                bookedByTypePerVariant[variant.id] ??
+                                bookedByTypePerVariant[(variant as any)._id] ??
+                                null;
+                              const rfdCtns = bookedByType
+                                ? Math.floor(bookedByType.REGULAR / 24)
+                                : 0;
+                              const preCtns = bookedByType
+                                ? Math.max(0, bookedCtns - rfdCtns)
+                                : 0;
 
                               return (
                                 <tr
@@ -1366,6 +1396,11 @@ const MasterInventory: React.FC<MasterInventoryProps> = ({
                                     <p className="text-[8px] text-slate-300">
                                       {bookedPairs} prs
                                     </p>
+                                    {bookedCtns > 0 && (
+                                      <p className="text-[8px] text-slate-400 font-semibold mt-0.5">
+                                        {rfdCtns} RFD + {preCtns} Pre
+                                      </p>
+                                    )}
                                   </td>
                                   <td className="px-6 py-3 text-center">
                                     <span className="text-sm font-black text-indigo-600">

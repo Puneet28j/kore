@@ -337,6 +337,20 @@ const App: React.FC = () => {
     fetchOrders();
   }, [user?.id, user?.role]);
 
+  // The socket connects as soon as the app loads — usually before login, so
+  // its "connect" event fires with no token yet and it joins no rooms. If
+  // login then happens client-side (no full page reload), that "connect"
+  // event never fires again, so the socket stays connected-but-unauthenticated
+  // for the rest of the session — silently missing every room-scoped event
+  // (orderUpdated etc.) until a manual reload creates a fresh, token-aware
+  // connection. Re-authenticate explicitly whenever `user` becomes known
+  // (fresh login or session restore), independent of connect/reconnect.
+  useEffect(() => {
+    if (!socket || !user) return;
+    const token = localStorage.getItem("kore_token");
+    if (token) socket.emit("authenticate", token);
+  }, [user?.id, socket]);
+
   // ── Socket event handlers (shared socket from SocketContext) ──
   useEffect(() => {
     if (!socket) return;
@@ -350,6 +364,14 @@ const App: React.FC = () => {
 
     const onConnectError = (err: Error) => {
       console.warn("⚠️ Socket connect error:", err.message);
+    };
+
+    // Server rejected the token (invalid/expired) — socket stays connected
+    // but joined no rooms, so it silently misses every room-scoped event.
+    // Previously unhandled on the frontend; at minimum surface it in the
+    // console so this failure mode isn't invisible during debugging.
+    const onAuthError = (err: { message?: string }) => {
+      console.warn("⚠️ Socket auth failed:", err?.message || err);
     };
 
     const onOrderUpdated = (data: any) => {
@@ -540,6 +562,7 @@ const App: React.FC = () => {
 
     socket.on("connect", onConnect);
     socket.on("connect_error", onConnectError);
+    socket.on("authError", onAuthError);
     socket.on("orderUpdated", onOrderUpdated);
     socket.on("distributorUpdated", onDistributorUpdated);
     socket.on("activityLog", onActivityLog);
@@ -559,6 +582,7 @@ const App: React.FC = () => {
     return () => {
       socket.off("connect", onConnect);
       socket.off("connect_error", onConnectError);
+      socket.off("authError", onAuthError);
       socket.off("orderUpdated", onOrderUpdated);
       socket.off("distributorUpdated", onDistributorUpdated);
       socket.off("activityLog", onActivityLog);

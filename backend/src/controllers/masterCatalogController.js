@@ -109,8 +109,8 @@ exports.getStockTotals = async (req, res) => {
 
 exports.getBookedMap = async (req, res) => {
   try {
-    const { totals } = await masterCatalogService.getBookedQuantityMap();
-    return res.json({ data: totals });
+    const { totals, byBookingType } = await masterCatalogService.getBookedQuantityMap();
+    return res.json({ data: totals, byBookingType });
   } catch (err) {
     return sendError(res, err);
   }

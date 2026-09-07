@@ -761,6 +761,10 @@ exports.getBookedQuantityMap = async (statuses = ["BOOKED", "PENDING", "PARTIAL"
   const bySize = {};
   // variantId -> total pairs (sum across all sizes)
   const totals = {};
+  // variantId -> { REGULAR: pairs, PREORDER: pairs } — same "ordered minus
+  // dispatched" remainder as `totals`, just split by bookingType so the UI
+  // can show e.g. "9 = 3 RFD + 6 Pre" instead of one opaque number.
+  const byBookingType = {};
 
   orders.forEach((order) => {
     (order.items || []).forEach((item) => {
@@ -780,7 +784,9 @@ exports.getBookedQuantityMap = async (statuses = ["BOOKED", "PENDING", "PARTIAL"
           ? Object.fromEntries(item.sizeQuantities)
           : (item.sizeQuantities || {});
 
+      const bookingType = item.bookingType === "PREORDER" ? "PREORDER" : "REGULAR";
       if (!bySize[key]) bySize[key] = {};
+      if (!byBookingType[key]) byBookingType[key] = { REGULAR: 0, PREORDER: 0 };
       Object.entries(sizeQuantities).forEach(([size, qty]) => {
         const cleanSize = String(size).trim();
         const ordered = Number(qty || 0);
@@ -789,11 +795,12 @@ exports.getBookedQuantityMap = async (statuses = ["BOOKED", "PENDING", "PARTIAL"
         if (remaining === 0) return;
         bySize[key][cleanSize] = (bySize[key][cleanSize] || 0) + remaining;
         totals[key] = (totals[key] || 0) + remaining;
+        byBookingType[key][bookingType] += remaining;
       });
     });
   });
 
-  return { bySize, totals };
+  return { bySize, totals, byBookingType };
 };
 
 exports.getById = async (id) => {

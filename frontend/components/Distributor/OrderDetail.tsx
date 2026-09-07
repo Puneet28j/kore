@@ -3168,6 +3168,45 @@ const OrderDetail: React.FC<OrderDetailProps> = ({
                                   </div>
                                 </div>
 
+                                {/* Expected carton codes — two variants can share the same
+                                    displayed "SKU" but still have different actual carton
+                                    barcodes (a variant sharing its SKU with a sibling gets a
+                                    disambiguating suffix baked in, e.g. "...-A-CT6" vs
+                                    "...-CT6") — show the exact still-pending codes so nobody
+                                    has to guess/derive the barcode from the SKU field alone. */}
+                                {(() => {
+                                  const scannedCodes = new Set(
+                                    (currentOrder.cartonTracking || []).map((c) => c.code)
+                                  );
+                                  const pendingByItem = currentOrder.items
+                                    .map((item) => {
+                                      const codes = [
+                                        ...(item.allocatedCartons || []),
+                                        ...(item.liveAvailableCartonCodes || []),
+                                      ].filter((code) => !scannedCodes.has(code));
+                                      return { item, codes: [...new Set(codes)] };
+                                    })
+                                    .filter(({ codes }) => codes.length > 0);
+                                  if (pendingByItem.length === 0) return null;
+                                  return (
+                                    <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4 space-y-2">
+                                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                                        Expected Carton Codes
+                                      </p>
+                                      {pendingByItem.map(({ item, codes }) => (
+                                        <div key={item.variantId || item.articleId} className="text-[11px]">
+                                          <span className="font-bold text-slate-600">
+                                            {getItemLabel(item.variantId || item.articleId || "")}:
+                                          </span>{" "}
+                                          <span className="font-mono text-slate-500">
+                                            {codes.join(", ")}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
+
                                 <div className="flex gap-2">
                                   <button
                                     onClick={handleDownloadPI}

@@ -1,4 +1,5 @@
 import { apiFetch } from "./api";
+import { masterCatalogService } from "./masterCatalogService";
 
 // Types matching frontend expectations
 export type MockPORef = {
@@ -92,8 +93,46 @@ export const grnService = {
       throw err;
     }
 
+    // PurchaseOrder items don't store sizeRange at all, and their itemName/
+    // color are a point-in-time snapshot from when the PO was raised — if a
+    // variant's real itemName carries a disambiguating suffix (two variants
+    // can share one Carton SKU with a different assortment, e.g.
+    // "...-7-11" vs "...-7-11-A" — see CatalogueManager's makeVariantKey),
+    // the stale snapshot can silently drop that suffix. getCartonBarcodeSku
+    // (GRN.tsx) rebuilds the real carton barcode from color+sizeRange+
+    // itemName, so a stale/incomplete snapshot here makes it compute the
+    // WRONG barcode for the printed label (missing the "-A", say) even
+    // though the backend correctly assigns the real one from the live
+    // variant at submission — a label that then never matches the system's
+    // record. Fetch each item's live variant (by articleId+variantId) and
+    // use ITS current color/sizeRange/itemName/sku instead of the snapshot.
+    const articleIds: string[] = [
+      ...new Set<string>((poDoc.items || []).map((it: any) => String(it.articleId || "")).filter(Boolean)),
+    ];
+    const liveVariantById = new Map<string, { color: string; sizeRange: string; itemName: string; sku: string }>();
+    await Promise.all(
+      articleIds.map(async (articleId) => {
+        try {
+          const res = await masterCatalogService.getMasterItem(articleId);
+          const catalog = res.data;
+          (catalog?.variants || []).forEach((v: any) => {
+            liveVariantById.set(String(v._id), {
+              color: v.color || "",
+              sizeRange: v.sizeRange || "",
+              itemName: v.itemName || "",
+              sku: v.sku || "",
+            });
+          });
+        } catch {
+          // Variant/article lookup failed (e.g. deleted since) — items for
+          // it fall back to the PO's own snapshot fields below.
+        }
+      })
+    );
+
     let totalQty = 0;
     const items: MockPOItem[] = (poDoc.items || []).map((it: any) => {
+      const live = it.variantId ? liveVariantById.get(String(it.variantId)) : undefined;
       const rawSizeMap = it.sizeMap || {};
       const itemCartons = Math.max(1, Number(it.cartonCount || 0));
 
@@ -119,13 +158,13 @@ export const grnService = {
       totalQty += itemTotalQty * itemCartons;
 
       return {
-        itemName: it.itemName || "",
+        itemName: live?.itemName || it.itemName || "",
         variantId: it.variantId || "",
-        color: it.color || "",
-        sizeRange: "Variable",
+        color: live?.color || it.color || "",
+        sizeRange: live?.sizeRange || "Variable",
         cartonCount: itemCartons,
         sizeMap,
-        sku: it.sku || "",
+        sku: live?.sku || it.sku || "",
       };
     });
 

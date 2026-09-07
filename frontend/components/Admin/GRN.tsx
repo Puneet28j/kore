@@ -557,7 +557,17 @@ const GRN: React.FC = () => {
                   .catch(() => {});
               }
               
-              const itemDoneIndices = doneMap[firstItem.variantId || firstItem.itemName] || [];
+              // Merge in this-session label-confirmed cartons, not just
+              // doneCartons (which only reflects EARLIER GRN sessions —
+              // confirmedCartons for the current session isn't folded into
+              // doneCartons until final Submit). Skipping that merge here
+              // re-lands on a carton already confirmed a moment ago whenever
+              // this effect re-runs mid-session.
+              const firstItemKey = firstItem.variantId || firstItem.itemName;
+              const itemDoneIndices = [
+                ...(doneMap[firstItemKey] || []),
+                ...(confirmedCartons[firstItemKey] || []),
+              ];
               let firstPending = 0;
               while (itemDoneIndices.includes(firstPending) && firstPending < (firstItem.cartonCount || 1)) {
                 firstPending++;
@@ -1671,7 +1681,15 @@ const GRN: React.FC = () => {
                                       onClick={() => {
                                         setSelectedItemName(item._scanKey);
                                         setScanInput("");
-                                        const dI = doneCartons[getDoneKey(item)] || [];
+                                        // Merge in this-session label-confirmed cartons too — doneCartons
+                                        // alone only reflects EARLIER GRN sessions (this session's
+                                        // confirms aren't folded in until final Submit), so re-selecting
+                                        // this item mid-session would otherwise land back on a carton
+                                        // just confirmed a moment ago instead of the true next-pending one.
+                                        const dI = [
+                                          ...(doneCartons[getDoneKey(item)] || []),
+                                          ...(confirmedCartons[item._scanKey] || []),
+                                        ];
                                         let fp = 0;
                                         while (dI.includes(fp) && fp < totalCartons) fp++;
                                         setCurrentCartonIdx(fp >= totalCartons ? 0 : fp);

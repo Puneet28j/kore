@@ -886,7 +886,18 @@ const GRN: React.FC = () => {
       const counterBase = selectedItem.variantId
         ? (variantCounterBases[selectedItem.variantId] ?? 1) - 1
         : 0;
-      const barcode = `${cartonSku}-CT${counterBase + currentCartonIdx + 1}`;
+      // How many cartons of THIS variant have already been confirmed in the
+      // current GRN session — NOT currentCartonIdx (that's the tab position
+      // within this item's 10 planned cartons, e.g. "Carton 4/10" because
+      // cartons 1-3 were already received in earlier GRNs). counterBase
+      // already accounts for every carton ever created for this variant
+      // globally, past GRNs included, so adding currentCartonIdx on top
+      // double-counts the already-done ones and inflates the preview label
+      // (e.g. showing CT7 for what the backend will actually assign as
+      // CT4) — the printed label then permanently disagrees with what
+      // submission records.
+      const confirmedSoFar = (confirmedCartons[selectedItemName] || []).length;
+      const barcode = `${cartonSku}-CT${counterBase + confirmedSoFar + 1}`;
       setCartonConfirmPopup({
         scanKey: selectedItemName,
         itemLabel: selectedItem.itemName,
@@ -903,6 +914,7 @@ const GRN: React.FC = () => {
     selectedItem,
     selectedItemName,
     variantCounterBases,
+    confirmedCartons,
   ]);
 
   const scannerCaptureReady = activeTab === "scan" && !!selectedItem;

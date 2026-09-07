@@ -23,9 +23,8 @@ const getStockReport = async (req, res) => {
       .lean();
 
     const articleIds = catalogs.map((c) => c._id);
-    const [bookedMap, preBookedMap, plannedMap, grnReceivedMap] = await Promise.all([
+    const [bookedMap, plannedMap, grnReceivedMap] = await Promise.all([
       masterCatalogService.getBookedQuantityMap(),
-      masterCatalogService.getPreBookedQtyMap(),
       articleIds.length
         ? masterCatalogService.getPoPlannedQtyMap(articleIds)
         : { bySize: {}, totals: {} },
@@ -73,15 +72,15 @@ const getStockReport = async (req, res) => {
           sizeQuantities: rawSizeQuantities,
           sizeStock,
           totalStock: variantTotalStock,
-          // RFD (live stock > 0): booked/undispatched pairs from the regular
-          // booked-map. PreOrder (0 live stock): still-owed pre-booked pairs
-          // — same getPreBookedQtyMap formula Master Stock's per-variant
-          // Booked column uses, so this report always tallies with it
-          // instead of drifting from a differently-scoped map.
-          booked:
-            variantTotalStock > 0
-              ? bookedMap.totals[String(v._id)] || 0
-              : preBookedMap.totals[String(v._id)] || 0,
+          // Full booked/undispatched pairs for this variant, REGULAR and
+          // still-PREORDER alike — the same raw, unconditional total Master
+          // Inventory's per-variant Booked column shows. Substituting
+          // preBookedMap's "still owed" figure for a 0-live-stock (PreOrder-
+          // classified) variant silently dropped any REGULAR portion that
+          // had already consumed the live stock down to 0 (e.g. 5 dispatch-
+          // pending REGULAR cartons + 4 PREORDER cartons showing as just
+          // "4 booked" once the variant's own stock hit zero).
+          booked: bookedMap.totals[String(v._id)] || 0,
         };
       });
 

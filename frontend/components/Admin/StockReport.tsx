@@ -365,9 +365,9 @@ const StockReport: React.FC = () => {
         </div>
       </div>
 
-      {/* KPI Summary Bar — Booked/PO Pending use the exact same per-variant
-          sources (booked-map for RFD, getPreBookedQtyMap for Pre-Order) as
-          the table rows below, so this bar always tallies with them. */}
+      {/* KPI Summary Bar — Booked/PO Pending are summed straight from each
+          row's own v.booked/v.poPendingPairs below, so this bar always
+          tallies with the table by construction. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
         {[
           { label: "Articles",       value: stats.totalArticles.toLocaleString(),            icon: <Package size={14} />,     color: "text-indigo-600",  bg: "bg-indigo-50" },

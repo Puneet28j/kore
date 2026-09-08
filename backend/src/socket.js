@@ -11,6 +11,29 @@ const adminRoom      = () => "room:admin";
 const distributorRoom = (id) => `room:dist:${id}`;
 const userRoom       = (id) => `room:user:${id}`;
 
+// Socket room keys must always use the underlying identifier. Order records
+// are sometimes returned with distributorId as an ObjectId and sometimes as
+// a populated User document/lean object. String(populatedDocument) produces
+// an object representation instead of the user's id, which silently sends
+// order events to a room nobody joined.
+const normalizeEntityId = (value) => {
+  if (value === null || value === undefined) return null;
+
+  const candidate = typeof value === "object"
+    ? (value._id ?? value.id ?? value)
+    : value;
+  if (candidate === null || candidate === undefined) return null;
+
+  const normalized = String(candidate);
+  return normalized && normalized !== "[object Object]" ? normalized : null;
+};
+
+const buildOrderUpdatePayload = (order) => ({
+  orderId: normalizeEntityId(order?.id ?? order?._id),
+  status: order?.status,
+  distributorId: normalizeEntityId(order?.distributorId),
+});
+
 // ── Init ──────────────────────────────────────
 const init = (server) => {
   const allowedOrigins = process.env.FRONTEND_URL
@@ -76,8 +99,9 @@ const getIO = () => {
 const emitToAdminsAndDist = (event, data, distributorUserId) => {
   if (!io) return;
   io.to(adminRoom()).emit(event, data);
-  if (distributorUserId) {
-    io.to(distributorRoom(String(distributorUserId))).emit(event, data);
+  const normalizedDistributorId = normalizeEntityId(distributorUserId);
+  if (normalizedDistributorId) {
+    io.to(distributorRoom(normalizedDistributorId)).emit(event, data);
   }
 };
 
@@ -97,14 +121,22 @@ const emitAll = (event, data) => {
 // ──────────────────────────────────────────────
 const emitOrderUpdate = (order) => {
   if (!io) return;
-  const data = {
-    orderId:       String(order.id || order._id),
-    status:        order.status,
-    distributorId: String(order.distributorId),
-  };
+  const data = buildOrderUpdatePayload(order);
+
+  if (!data.orderId) {
+    console.warn("⚠️ Skipping malformed order update without an order id");
+    return;
+  }
+
   // Admins always see order updates; distributor only sees own
   io.to(adminRoom()).emit("orderUpdated", data);
-  io.to(distributorRoom(String(order.distributorId))).emit("orderUpdated", data);
+  if (data.distributorId) {
+    io.to(distributorRoom(data.distributorId)).emit("orderUpdated", data);
+  } else {
+    // Keep the admin broadcast useful even when an old/corrupt order has no
+    // resolvable owner; there is simply no safe distributor room to target.
+    console.warn(`⚠️ Order ${data.orderId} update has no distributor id`);
+  }
 };
 
 // ──────────────────────────────────────────────
@@ -112,10 +144,12 @@ const emitOrderUpdate = (order) => {
 // ──────────────────────────────────────────────
 const emitDistributorUpdate = (distributorId) => {
   if (!io) return;
-  const data = { distributorId: String(distributorId) };
+  const data = { distributorId: normalizeEntityId(distributorId) };
   // Admins get it for list refresh; distributor gets it for credit refresh
   io.to(adminRoom()).emit("distributorUpdated", data);
-  io.to(distributorRoom(String(distributorId))).emit("distributorUpdated", data);
+  if (data.distributorId) {
+    io.to(distributorRoom(data.distributorId)).emit("distributorUpdated", data);
+  }
 };
 
 // ──────────────────────────────────────────────
@@ -126,13 +160,15 @@ const emitReturnCreated = (returnDoc) => {
   const data = {
     returnId:        String(returnDoc._id),
     returnNumber:    returnDoc.returnNumber,
-    distributorId:   String(returnDoc.distributorId),
+    distributorId:   normalizeEntityId(returnDoc.distributorId),
     distributorName: returnDoc.distributorName,
     orderNumber:     returnDoc.orderNumber,
     totalPairs:      returnDoc.totalPairs,
   };
   io.to(adminRoom()).emit("returnCreated", data);
-  io.to(distributorRoom(String(returnDoc.distributorId))).emit("returnCreated", data);
+  if (data.distributorId) {
+    io.to(distributorRoom(data.distributorId)).emit("returnCreated", data);
+  }
 };
 
 // ──────────────────────────────────────────────
@@ -207,6 +243,7 @@ const emitActivityLog = (logData) => {
 module.exports = {
   init, getIO,
   adminRoom, distributorRoom, userRoom,
+  normalizeEntityId, buildOrderUpdatePayload,
   emitOrderUpdate, emitDistributorUpdate, emitReturnCreated,
   emitGRNSubmitted, emitPOEvent, emitCatalogUpdated,
   emitSessionInvalidated, emitActivityLog,

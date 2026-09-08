@@ -203,8 +203,11 @@ exports.bulkScan = async (draftId, cartonsPayload) => {
     const { cartonIndex, pairBarcodes, itemName, variantId, cartonSku } = carton;
     if (!pairBarcodes || pairBarcodes.length === 0) continue;
 
-    // Check for duplicates
-    if (itemName && doneMap[itemName] && doneMap[itemName].includes((cartonIndex || 1) - 1)) {
+    // Check for duplicates using the same variant-first key returned by
+    // getReceivedCartons. The carton index is the PO receiving position; it
+    // is intentionally unrelated to the globally assigned barcode serial.
+    const doneKey = variantId || itemName;
+    if (doneKey && doneMap[doneKey] && doneMap[doneKey].includes((cartonIndex || 1) - 1)) {
       throw new Error(`Carton ${cartonIndex} for "${itemName}" has already been received in a previous GRN.`);
     }
 
@@ -559,27 +562,27 @@ exports.submitDraft = async (draftId, {
 
 exports.getReceivedCartons = async (refId) => {
   const submittedGRNs = await GRNDraft.find({ refId, status: "SUBMITTED" }).lean();
-  const doneMap = {};
+  const receivedCounts = {};
 
   submittedGRNs.forEach(grn => {
     (grn.cartons || []).forEach(c => {
       // Prefer variantId over itemName for the map key to prevent collisions
       const key = c.variantId || c.itemName || (grn.articleName.includes(",") ? grn.articleName.split(",")[0].trim() : grn.articleName);
-      if (!doneMap[key]) doneMap[key] = [];
-      
-      // Extract serial from barcode e.g. "Riv-blk-04-08-CT001" -> 0.
-      // Match the trailing CT<digits> rather than splitting on "-", since the
-      // Carton SKU portion itself commonly contains dashes.
-      const match = (c.cartonBarcode || "").match(/CT(\d+)$/);
-      const serial = match ? parseInt(match[1], 10) : NaN;
-
-      if (!isNaN(serial) && !doneMap[key].includes(serial - 1)) {
-        doneMap[key].push(serial - 1);
-      }
+      if (!key) return;
+      receivedCounts[key] = (receivedCounts[key] || 0) + 1;
     });
   });
 
-  return doneMap;
+  // Receiving chips represent positions inside this PO (1, 2, 3...), while
+  // the CT suffix is a global serial for the variant. For example, the first
+  // carton received against this PO may be labelled CT6; it must still mark
+  // receiving position 1 as done, not position 6.
+  return Object.fromEntries(
+    Object.entries(receivedCounts).map(([key, count]) => [
+      key,
+      Array.from({ length: count }, (_, index) => index),
+    ])
+  );
 };
 
 exports.getHistory = async (params = {}) => {

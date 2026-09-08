@@ -69,6 +69,16 @@ import Bill from "./components/Admin/Bill";
 import { distributorOrderService } from "./services/distributorOrderService";
 import { getVariantAvailability, getVariantPricePerPair as getVariantPricePerPairUtil } from "./utils/catalogAvailability";
 
+const normalizeSocketId = (value: unknown): string => {
+  const candidate = value && typeof value === "object"
+    ? ((value as any)._id ?? (value as any).id ?? value)
+    : value;
+  if (candidate === null || candidate === undefined) return "";
+
+  const normalized = String(candidate);
+  return normalized === "[object Object]" ? "" : normalized;
+};
+
 const App: React.FC = () => {
   const store = useKoreStore();
   const { currentUser: user, checkAuth, isLoadingAuth } = store;
@@ -295,15 +305,22 @@ const App: React.FC = () => {
   const fetchOrdersRef = React.useRef<
     ((silent?: boolean) => Promise<void>) | undefined
   >(undefined);
+  const orderFetchSequenceRef = React.useRef(0);
   const fetchArticlesRef = React.useRef<(() => Promise<void>) | undefined>(
     undefined
   );
 
   // Fetch orders with socket.io for real-time updates
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      // Invalidate an in-flight request from the previous session/user.
+      orderFetchSequenceRef.current += 1;
+      fetchOrdersRef.current = undefined;
+      return;
+    }
 
     const fetchOrders = async (silent = false) => {
+      const requestSequence = ++orderFetchSequenceRef.current;
       if (!silent) setLoadingOrders(true);
       try {
         let items: Order[] = [];
@@ -315,19 +332,27 @@ const App: React.FC = () => {
             { limit: 100, orderType: "ALL" }
           );
           items = res.items;
-          if (res.meta?.stats) setDistributorDashStats(res.meta.stats);
+          if (requestSequence === orderFetchSequenceRef.current && res.meta?.stats) {
+            setDistributorDashStats(res.meta.stats);
+          }
         } else {
           const res = await distributorOrderService.getAllOrders({
             limit: 1000,
           });
           items = res.items;
         }
+
+        // Rapid admin edits or reconnect catch-up can produce overlapping
+        // requests. Only the newest response may replace visible state.
+        if (requestSequence !== orderFetchSequenceRef.current) return;
         setOrders(items);
         setLastUpdated(new Date());
       } catch (err) {
         console.error("Failed to fetch orders", err);
       } finally {
-        if (!silent) setLoadingOrders(false);
+        if (!silent && requestSequence === orderFetchSequenceRef.current) {
+          setLoadingOrders(false);
+        }
       }
     };
 
@@ -336,6 +361,18 @@ const App: React.FC = () => {
     // Initial fetch
     fetchOrders();
   }, [user?.id, user?.role]);
+
+  const refreshRealtimeData = () => {
+    const currentUser = userRef.current;
+    if (!currentUser) return;
+
+    fetchOrdersRef.current?.(true);
+    if (currentUser.role === UserRole.DISTRIBUTOR) {
+      // Order changes can alter available credit and distributor dashboard
+      // aggregates, so refresh the authenticated profile too.
+      checkAuthRef.current?.(true);
+    }
+  };
 
   // The socket connects as soon as the app loads — usually before login, so
   // its "connect" event fires with no token yet and it joins no rooms. If
@@ -360,6 +397,9 @@ const App: React.FC = () => {
       // Re-authenticate on every connect/reconnect so server assigns correct rooms
       const token = localStorage.getItem("kore_token");
       if (token) socket.emit("authenticate", token);
+
+      // Catch up on updates that happened while this browser was offline.
+      if (userRef.current) refreshRealtimeData();
     };
 
     const onConnectError = (err: Error) => {
@@ -379,13 +419,17 @@ const App: React.FC = () => {
       if (!u) return;
 
       const isDistributor = u.role === UserRole.DISTRIBUTOR;
-      const orderId = String(data.orderId);
-      const distributorId = String(data.distributorId);
+      const orderId = normalizeSocketId(data.orderId);
+      const distributorId = normalizeSocketId(data.distributorId);
+      if (!orderId) {
+        console.warn("âš ï¸ Ignoring malformed orderUpdated event without orderId", data);
+        return;
+      }
       const isMyOrder =
-        distributorId === String(u.id) ||
-        distributorId === String(u.distributorId);
+        distributorId === normalizeSocketId(u.id) ||
+        distributorId === normalizeSocketId(u.distributorId);
 
-      if (isDistributor && !isMyOrder) return;
+      if (isDistributor && (!distributorId || !isMyOrder)) return;
 
       const isPriceOnly = data.status === "PENDING" && !isDistributor;
       if (!isPriceOnly) {
@@ -397,12 +441,13 @@ const App: React.FC = () => {
         });
       }
 
-      if (fetchOrdersRef.current) fetchOrdersRef.current(true);
-      if (isDistributor) checkAuthRef.current?.(true);
+      refreshRealtimeData();
 
       // Notify open OrderDetail to refresh itself
       window.dispatchEvent(
-        new CustomEvent("orderUpdatedSocket", { detail: data })
+        new CustomEvent("orderUpdatedSocket", {
+          detail: { ...data, orderId, distributorId },
+        })
       );
     };
 
@@ -602,6 +647,28 @@ const App: React.FC = () => {
   }, [socket]); // Re-bind only if socket instance changes
 
   // ── Periodic credit refresh when distributor is on the cart tab ──
+  // REST catch-up covers edits made while the tab was backgrounded or the
+  // socket was temporarily unavailable. Keep it throttled so focus and
+  // visibility events cannot create a request burst.
+  useEffect(() => {
+    let lastCatchUpAt = 0;
+
+    const catchUp = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastCatchUpAt < 1000) return;
+      lastCatchUpAt = now;
+      refreshRealtimeData();
+    };
+
+    window.addEventListener("focus", catchUp);
+    document.addEventListener("visibilitychange", catchUp);
+    return () => {
+      window.removeEventListener("focus", catchUp);
+      document.removeEventListener("visibilitychange", catchUp);
+    };
+  }, [user?.id, socket]);
+
   useEffect(() => {
     if (!user || user.role !== UserRole.DISTRIBUTOR) return;
     if (activeTab !== "cart") return;

@@ -20,7 +20,7 @@ const mongoose = require("mongoose");
 // URIs are hardcoded (not from .env) so there is no risk of accidentally
 // pointing at the wrong cluster via an environment variable override.
 const PROD_URI =
-  "mongodb+srv://auraerpcw:auraerpcw@cluster0.2hbbrn6.mongodb.net/ttcartproduction?appName=Cluster0";
+  "mongodb+srv://auraerpcw:auraerpcw@cluster0.2hbbrn6.mongodb.net/ttcartv2?appName=Cluster0";
 const TEST_URI =
   "mongodb+srv://kore:kore@cluster0.xegng8z.mongodb.net/?appName=Cluster0";
 

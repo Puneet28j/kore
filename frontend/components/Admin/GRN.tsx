@@ -186,8 +186,10 @@ const GRN: React.FC = () => {
     scanInputValueRef.current = scanInput;
   }, [scanInput]);
 
-  // Track which cartons are already GRN'd (from previous submissions) - stores array of 0-based indices
-  const [doneCartons, setDoneCartons] = useState<Record<string, number[]>>({}); // itemName -> array of done carton indices
+  // Track which PO receiving positions are already GRN'd (from previous
+  // submissions). These 0-based indices are sequential for the PO and are
+  // deliberately independent of the carton's global CT barcode serial.
+  const [doneCartons, setDoneCartons] = useState<Record<string, number[]>>({});
 
   // variantId → next serial at the time scanning started (for counter-based barcode display)
   const [variantCounterBases, setVariantCounterBases] = useState<Record<string, number>>({});

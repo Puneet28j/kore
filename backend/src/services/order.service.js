@@ -26,13 +26,21 @@ const buildProductSnapshot = (catalog, variant) => {
   );
   const colorImage = colorMedia?.images?.[0];
   const primaryImage = catalog?.primaryImage;
+  // Both can be either a legacy plain URL string or the current
+  // { url, key, isCover } object — resolve to a URL string either way, and
+  // NEVER fall back to the raw object itself (an object with a blank .url,
+  // e.g. { url: "", key: "" }, is still truthy — falling back to it instead
+  // of moving on to the next candidate fails order creation entirely with a
+  // Mongoose cast error, since productSnapshot.imageUrl is a String field).
+  const resolveImageUrl = (img) =>
+    (typeof img === "string" ? img : img?.url) || "";
 
   return {
     articleName: catalog?.articleName || "",
     color: variant?.color || "",
     sizeRange: variant?.sizeRange || "",
     assortment: toSnapshotAssortment(variant),
-    imageUrl: colorImage?.url || colorImage || primaryImage?.url || primaryImage || "",
+    imageUrl: resolveImageUrl(colorImage) || resolveImageUrl(primaryImage),
   };
 };
 
@@ -543,10 +551,15 @@ const createOrder = async (distributorId, orderData) => {
           const alreadyBooked = preBookedMap.totals[variantId] || 0;
           const remaining = Math.max(0, planned - alreadyBooked);
           if (requested > remaining) {
+            // Distributor-facing — deliberately doesn't reveal the PO's
+            // total planned quantity or how much other distributors have
+            // already pre-booked (competitively sensitive supply info).
+            // Admins can see those exact numbers on Master Inventory/Stock
+            // Report directly, so nothing is lost by not echoing them here.
             throw new Error(
               planned === 0
                 ? "This item cannot be pre-booked yet — no Purchase Order has been raised for it."
-                : `Pre-order limit reached. Only ${remaining} pair(s) can still be pre-booked for this item (planned ${planned}, already pre-booked ${alreadyBooked}).`
+                : `Pre-order limit reached. Only ${remaining} pair(s) can still be pre-booked for this item.`
             );
           }
         }
